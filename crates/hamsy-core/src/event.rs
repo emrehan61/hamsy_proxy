@@ -1,4 +1,4 @@
-//! WebSocket message shapes exchanged between the future `flproxy-api`
+//! WebSocket message shapes exchanged between the future `hamsy-api`
 //! server and UI clients.
 
 use serde::{Deserialize, Serialize};

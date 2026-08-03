@@ -125,7 +125,7 @@ const Settings: Component = () => {
     }
     try {
       const { blob, filename } = await getHar(ids);
-      triggerDownload(blob, filename ?? "flproxy-session.har");
+      triggerDownload(blob, filename ?? "hamsy-session.har");
     } catch {
       pushToast({ level: "error", message: "Failed to export HAR" });
     }
@@ -150,7 +150,7 @@ const Settings: Component = () => {
   const onExportRules = async () => {
     try {
       const { rules: exported } = await exportRulesAction();
-      triggerDownload(new Blob([JSON.stringify({ rules: exported }, null, 2)], { type: "application/json" }), "flproxy-rules.json");
+      triggerDownload(new Blob([JSON.stringify({ rules: exported }, null, 2)], { type: "application/json" }), "hamsy-rules.json");
     } catch {
       pushToast({ level: "error", message: "Failed to export rules" });
     }
@@ -200,7 +200,7 @@ const Settings: Component = () => {
     <div class="settings-page">
       <Show when={settingsRestartRequired()}>
         <div class="settings-page__banner" role="status">
-          <span>Restart flproxy for the new port/bind-address to take effect.</span>
+          <span>Restart hamsy-proxy for the new port/bind-address to take effect.</span>
           <Button variant="ghost" size="sm" icon="close" aria-label="Dismiss" onClick={dismissRestartRequired} />
         </div>
       </Show>
@@ -210,7 +210,7 @@ const Settings: Component = () => {
         fallback={
           <div class="settings-page__loading">
             <Show when={settingsLoadError()} fallback="Loading settings…">
-              <p>Could not reach flproxy's backend.</p>
+              <p>Could not reach hamsy-proxy's backend.</p>
               <Button variant="default" size="sm" onClick={() => void refetchSettings()}>
                 Retry
               </Button>

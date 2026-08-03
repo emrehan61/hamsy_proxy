@@ -1,13 +1,13 @@
 //! Extension points that let a proxy backend (or certificate authority)
 //! plug into the API without this crate depending on it directly.
 //!
-//! `flproxy-api` is intentionally self-contained: it defines these small
+//! `hamsy-api` is intentionally self-contained: it defines these small
 //! traits and ships no-op default implementations ([`NoopReplay`],
 //! [`StubCert`]) so the crate builds and runs standalone. A real proxy
 //! backend crate implements these traits and hands `Arc<dyn ReplayHook>` /
 //! `Arc<dyn CertHook>` to [`crate::state::ApiState::new`].
 
-use flproxy_core::{FlowId, RequestRecord};
+use hamsy_core::{FlowId, RequestRecord};
 
 /// Replays a previously captured request, optionally with edits, through
 /// whatever proxy backend is attached.
@@ -60,13 +60,13 @@ pub struct StubCert;
 impl CertHook for StubCert {
     fn ca_pem(&self) -> String {
         "-----BEGIN CERTIFICATE-----\n\
-         PLACEHOLDER: no certificate authority attached to flproxy-api\n\
+         PLACEHOLDER: no certificate authority attached to hamsy-api\n\
          -----END CERTIFICATE-----\n"
             .to_string()
     }
 
     fn ca_der(&self) -> Vec<u8> {
-        b"PLACEHOLDER: no certificate authority attached to flproxy-api".to_vec()
+        b"PLACEHOLDER: no certificate authority attached to hamsy-api".to_vec()
     }
 
     fn fingerprint(&self) -> String {

@@ -1,18 +1,18 @@
-//! `flproxy rules` subcommands: list/export/import against the on-disk
+//! `hamsy rules` subcommands: list/export/import against the on-disk
 //! rules store.
 //!
 //! Like `cert`, these operate directly on `<data-dir>/rules.json`; there is
-//! no IPC with a running `flproxy run` process.
+//! no IPC with a running `hamsy run` process.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use flproxy_core::{Rule, RulesStore};
+use hamsy_core::{Rule, RulesStore};
 
 use crate::resolve_data_dir;
 
-/// `flproxy rules` subcommands.
+/// `hamsy rules` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum RulesCommand {
     /// List all rules (id, name, enabled, priority).
@@ -78,7 +78,7 @@ fn export(out: Option<PathBuf>) -> Result<()> {
 /// Merges `incoming` into `current`: rules whose `id` matches an existing
 /// entry overwrite it in place; rules with a new `id` are appended.
 ///
-/// Mirrors `flproxy-api`'s `routes::rules::import` non-replace semantics
+/// Mirrors `hamsy-api`'s `routes::rules::import` non-replace semantics
 /// (read-merge-write via `RulesStore::import`, since `RulesStore` has no
 /// native partial-import method), so `rules import` without `--replace`
 /// behaves identically to the API's merge import.
@@ -114,7 +114,7 @@ fn import(file: &Path, replace: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flproxy_core::Matcher;
+    use hamsy_core::Matcher;
 
     fn rule(id: &str, name: &str) -> Rule {
         Rule {

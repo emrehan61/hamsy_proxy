@@ -1,9 +1,9 @@
-//! `flproxy cert` subcommands: inspecting the MITM root certificate
+//! `hamsy cert` subcommands: inspecting the MITM root certificate
 //! authority and (best-effort) installing/removing it from the OS trust
 //! store.
 //!
-//! These subcommands operate directly on the on-disk CA in the flproxy data
-//! directory; there is no IPC with a running `flproxy run` process.
+//! These subcommands operate directly on the on-disk CA in the hamsy-proxy data
+//! directory; there is no IPC with a running `hamsy run` process.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,11 +11,11 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use flproxy_proxy::CertAuthority;
+use hamsy_proxy::CertAuthority;
 
 use crate::resolve_data_dir;
 
-/// `flproxy cert` subcommands.
+/// `hamsy cert` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum CertCommand {
     /// Print the path to the CA certificate file.
@@ -91,7 +91,7 @@ fn export(der: bool, out: Option<PathBuf>) -> Result<()> {
 
 /// Runs `cmd` with `args`, returning its stdout as a `String` on success (a
 /// non-zero exit status is treated as failure). Mirrors the private `run()`
-/// helper in `flproxy_api::sysproxy`.
+/// helper in `hamsy_api::sysproxy`.
 fn run_command(cmd: &str, args: &[&str]) -> std::result::Result<String, String> {
     let output = Command::new(cmd)
         .args(args)
@@ -143,14 +143,14 @@ fn windows_install_args(cert_path: &Path) -> Vec<String> {
 }
 
 /// Builds the `certutil -delstore` argv used to remove the CA from the
-/// Windows `ROOT` store, matching by the CA's common name (`"flproxy CA"`,
-/// see `flproxy_proxy::ca::generate_ca_pem`).
+/// Windows `ROOT` store, matching by the CA's common name (`"hamsy-proxy CA"`,
+/// see `hamsy_proxy::ca::generate_ca_pem`).
 fn windows_uninstall_args() -> Vec<String> {
     vec![
         "certutil".to_string(),
         "-delstore".to_string(),
         "ROOT".to_string(),
-        "flproxy CA".to_string(),
+        "hamsy-proxy CA".to_string(),
     ]
 }
 
@@ -159,7 +159,7 @@ fn windows_uninstall_args() -> Vec<String> {
 fn linux_install_commands(cert_path: &Path) -> (String, String) {
     (
         format!(
-            "cp {} /usr/local/share/ca-certificates/flproxy-ca.crt",
+            "cp {} /usr/local/share/ca-certificates/hamsy-ca.crt",
             cert_path.display()
         ),
         "update-ca-certificates".to_string(),
@@ -170,7 +170,7 @@ fn linux_install_commands(cert_path: &Path) -> (String, String) {
 /// manually remove the CA from the Linux system trust store.
 fn linux_uninstall_commands() -> (String, String) {
     (
-        "rm /usr/local/share/ca-certificates/flproxy-ca.crt".to_string(),
+        "rm /usr/local/share/ca-certificates/hamsy-ca.crt".to_string(),
         "update-ca-certificates".to_string(),
     )
 }
@@ -179,20 +179,20 @@ fn linux_uninstall_commands() -> (String, String) {
 /// use on Linux, independent of whether the system-wide install succeeded.
 fn nss_install_command(cert_path: &Path) -> String {
     format!(
-        "certutil -d sql:$HOME/.pki/nssdb -A -t \"C,,\" -n flproxy -i {}",
+        "certutil -d sql:$HOME/.pki/nssdb -A -t \"C,,\" -n hamsy-proxy -i {}",
         cert_path.display()
     )
 }
 
 fn linux_install_ca_file(cert_path: &Path) -> std::result::Result<(), String> {
-    let dest = Path::new("/usr/local/share/ca-certificates/flproxy-ca.crt");
+    let dest = Path::new("/usr/local/share/ca-certificates/hamsy-ca.crt");
     std::fs::copy(cert_path, dest).map_err(|e| format!("copy to {}: {e}", dest.display()))?;
     run_command("update-ca-certificates", &[])?;
     Ok(())
 }
 
 fn linux_uninstall_ca_file() -> std::result::Result<(), String> {
-    let dest = Path::new("/usr/local/share/ca-certificates/flproxy-ca.crt");
+    let dest = Path::new("/usr/local/share/ca-certificates/hamsy-ca.crt");
     std::fs::remove_file(dest).map_err(|e| format!("remove {}: {e}", dest.display()))?;
     run_command("update-ca-certificates", &[])?;
     Ok(())
@@ -206,7 +206,7 @@ fn install() -> Result<()> {
         let args = macos_install_args(&cert_path);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_command(arg_refs[0], &arg_refs[1..]) {
-            Ok(_) => println!("Installed the flproxy CA into the macOS System keychain."),
+            Ok(_) => println!("Installed the hamsy-proxy CA into the macOS System keychain."),
             Err(e) => {
                 eprintln!("Could not install automatically ({e}).");
                 eprintln!("Run this yourself:\n  sudo {}", args.join(" "));
@@ -214,7 +214,7 @@ fn install() -> Result<()> {
         }
     } else if cfg!(target_os = "linux") {
         match linux_install_ca_file(&cert_path) {
-            Ok(()) => println!("Installed the flproxy CA into the system trust store."),
+            Ok(()) => println!("Installed the hamsy-proxy CA into the system trust store."),
             Err(e) => {
                 eprintln!("Could not install automatically ({e}).");
                 let (cp, update) = linux_install_commands(&cert_path);
@@ -227,7 +227,7 @@ fn install() -> Result<()> {
         let args = windows_install_args(&cert_path);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_command(arg_refs[0], &arg_refs[1..]) {
-            Ok(_) => println!("Installed the flproxy CA into the Windows ROOT store."),
+            Ok(_) => println!("Installed the hamsy-proxy CA into the Windows ROOT store."),
             Err(e) => {
                 eprintln!("Could not install automatically ({e}).");
                 eprintln!(
@@ -253,7 +253,7 @@ fn uninstall() -> Result<()> {
         let args = macos_uninstall_args(&cert_path);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_command(arg_refs[0], &arg_refs[1..]) {
-            Ok(_) => println!("Removed the flproxy CA from the macOS System keychain."),
+            Ok(_) => println!("Removed the hamsy-proxy CA from the macOS System keychain."),
             Err(e) => {
                 eprintln!("Could not remove automatically ({e}).");
                 eprintln!("Run this yourself:\n  sudo {}", args.join(" "));
@@ -261,7 +261,7 @@ fn uninstall() -> Result<()> {
         }
     } else if cfg!(target_os = "linux") {
         match linux_uninstall_ca_file() {
-            Ok(()) => println!("Removed the flproxy CA from the system trust store."),
+            Ok(()) => println!("Removed the hamsy-proxy CA from the system trust store."),
             Err(e) => {
                 eprintln!("Could not remove automatically ({e}).");
                 let (rm, update) = linux_uninstall_commands();
@@ -272,7 +272,7 @@ fn uninstall() -> Result<()> {
         let args = windows_uninstall_args();
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         match run_command(arg_refs[0], &arg_refs[1..]) {
-            Ok(_) => println!("Removed the flproxy CA from the Windows ROOT store."),
+            Ok(_) => println!("Removed the hamsy-proxy CA from the Windows ROOT store."),
             Err(e) => {
                 eprintln!("Could not remove automatically ({e}).");
                 eprintln!(
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn windows_uninstall_args_match_ca_common_name() {
         let args = windows_uninstall_args();
-        assert_eq!(args, vec!["certutil", "-delstore", "ROOT", "flproxy CA"]);
+        assert_eq!(args, vec!["certutil", "-delstore", "ROOT", "hamsy-proxy CA"]);
     }
 
     #[test]
@@ -320,11 +320,11 @@ mod tests {
         let (cp, update) = linux_install_commands(Path::new("/tmp/ca.pem"));
         assert_eq!(
             cp,
-            "cp /tmp/ca.pem /usr/local/share/ca-certificates/flproxy-ca.crt"
+            "cp /tmp/ca.pem /usr/local/share/ca-certificates/hamsy-ca.crt"
         );
         assert_eq!(update, "update-ca-certificates");
         let (rm, update2) = linux_uninstall_commands();
-        assert_eq!(rm, "rm /usr/local/share/ca-certificates/flproxy-ca.crt");
+        assert_eq!(rm, "rm /usr/local/share/ca-certificates/hamsy-ca.crt");
         assert_eq!(update2, "update-ca-certificates");
     }
 

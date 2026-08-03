@@ -1,10 +1,10 @@
-//! `flproxy-proxy`: a from-scratch MITM HTTP(S) debugging proxy engine.
+//! `hamsy-proxy`: a from-scratch MITM HTTP(S) debugging proxy engine.
 //!
 //! Built directly on `tokio`/`hyper`/`rustls` (not on an all-in-one proxy
-//! framework), this crate implements the network side of flproxy: accepting
+//! framework), this crate implements the network side of hamsy-proxy: accepting
 //! client connections, terminating and re-originating TLS for MITM'd HTTPS
-//! traffic, applying `flproxy-core` rules to requests/responses, recording
-//! [`flproxy_core::Flow`]s, and relaying WebSocket traffic.
+//! traffic, applying `hamsy-core` rules to requests/responses, recording
+//! [`hamsy_core::Flow`]s, and relaying WebSocket traffic.
 //!
 //! Module map:
 //! - [`ca`]: certificate authority (root CA load/generate, leaf minting).

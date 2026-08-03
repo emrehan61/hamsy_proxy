@@ -1,6 +1,6 @@
-//! REST + WebSocket API and web UI asset server for flproxy.
+//! REST + WebSocket API and web UI asset server for hamsy-proxy.
 //!
-//! This crate is self-contained: it depends only on `flproxy-core` for the
+//! This crate is self-contained: it depends only on `hamsy-core` for the
 //! shared data model, and defines its own small [`hooks::ReplayHook`] /
 //! [`hooks::CertHook`] traits as extension points for a proxy backend and
 //! certificate authority, rather than depending on those crates directly.
@@ -72,9 +72,9 @@ pub fn router(state: ApiState) -> Router {
         .fallback(api_not_found);
 
     let cert_routes = Router::new()
-        .route("/flproxy-ca.pem", get(routes::setup::cert_pem))
-        .route("/flproxy-ca.crt", get(routes::setup::cert_crt))
-        .route("/flproxy-ca.der", get(routes::setup::cert_der))
+        .route("/hamsy-ca.pem", get(routes::setup::cert_pem))
+        .route("/hamsy-ca.crt", get(routes::setup::cert_crt))
+        .route("/hamsy-ca.der", get(routes::setup::cert_der))
         .fallback(api_not_found);
 
     // Two explicit dev-server origins (Vite's default port), plus a

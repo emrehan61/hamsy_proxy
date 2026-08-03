@@ -158,7 +158,7 @@ impl Pool {
 
 /// The result of [`Connector::obtain`]: a ready-to-use sender plus enough
 /// per-phase timing/addressing info for the caller to populate
-/// [`flproxy_core::Timings`] and [`flproxy_core::FlowSummary`].
+/// [`hamsy_core::Timings`] and [`hamsy_core::FlowSummary`].
 pub struct Obtained {
     /// The sender, ready for `send_request`.
     pub sender: Sender,

@@ -18,9 +18,9 @@ use rustls_pki_types::PrivatePkcs8KeyDer;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use flproxy_core::{Action, FlowStore, Matcher, Rule, RulesStore, Settings};
-use flproxy_proxy::upstream::Connector;
-use flproxy_proxy::{CertAuthority, ProxyContext, ProxyServer};
+use hamsy_core::{Action, FlowStore, Matcher, Rule, RulesStore, Settings};
+use hamsy_proxy::upstream::Connector;
+use hamsy_proxy::{CertAuthority, ProxyContext, ProxyServer};
 
 /// The body type origin-server test handlers return.
 pub type OriginBody = BoxBody<Bytes, Infallible>;
@@ -192,13 +192,13 @@ pub fn client_trusting_proxy_ca(proxy: &TestProxy) -> reqwest::Client {
 /// state (`Complete`/`Error`), since some flows (raw tunnels in particular)
 /// only finalize once the underlying connection actually closes, which can
 /// race a test's assertions immediately after its HTTP response completes.
-pub async fn wait_for_terminal_flow(proxy: &TestProxy) -> flproxy_core::FlowSummary {
+pub async fn wait_for_terminal_flow(proxy: &TestProxy) -> hamsy_core::FlowSummary {
     for _ in 0..40 {
         let flows = proxy.ctx.flows.list(&Default::default());
         if let Some(flow) = flows.iter().find(|f| {
             matches!(
                 f.state,
-                flproxy_core::FlowState::Complete | flproxy_core::FlowState::Error
+                hamsy_core::FlowState::Complete | hamsy_core::FlowState::Error
             )
         }) {
             return flow.clone();

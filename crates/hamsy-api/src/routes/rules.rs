@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use flproxy_core::{Rule, ServerEvent};
+use hamsy_core::{Rule, ServerEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -99,7 +99,7 @@ pub struct ImportBody {
 /// `POST /api/rules/import`.
 ///
 /// `replace: true` (or omitted) replaces the entire rule set via
-/// [`flproxy_core::RulesStore::import`]. `replace: false` merges: existing
+/// [`hamsy_core::RulesStore::import`]. `replace: false` merges: existing
 /// rules are kept, incoming rules with a matching `id` overwrite them in
 /// place, and new ids are appended (`RulesStore` has no native partial
 /// import, so this is implemented here as read-merge-`import`).

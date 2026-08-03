@@ -13,7 +13,7 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use uuid::Uuid;
 
-use flproxy_core::{BodyPayload, Flow, FlowState, RequestRecord, ResponseRecord, ServerEvent};
+use hamsy_core::{BodyPayload, Flow, FlowState, RequestRecord, ResponseRecord, ServerEvent};
 
 use crate::config::ProxyContext;
 use crate::error::{ProxyError, Result};
@@ -290,8 +290,8 @@ fn looks_like_plaintext_http(data: &[u8]) -> bool {
     METHODS.iter().any(|m| data.starts_with(m))
 }
 
-fn build_tls_info(conn: &rustls::CommonState, sni: &str) -> flproxy_core::TlsInfo {
-    flproxy_core::TlsInfo {
+fn build_tls_info(conn: &rustls::CommonState, sni: &str) -> hamsy_core::TlsInfo {
+    hamsy_core::TlsInfo {
         version: conn.protocol_version().map(format_tls_version),
         cipher_suite: conn
             .negotiated_cipher_suite()

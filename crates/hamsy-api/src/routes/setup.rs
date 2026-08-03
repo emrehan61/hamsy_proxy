@@ -55,7 +55,7 @@ pub async fn setup(State(state): State<ApiState>) -> Json<Value> {
         .cloned()
         .unwrap_or_else(|| "127.0.0.1".to_string());
     let cert_url = format!(
-        "http://{proxy_host}:{}/cert/flproxy-ca.crt",
+        "http://{proxy_host}:{}/cert/hamsy-ca.crt",
         settings.ui_port
     );
     let qr_svg = qr::svg(&cert_url);
@@ -70,20 +70,20 @@ pub async fn setup(State(state): State<ApiState>) -> Json<Value> {
     }))
 }
 
-/// `GET /cert/flproxy-ca.pem`.
+/// `GET /cert/hamsy-ca.pem`.
 pub async fn cert_pem(State(state): State<ApiState>) -> Response {
     let pem = state.cert_hook().ca_pem();
     ([(header::CONTENT_TYPE, "application/x-pem-file")], pem).into_response()
 }
 
-/// `GET /cert/flproxy-ca.crt` — same DER content as `.der`, served with the
+/// `GET /cert/hamsy-ca.crt` — same DER content as `.der`, served with the
 /// MIME type iOS/Android profile installers key off of.
 pub async fn cert_crt(State(state): State<ApiState>) -> Response {
     let der = state.cert_hook().ca_der();
     ([(header::CONTENT_TYPE, "application/x-x509-ca-cert")], der).into_response()
 }
 
-/// `GET /cert/flproxy-ca.der`.
+/// `GET /cert/hamsy-ca.der`.
 pub async fn cert_der(State(state): State<ApiState>) -> Response {
     let der = state.cert_hook().ca_der();
     ([(header::CONTENT_TYPE, "application/x-x509-ca-cert")], der).into_response()

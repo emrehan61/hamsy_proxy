@@ -377,7 +377,7 @@ const Traffic: Component = () => {
     listFlows()
       .then((res) => ingestFlows(res.flows))
       .catch((err) => {
-        console.error("flproxy: failed to load initial flows", err);
+        console.error("hamsy-proxy: failed to load initial flows", err);
       });
 
     void restoreSessionsFromDb();

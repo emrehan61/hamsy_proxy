@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use bytes::Bytes;
-use flproxy_core::{FlowQuery, RequestRecord, ResourceType, ServerEvent};
+use hamsy_core::{FlowQuery, RequestRecord, ResourceType, ServerEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -115,11 +115,11 @@ fn parse_flow_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::NotFound(format!("'{raw}' is not a valid flow id")))
 }
 
-/// `GET /api/flows/:id` — returns the full [`flproxy_core::Flow`] detail.
+/// `GET /api/flows/:id` — returns the full [`hamsy_core::Flow`] detail.
 pub async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
-) -> Result<Json<flproxy_core::Flow>, ApiError> {
+) -> Result<Json<hamsy_core::Flow>, ApiError> {
     let flow_id = parse_flow_id(&id)?;
     state
         .flows()

@@ -1,4 +1,4 @@
-//! `flproxy-core`: pure logic for the flproxy HTTP(S) debugging proxy.
+//! `hamsy-core`: pure logic for the hamsy-proxy HTTP(S) debugging proxy.
 //!
 //! This crate has no networking or server dependencies. It defines the
 //! shared data model (flows, rules, settings), the rule matching/mutation

@@ -1,13 +1,13 @@
 //! Real [`ReplayHook`]/[`CertHook`] implementations, backed by a live
-//! `flproxy-proxy` [`ProxyContext`] and [`CertAuthority`], that [`crate::run::run`]
-//! hands to `flproxy-api`'s `ApiState` so the API can replay flows and serve
+//! `hamsy-proxy` [`ProxyContext`] and [`CertAuthority`], that [`crate::run::run`]
+//! hands to `hamsy-api`'s `ApiState` so the API can replay flows and serve
 //! CA certificate material through the actual running proxy backend.
 
 use std::sync::Arc;
 
-use flproxy_api::{CertHook, ReplayHook};
-use flproxy_core::{FlowId, RequestRecord};
-use flproxy_proxy::{CertAuthority, ProxyContext};
+use hamsy_api::{CertHook, ReplayHook};
+use hamsy_core::{FlowId, RequestRecord};
+use hamsy_proxy::{CertAuthority, ProxyContext};
 
 /// A [`CertHook`] backed by a real, on-disk [`CertAuthority`].
 pub struct RealCertHook {
@@ -36,7 +36,7 @@ impl CertHook for RealCertHook {
 }
 
 /// A [`ReplayHook`] that re-issues requests through a live [`ProxyContext`]'s
-/// normal capture/rule/dispatch pipeline (see [`flproxy_proxy::replay::replay`]).
+/// normal capture/rule/dispatch pipeline (see [`hamsy_proxy::replay::replay`]).
 pub struct RealReplayHook {
     ctx: ProxyContext,
 }
@@ -67,7 +67,7 @@ impl ReplayHook for RealReplayHook {
                     .ok_or_else(|| format!("flow {flow_id} has no stored request to replay"))?
             }
         };
-        flproxy_proxy::replay::replay(&self.ctx, req)
+        hamsy_proxy::replay::replay(&self.ctx, req)
             .await
             .map_err(|e| e.to_string())
     }

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use flproxy_core::{FlowStore, RulesStore, ServerEvent, Settings};
+use hamsy_core::{FlowStore, RulesStore, ServerEvent, Settings};
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
@@ -41,7 +41,7 @@ impl ApiState {
     ///
     /// `settings` and `events` are shared handles: pass the same
     /// `Arc<RwLock<Settings>>` and `broadcast::Sender<ServerEvent>` used by a
-    /// `flproxy_proxy::ProxyContext` so settings changes and captured flows
+    /// `hamsy_proxy::ProxyContext` so settings changes and captured flows
     /// flow between the proxy backend and this API in both directions.
     ///
     /// `settings_path` is where [`Settings`] are persisted on every mutating
@@ -118,7 +118,7 @@ impl ApiState {
         &self.inner.settings_path
     }
 
-    /// The flproxy data directory: the settings file's parent directory
+    /// The hamsy-proxy data directory: the settings file's parent directory
     /// (`settings.json` always lives directly inside it). Derived rather than
     /// stored separately, so nothing new needs threading through every
     /// `ApiState::new`/`new_standalone` call site just for this.
@@ -133,7 +133,7 @@ impl ApiState {
     /// applies `maxFlows` to the flow store's capacity. Does not broadcast;
     /// callers are responsible for broadcasting [`ServerEvent::SettingsChanged`]
     /// when appropriate.
-    pub fn save_settings(&self, settings: Settings) -> flproxy_core::Result<()> {
+    pub fn save_settings(&self, settings: Settings) -> hamsy_core::Result<()> {
         settings.save(&self.inner.settings_path)?;
         self.inner.flows.set_capacity(settings.max_flows.max(1));
         *self.inner.settings.write() = settings;
@@ -150,7 +150,7 @@ impl ApiState {
         &self.inner.cert_hook
     }
 
-    /// The `flproxy-api` crate version reported in `GET /api/state`.
+    /// The `hamsy-api` crate version reported in `GET /api/state`.
     pub fn version(&self) -> &str {
         &self.inner.version
     }

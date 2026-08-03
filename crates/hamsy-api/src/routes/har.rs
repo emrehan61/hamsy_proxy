@@ -6,7 +6,7 @@ use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use flproxy_core::{export_har, import_har, ServerEvent};
+use hamsy_core::{export_har, import_har, ServerEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -50,7 +50,7 @@ pub async fn export(
             (header::CONTENT_TYPE, "application/json".to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"flproxy-{ts}.har\""),
+                format!("attachment; filename=\"hamsy-{ts}.har\""),
             ),
         ],
         body,

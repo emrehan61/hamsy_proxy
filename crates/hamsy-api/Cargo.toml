@@ -1,9 +1,9 @@
 [package]
-name = "flproxy-api"
+name = "hamsy-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "REST + WebSocket API and embedded web UI for flproxy."
+description = "REST + WebSocket API and embedded web UI for hamsy-proxy."
 
 [features]
 default = []
@@ -13,7 +13,7 @@ default = []
 embed-ui = ["dep:rust-embed"]
 
 [dependencies]
-flproxy-core = { path = "../flproxy-core" }
+hamsy-core = { path = "../hamsy-core" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

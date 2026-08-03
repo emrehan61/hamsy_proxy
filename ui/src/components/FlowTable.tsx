@@ -37,7 +37,7 @@ export const FLOW_COLUMNS: FlowColumn[] = [
   { key: "duration", label: "Duration", defaultWidth: 84 },
 ];
 
-const COLUMN_WIDTHS_PERSIST_KEY = "columns.flowTable"; // -> localStorage "flproxy.columns.flowTable"
+const COLUMN_WIDTHS_PERSIST_KEY = "columns.flowTable"; // -> localStorage "hamsy.columns.flowTable"
 const ROW_HEIGHT = 28;
 const MIN_COLUMN_WIDTH = 40;
 // Distance (px) from the bottom of the scroll area within which we still

@@ -1,9 +1,9 @@
 // HAR 1.2 parser/exporter — pure functions, no side effects, no store or
 // component imports. This is the client-side counterpart to
-// crates/flproxy-core/src/har.rs: `parseHar`/`parseHarText` are the mirror
+// crates/hamsy-core/src/har.rs: `parseHar`/`parseHarText` are the mirror
 // of `import_har`/`parse_entry`, and `flowsToHar` mirrors `export_har`, so
-// flproxy-exported HARs round-trip through this module with the same
-// `_flproxy` extension (`matchedRules`, `modified`, `flowId`, `resourceType`).
+// hamsy-proxy-exported HARs round-trip through this module with the same
+// `_hamsy` extension (`matchedRules`, `modified`, `flowId`, `resourceType`).
 //
 // Unlike the Rust importer (which drops any entry missing a top-level
 // `response` object, and never reads HAR `timings` at all), this parser is
@@ -482,7 +482,7 @@ function parseEntry(entryValue: unknown, index: number): Flow | { skippedReason:
 
   const { scheme, host, port, path } = parseUrlParts(urlStr);
 
-  const ext = isRecord(entry._flproxy) ? entry._flproxy : undefined;
+  const ext = isRecord(entry._hamsy) ? entry._hamsy : undefined;
   const flowId = typeof ext?.flowId === "string" && isUuid(ext.flowId) ? ext.flowId : generateUuid();
   const matchedRules = Array.isArray(ext?.matchedRules) ? ext.matchedRules.filter((x): x is string => typeof x === "string") : [];
   const modified = typeof ext?.modified === "boolean" ? ext.modified : false;
@@ -761,7 +761,7 @@ function exportEntry(flow: Flow): unknown {
     },
     serverIPAddress: serverIp,
     connection,
-    _flproxy: {
+    _hamsy: {
       matchedRules: flow.matchedRules,
       modified: flow.modified,
       flowId: flow.id,
@@ -770,13 +770,13 @@ function exportEntry(flow: Flow): unknown {
   };
 }
 
-/** Exports `flows` as a HAR 1.2 document, mirroring `export_har`/`export_entry` in har.rs field-for-field (including the `_flproxy` extension). */
+/** Exports `flows` as a HAR 1.2 document, mirroring `export_har`/`export_entry` in har.rs field-for-field (including the `_hamsy` extension). */
 export function flowsToHar(flows: Flow[], creatorVersion = "0.1.0"): unknown {
   return {
     log: {
       version: "1.2",
-      creator: { name: "flproxy", version: creatorVersion },
-      browser: { name: "flproxy", version: creatorVersion },
+      creator: { name: "hamsy-proxy", version: creatorVersion },
+      browser: { name: "hamsy-proxy", version: creatorVersion },
       pages: [],
       entries: flows.map(exportEntry),
     },

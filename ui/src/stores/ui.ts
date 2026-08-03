@@ -44,7 +44,7 @@ export function dismissToast(id: string): void {
 // ---- generic persisted values ----
 
 function storageKey(key: string): string {
-  return `flproxy.${key}`;
+  return `hamsy.${key}`;
 }
 
 export function getPersisted<T>(key: string, fallback: T): T {

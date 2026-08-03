@@ -20,7 +20,7 @@ export interface StoredHarSession {
   creatorVersion: string;
 }
 
-const DB_NAME = "flproxy-har";
+const DB_NAME = "hamsy-har";
 const DB_VERSION = 1;
 const STORE_NAME = "sessions";
 const IMPORTED_AT_INDEX = "importedAt";
@@ -48,11 +48,11 @@ function openDb(): Promise<IDBDatabase | null> {
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => {
-        console.warn("flproxy: failed to open HAR IndexedDB", req.error);
+        console.warn("hamsy-proxy: failed to open HAR IndexedDB", req.error);
         resolve(null);
       };
     } catch (err) {
-      console.warn("flproxy: IndexedDB unavailable", err);
+      console.warn("hamsy-proxy: IndexedDB unavailable", err);
       resolve(null);
     }
   });
@@ -77,7 +77,7 @@ export async function putSession(s: StoredHarSession): Promise<void> {
       store.put(s);
     });
   } catch (err) {
-    console.warn(`flproxy: failed to persist HAR session ${s.id}`, err);
+    console.warn(`hamsy-proxy: failed to persist HAR session ${s.id}`, err);
   }
 }
 
@@ -92,7 +92,7 @@ export async function getSession(id: string): Promise<StoredHarSession | undefin
       req.onerror = () => reject(req.error);
     });
   } catch (err) {
-    console.warn(`flproxy: failed to load HAR session ${id}`, err);
+    console.warn(`hamsy-proxy: failed to load HAR session ${id}`, err);
     return undefined;
   }
 }
@@ -128,7 +128,7 @@ export async function listSessionMetas(): Promise<Omit<StoredHarSession, "flows"
       req.onerror = () => reject(req.error);
     });
   } catch (err) {
-    console.warn("flproxy: failed to list HAR sessions", err);
+    console.warn("hamsy-proxy: failed to list HAR sessions", err);
     return [];
   }
 }
@@ -141,7 +141,7 @@ export async function deleteSession(id: string): Promise<void> {
       store.delete(id);
     });
   } catch (err) {
-    console.warn(`flproxy: failed to delete HAR session ${id}`, err);
+    console.warn(`hamsy-proxy: failed to delete HAR session ${id}`, err);
   }
 }
 
@@ -153,6 +153,6 @@ export async function clearAllSessions(): Promise<void> {
       store.clear();
     });
   } catch (err) {
-    console.warn("flproxy: failed to clear HAR sessions", err);
+    console.warn("hamsy-proxy: failed to clear HAR sessions", err);
   }
 }

@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flproxy_api::ApiState;
-use flproxy_core::{
+use hamsy_api::ApiState;
+use hamsy_core::{
     BodyPayload, Flow, FlowStore, HeaderPair, RequestRecord, ResponseRecord, RulesStore, Settings,
 };
 
@@ -24,12 +24,12 @@ pub fn make_state() -> ApiState {
 /// Same as [`make_state`], with an explicit flow store capacity.
 pub fn make_state_with_capacity(capacity: usize) -> ApiState {
     let flows = Arc::new(FlowStore::new(capacity));
-    let rules = Arc::new(RulesStore::load(&temp_path("flproxy-api-test-rules")));
+    let rules = Arc::new(RulesStore::load(&temp_path("hamsy-api-test-rules")));
     ApiState::new_standalone(
         flows,
         rules,
         Settings::default(),
-        temp_path("flproxy-api-test-settings"),
+        temp_path("hamsy-api-test-settings"),
         "test",
     )
 }

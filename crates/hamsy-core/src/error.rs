@@ -1,8 +1,8 @@
-//! Shared error type for the `flproxy-core` crate.
+//! Shared error type for the `hamsy-core` crate.
 
 use thiserror::Error;
 
-/// Errors that can occur anywhere in `flproxy-core`.
+/// Errors that can occur anywhere in `hamsy-core`.
 ///
 /// All fallible operations that touch untrusted input (rule definitions,
 /// HAR files, settings files, HTTP bodies, regexes, globs, ...) return this

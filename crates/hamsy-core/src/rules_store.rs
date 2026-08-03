@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn temp_path() -> PathBuf {
-        std::env::temp_dir().join(format!("flproxy-rules-test-{}.json", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("hamsy-rules-test-{}.json", uuid::Uuid::new_v4()))
     }
 
     #[test]

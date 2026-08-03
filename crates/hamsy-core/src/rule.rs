@@ -1893,7 +1893,7 @@ mod tests {
 /// variant must serialize with exactly the camelCase keys the UI's
 /// `ui/src/lib/types.ts` (`Action` union) declares, must round-trip through
 /// serialize/deserialize, and must still accept the old (buggy) snake_case
-/// field spelling so rules already saved to `~/.flproxy/rules.json` keep
+/// field spelling so rules already saved to `~/.hamsy/rules.json` keep
 /// loading.
 #[cfg(test)]
 mod action_wire_format_tests {

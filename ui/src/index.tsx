@@ -14,7 +14,7 @@ import Setup from "./pages/Setup";
 
 const root = document.getElementById("root");
 if (!root) {
-  throw new Error("flproxy: #root element not found in index.html");
+  throw new Error("hamsy-proxy: #root element not found in index.html");
 }
 
 render(

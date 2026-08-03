@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use hyper::{Request, Response};
 
-use flproxy_core::{Action, BodyKind, Matcher, PayloadEncoding, Settings};
+use hamsy_core::{Action, BodyKind, Matcher, PayloadEncoding, Settings};
 
 /// 1. Plain HTTP GET through the proxy (absolute-form request, non-`CONNECT`).
 #[tokio::test]
@@ -362,7 +362,7 @@ async fn oversized_response_truncated_in_flow_but_delivered_whole() {
 }
 
 /// 10. A passthrough host is NOT intercepted: the client validates the
-/// origin's own certificate through a raw tunnel, not flproxy's.
+/// origin's own certificate through a raw tunnel, not hamsy-proxy's.
 #[tokio::test]
 async fn passthrough_host_is_not_intercepted() {
     let (origin_addr, origin_cert_der) =
@@ -397,5 +397,5 @@ async fn passthrough_host_is_not_intercepted() {
 
     let flow = common::wait_for_terminal_flow(&proxy).await;
     assert_eq!(flow.method, "CONNECT");
-    assert_eq!(flow.state, flproxy_core::FlowState::Complete);
+    assert_eq!(flow.state, hamsy_core::FlowState::Complete);
 }

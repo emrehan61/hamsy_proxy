@@ -1,5 +1,5 @@
 //! Cross-platform control of the operating system's HTTP/HTTPS proxy
-//! settings, so flproxy can point the whole machine at itself.
+//! settings, so hamsy-proxy can point the whole machine at itself.
 //!
 //! Every public function here is infallible in the panic sense: failures
 //! are always reported as `Err(String)`, never a panic.

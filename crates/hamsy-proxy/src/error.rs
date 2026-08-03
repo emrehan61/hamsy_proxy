@@ -1,8 +1,8 @@
-//! Shared error type for the `flproxy-proxy` crate.
+//! Shared error type for the `hamsy-proxy` crate.
 
 use thiserror::Error;
 
-/// Errors that can occur anywhere in `flproxy-proxy`.
+/// Errors that can occur anywhere in `hamsy-proxy`.
 ///
 /// Messages are kept human-readable since several variants (notably
 /// [`ProxyError::UpstreamConnect`] and [`ProxyError::InvalidTarget`]) are
@@ -21,9 +21,9 @@ pub enum ProxyError {
     #[error("tls error: {0}")]
     Tls(#[from] rustls::Error),
 
-    /// Wraps an `flproxy-core` failure (rule/body/settings logic).
+    /// Wraps an `hamsy-core` failure (rule/body/settings logic).
     #[error("core error: {0}")]
-    Core(#[from] flproxy_core::CoreError),
+    Core(#[from] hamsy_core::CoreError),
 
     /// An operation exceeded its allotted time budget.
     #[error("timeout: {0}")]

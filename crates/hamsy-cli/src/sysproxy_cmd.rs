@@ -1,15 +1,15 @@
-//! `flproxy proxy on|off|status`: OS system-proxy control.
+//! `hamsy proxy on|off|status`: OS system-proxy control.
 //!
 //! Operates directly on the on-disk `Settings` (for the configured proxy
-//! port) via [`flproxy_api::sysproxy`); there is no IPC with a running
-//! `flproxy run` process.
+//! port) via [`hamsy_api::sysproxy`); there is no IPC with a running
+//! `hamsy run` process.
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::resolve_data_dir;
 
-/// `flproxy proxy` subcommands.
+/// `hamsy proxy` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum ProxyCommand {
     /// Enable the OS system proxy, pointed at this instance's configured port.
@@ -35,9 +35,9 @@ const SYSTEM_PROXY_BYPASS: &[&str] = &["localhost", "127.0.0.1", "::1", "*.local
 
 fn on() -> Result<()> {
     let data_dir = resolve_data_dir(None);
-    let settings = flproxy_core::Settings::load(&data_dir.join("settings.json"));
+    let settings = hamsy_core::Settings::load(&data_dir.join("settings.json"));
     let bypass: Vec<String> = SYSTEM_PROXY_BYPASS.iter().map(|s| s.to_string()).collect();
-    flproxy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", settings.proxy_port, &bypass)
+    hamsy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", settings.proxy_port, &bypass)
         .map_err(anyhow::Error::msg)
         .context("failed to enable the system proxy")?;
     println!("System proxy enabled: 127.0.0.1:{}", settings.proxy_port);
@@ -46,7 +46,7 @@ fn on() -> Result<()> {
 
 fn off() -> Result<()> {
     let data_dir = resolve_data_dir(None);
-    flproxy_api::sysproxy_state::release(&data_dir)
+    hamsy_api::sysproxy_state::release(&data_dir)
         .map_err(anyhow::Error::msg)
         .context("failed to disable the system proxy")?;
     println!("System proxy disabled.");
@@ -54,7 +54,7 @@ fn off() -> Result<()> {
 }
 
 fn status() -> Result<()> {
-    match flproxy_api::sysproxy::status() {
+    match hamsy_api::sysproxy::status() {
         Ok(true) => println!("System proxy is currently enabled."),
         Ok(false) => println!("System proxy is currently disabled."),
         Err(e) => println!("Could not determine system proxy status: {e}"),

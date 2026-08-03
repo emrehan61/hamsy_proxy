@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn svg_contains_viewbox_and_crispedges() {
-        let out = svg("http://192.168.1.10:9081/cert/flproxy-ca.crt");
+        let out = svg("http://192.168.1.10:9081/cert/hamsy-ca.crt");
         assert!(out.contains("viewBox"));
         assert!(out.contains("shape-rendering=\"crispEdges\""));
         assert!(out.starts_with("<svg"));

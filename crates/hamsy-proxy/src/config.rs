@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use flproxy_core::{RuleSet, RulesStore, ServerEvent, Settings};
+use hamsy_core::{RuleSet, RulesStore, ServerEvent, Settings};
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
@@ -25,7 +25,7 @@ pub struct ProxyContext {
     /// Persisted rules plus a cached compiled [`RuleSet`].
     pub rules: Arc<RulesStore>,
     /// In-memory ring buffer of captured flows.
-    pub flows: Arc<flproxy_core::FlowStore>,
+    pub flows: Arc<hamsy_core::FlowStore>,
     /// Broadcast channel for pushing live updates to API/UI subscribers.
     pub events: broadcast::Sender<ServerEvent>,
     /// Certificate authority used to mint per-host MITM leaf certificates.
@@ -46,7 +46,7 @@ impl ProxyContext {
         self.settings.read().max_body_bytes
     }
 
-    /// Returns true if `host` should be captured (a [`Flow`](flproxy_core::Flow)
+    /// Returns true if `host` should be captured (a [`Flow`](hamsy_core::Flow)
     /// created and rules applied), given the current include/exclude globs
     /// and pause state.
     pub fn should_capture(&self, host: &str) -> bool {

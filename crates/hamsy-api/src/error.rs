@@ -79,10 +79,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<flproxy_core::CoreError> for ApiError {
-    fn from(err: flproxy_core::CoreError) -> Self {
+impl From<hamsy_core::CoreError> for ApiError {
+    fn from(err: hamsy_core::CoreError) -> Self {
         match err {
-            flproxy_core::CoreError::NotFound => ApiError::NotFound("not found".to_string()),
+            hamsy_core::CoreError::NotFound => ApiError::NotFound("not found".to_string()),
             other => ApiError::Internal(other.to_string()),
         }
     }

@@ -1,10 +1,10 @@
 //! HAR 1.2 export/import.
 //!
 //! See <http://www.softwareishard.com/blog/har-12-spec/> for the format.
-//! Exported entries carry an `_flproxy` extension object
-//! (`{matchedRules, modified, flowId, resourceType}`) so flproxy-exported
+//! Exported entries carry an `_hamsy` extension object
+//! (`{matchedRules, modified, flowId, resourceType}`) so hamsy-proxy-exported
 //! HAR files round-trip losslessly through [`import_har`]; HAR files from
-//! other tools (which lack that extension) still import, with flproxy's
+//! other tools (which lack that extension) still import, with hamsy-proxy's
 //! metadata falling back to sensible defaults.
 
 use serde_json::Value;
@@ -21,8 +21,8 @@ pub fn export_har(flows: &[Flow], creator_version: &str) -> Value {
     serde_json::json!({
         "log": {
             "version": "1.2",
-            "creator": {"name": "flproxy", "version": creator_version},
-            "browser": {"name": "flproxy", "version": creator_version},
+            "creator": {"name": "hamsy-proxy", "version": creator_version},
+            "browser": {"name": "hamsy-proxy", "version": creator_version},
             "pages": [],
             "entries": entries,
         }
@@ -233,7 +233,7 @@ fn export_entry(flow: &Flow) -> Value {
         },
         "serverIPAddress": server_ip,
         "connection": connection,
-        "_flproxy": {
+        "_hamsy": {
             "matchedRules": flow.summary.matched_rules,
             "modified": flow.summary.modified,
             "flowId": flow.summary.id.to_string(),
@@ -363,7 +363,7 @@ fn parse_entry(entry: &Value, seq: u64) -> Option<Flow> {
         })
         .unwrap_or_default();
 
-    let ext = entry.get("_flproxy");
+    let ext = entry.get("_hamsy");
     let flow_id = ext
         .and_then(|e| e.get("flowId"))
         .and_then(|v| v.as_str())
@@ -511,7 +511,7 @@ mod tests {
         let flow = sample_flow();
         let har = export_har(std::slice::from_ref(&flow), "0.1.0");
         assert_eq!(har["log"]["version"], "1.2");
-        assert_eq!(har["log"]["creator"]["name"], "flproxy");
+        assert_eq!(har["log"]["creator"]["name"], "hamsy-proxy");
         let entries = har["log"]["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["request"]["method"], "POST");

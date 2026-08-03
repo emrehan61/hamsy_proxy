@@ -1,12 +1,12 @@
 //! Waits for whichever OS signal/event means "stop now", reporting which
-//! one fired. Every signal that can plausibly reach flproxy while it's
+//! one fired. Every signal that can plausibly reach hamsy-proxy while it's
 //! holding the system proxy pointed at itself is caught here, not just
 //! Ctrl-C -- anything uncaught leaves the machine unable to reach the
 //! network until a human notices and fixes the OS proxy settings by
 //! hand. `SIGKILL` (and losing power) is the one thing genuinely
 //! impossible to catch from userspace; that case is instead handled by
-//! the on-disk marker file recovered the *next* time `flproxy` starts
-//! (see `flproxy_api::sysproxy_state::recover_stale`).
+//! the on-disk marker file recovered the *next* time `hamsy` starts
+//! (see `hamsy_api::sysproxy_state::recover_stale`).
 
 use std::fmt;
 

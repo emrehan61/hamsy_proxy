@@ -1,6 +1,6 @@
-//! The `run` command: wires the proxy engine ([`flproxy_proxy`]) and the
-//! REST/WebSocket API + web UI server ([`flproxy_api`]) together into one
-//! running flproxy instance, sharing a single [`ProxyContext`] between them.
+//! The `run` command: wires the proxy engine ([`hamsy_proxy`]) and the
+//! REST/WebSocket API + web UI server ([`hamsy_api`]) together into one
+//! running hamsy-proxy instance, sharing a single [`ProxyContext`] between them.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,16 +10,16 @@ use clap::Args;
 use parking_lot::RwLock;
 use tokio::net::TcpListener;
 
-use flproxy_core::{FlowStore, RulesStore, Settings};
-use flproxy_proxy::upstream::Connector;
-use flproxy_proxy::{CertAuthority, ProxyContext, ProxyServer};
+use hamsy_core::{FlowStore, RulesStore, Settings};
+use hamsy_proxy::upstream::Connector;
+use hamsy_proxy::{CertAuthority, ProxyContext, ProxyServer};
 
 use crate::hooks::{RealCertHook, RealReplayHook};
 use crate::resolve_data_dir;
 use crate::shutdown;
 
-/// Options for `flproxy run` (and the bare `flproxy` invocation, which is
-/// equivalent to `flproxy run` with whatever flags were given at the top
+/// Options for `hamsy run` (and the bare `hamsy` invocation, which is
+/// equivalent to `hamsy run` with whatever flags were given at the top
 /// level).
 #[derive(Args, Debug, Clone, Default)]
 pub struct RunArgs {
@@ -32,7 +32,7 @@ pub struct RunArgs {
     /// Override the address both servers bind to.
     #[arg(short = 'b', long = "bind")]
     pub bind: Option<String>,
-    /// Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`).
+    /// Override the hamsy-proxy data directory (default: `$HAMSY_HOME` or `~/.hamsy`).
     #[arg(long = "data-dir")]
     pub data_dir: Option<PathBuf>,
     /// Force-enable the OS system proxy on start, restoring its prior configuration on
@@ -55,7 +55,7 @@ pub struct RunArgs {
     pub no_https: bool,
 }
 
-/// Bypass list applied when flproxy enables the OS system proxy: traffic to
+/// Bypass list applied when hamsy-proxy enables the OS system proxy: traffic to
 /// these hosts is left to connect directly rather than through the proxy.
 const SYSTEM_PROXY_BYPASS: &[&str] = &["localhost", "127.0.0.1", "::1", "*.local"];
 
@@ -92,7 +92,7 @@ impl SystemProxyGuard {
         }
         let data_dir = self.data_dir.clone();
         match tokio::task::spawn_blocking(move || {
-            flproxy_api::sysproxy_state::restore_if_marked(&data_dir)
+            hamsy_api::sysproxy_state::restore_if_marked(&data_dir)
         })
         .await
         {
@@ -113,7 +113,7 @@ impl Drop for SystemProxyGuard {
         if self.restored.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Err(err) = flproxy_api::sysproxy_state::restore_if_marked(&self.data_dir) {
+        if let Err(err) = hamsy_api::sysproxy_state::restore_if_marked(&self.data_dir) {
             tracing::warn!(%err, "failed to restore the system proxy while unwinding");
         }
     }
@@ -126,11 +126,11 @@ pub async fn run(args: RunArgs) -> Result<()> {
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("failed to create data dir {}", data_dir.display()))?;
 
-    // A previous flproxy process may have died (crash/hard kill) without
+    // A previous hamsy-proxy process may have died (crash/hard kill) without
     // running its own shutdown path, leaving the OS system proxy pointed
     // at a now-dead instance. This is the earliest point any code can
     // notice and fix that -- see `sysproxy_state`'s module doc.
-    flproxy_api::sysproxy_state::recover_stale(&data_dir);
+    hamsy_api::sysproxy_state::recover_stale(&data_dir);
 
     // Registered as early as possible so signal handlers are live for as
     // much of this process's lifetime as practical.
@@ -164,7 +164,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let max_flows = settings.max_flows;
 
     // Build the shared handles once, mirroring
-    // `flproxy-proxy/tests/common/mod.rs::spawn_proxy_trusting`.
+    // `hamsy-proxy/tests/common/mod.rs::spawn_proxy_trusting`.
     let settings = Arc::new(RwLock::new(settings));
     let flows = Arc::new(FlowStore::new(max_flows));
     let rules = Arc::new(RulesStore::load(&data_dir.join("rules.json")));
@@ -185,7 +185,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
 
     let replay_hook = Arc::new(RealReplayHook::new(ctx.clone()));
     let cert_hook = Arc::new(RealCertHook::new(ca.clone()));
-    let api_state = flproxy_api::ApiState::new(
+    let api_state = hamsy_api::ApiState::new(
         flows.clone(),
         rules.clone(),
         settings.clone(),
@@ -225,7 +225,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let api_task = tokio::spawn({
         let shutdown = shutdown_future(shutdown_rx.clone());
         async move {
-            let router = flproxy_api::router(api_state);
+            let router = hamsy_api::router(api_state);
             if let Err(err) = axum::serve(ui_listener, router)
                 .with_graceful_shutdown(shutdown)
                 .await
@@ -235,7 +235,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         }
     });
 
-    let lan_ip = flproxy_api::lan_addresses().into_iter().next();
+    let lan_ip = hamsy_api::lan_addresses().into_iter().next();
     println!(
         "{}",
         format_banner(
@@ -266,7 +266,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     };
     if system_proxy_requested {
         let bypass: Vec<String> = SYSTEM_PROXY_BYPASS.iter().map(|s| s.to_string()).collect();
-        match flproxy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", proxy_port, &bypass) {
+        match hamsy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", proxy_port, &bypass) {
             Ok(()) => {
                 tracing::info!("enabled the OS system proxy");
                 println!("  System proxy enabled (127.0.0.1:{proxy_port}).");
@@ -291,7 +291,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         Some(Ok(false)) => {} // this run never enabled it; nothing to restore
         Some(Err(err)) => {
             tracing::warn!(%err, "failed to restore the OS system proxy on shutdown");
-            println!("  Warning: failed to restore the system proxy automatically ({err}); run `flproxy proxy off` to fix it manually.");
+            println!("  Warning: failed to restore the system proxy automatically ({err}); run `hamsy proxy off` to fix it manually.");
         }
         None => {} // already restored (shouldn't happen at this call site, it's the first call)
     }
@@ -315,7 +315,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         }
     }
 
-    tracing::info!("flproxy stopped, goodbye");
+    tracing::info!("hamsy stopped, goodbye");
     Ok(())
 }
 
@@ -335,12 +335,12 @@ fn format_banner(
     fingerprint: &str,
 ) -> String {
     let mut out = String::new();
-    out.push_str(&format!("\n  flproxy {version}\n\n"));
+    out.push_str(&format!("\n  hamsy {version}\n\n"));
     out.push_str(&format!("  Proxy      http://127.0.0.1:{proxy_port}\n"));
     out.push_str(&format!("  Web UI     http://127.0.0.1:{ui_port}\n"));
     let display_ip = lan_ip.unwrap_or("127.0.0.1");
     out.push_str(&format!(
-        "  CA cert    http://{display_ip}:{ui_port}/cert/flproxy-ca.crt\n"
+        "  CA cert    http://{display_ip}:{ui_port}/cert/hamsy-ca.crt\n"
     ));
     out.push_str(&format!("  SHA-256    {fingerprint}\n\n"));
     match lan_ip {
@@ -366,9 +366,9 @@ mod tests {
     #[test]
     fn banner_includes_lan_ip_when_present() {
         let banner = format_banner("0.1.0", 9080, 9081, Some("192.168.1.42"), "AB:CD");
-        assert!(banner.contains("flproxy 0.1.0"));
+        assert!(banner.contains("hamsy 0.1.0"));
         assert!(banner.contains("http://127.0.0.1:9080"));
-        assert!(banner.contains("http://192.168.1.42:9081/cert/flproxy-ca.crt"));
+        assert!(banner.contains("http://192.168.1.42:9081/cert/hamsy-ca.crt"));
         assert!(banner.contains("192.168.1.42:9080"));
         assert!(banner.contains("AB:CD"));
     }
@@ -377,7 +377,7 @@ mod tests {
     fn banner_falls_back_without_lan_ip() {
         let banner = format_banner("0.1.0", 9080, 9081, None, "AB:CD");
         assert!(banner.contains("No LAN address detected"));
-        assert!(banner.contains("http://127.0.0.1:9081/cert/flproxy-ca.crt"));
+        assert!(banner.contains("http://127.0.0.1:9081/cert/hamsy-ca.crt"));
         assert!(!banner.contains("point their proxy"));
     }
 }

@@ -37,7 +37,7 @@ function curlSnippet(host: string, port: number): string {
   return `export https_proxy=http://${host}:${port}\nexport http_proxy=http://${host}:${port}`;
 }
 
-const LINUX_TRUST_SNIPPET = "sudo cp flproxy-ca.crt /usr/local/share/ca-certificates/\nsudo update-ca-certificates";
+const LINUX_TRUST_SNIPPET = "sudo cp hamsy-ca.crt /usr/local/share/ca-certificates/\nsudo update-ca-certificates";
 
 async function copy(text: string, label: string): Promise<void> {
   try {
@@ -81,7 +81,7 @@ const Setup: Component = () => {
       );
       await refetchState();
     } catch {
-      setCheckResult("Could not reach flproxy's backend — is it still running?");
+      setCheckResult("Could not reach hamsy-proxy's backend — is it still running?");
     } finally {
       setChecking(false);
     }
@@ -90,7 +90,7 @@ const Setup: Component = () => {
   return (
     <div class="setup-page">
       <div class="setup-page__intro">
-        <h1>Set up flproxy</h1>
+        <h1>Set up hamsy-proxy</h1>
         <p>Point a device at this proxy, install its certificate, then verify traffic shows up.</p>
       </div>
 
@@ -99,7 +99,7 @@ const Setup: Component = () => {
         fallback={
           <div class="setup-page__loading">
             <Show when={setupInfo.error} fallback="Loading setup info…">
-              <p>Could not reach flproxy's backend.</p>
+              <p>Could not reach hamsy-proxy's backend.</p>
               <Button variant="default" size="sm" onClick={() => void refetchSetupInfo()}>
                 Retry
               </Button>
@@ -192,10 +192,10 @@ const Setup: Component = () => {
                   </Button>
                 </div>
                 <div class="setup-page__downloads">
-                  <Button variant="default" size="sm" icon="download" onClick={() => triggerDownload("/cert/flproxy-ca.pem", "flproxy-ca.pem")}>
+                  <Button variant="default" size="sm" icon="download" onClick={() => triggerDownload("/cert/hamsy-ca.pem", "hamsy-ca.pem")}>
                     Download .pem
                   </Button>
-                  <Button variant="default" size="sm" icon="download" onClick={() => triggerDownload("/cert/flproxy-ca.crt", "flproxy-ca.crt")}>
+                  <Button variant="default" size="sm" icon="download" onClick={() => triggerDownload("/cert/hamsy-ca.crt", "hamsy-ca.crt")}>
                     Download .crt
                   </Button>
                 </div>
@@ -209,12 +209,12 @@ const Setup: Component = () => {
                   <Show when={trustTab() === "macos"}>
                     <ol class="setup-instructions">
                       <li>Double-click the downloaded certificate to open Keychain Access.</li>
-                      <li>Find "flproxy" under System (or login) keychain.</li>
+                      <li>Find "hamsy-proxy CA" under System (or login) keychain.</li>
                       <li>Double-click it → Trust → set "When using this certificate" to Always Trust.</li>
                     </ol>
                   </Show>
                   <Show when={trustTab() === "windows"}>
-                    <pre class="setup-page__code mono">certutil -addstore -f root flproxy-ca.crt</pre>
+                    <pre class="setup-page__code mono">certutil -addstore -f root hamsy-ca.crt</pre>
                     <p class="setup-page__note">Run from an elevated (Administrator) command prompt.</p>
                   </Show>
                   <Show when={trustTab() === "linux"}>
@@ -227,7 +227,7 @@ const Setup: Component = () => {
                       </li>
                       <li>Settings → Profile Downloaded → Install (top right) → Install.</li>
                       <li class="setup-instructions__emphasis">
-                        Then go to Settings → General → About → Certificate Trust Settings → enable full trust for the flproxy
+                        Then go to Settings → General → About → Certificate Trust Settings → enable full trust for the hamsy-proxy
                         root certificate. Skipping this step is the #1 reason HTTPS interception silently fails on iOS.
                       </li>
                     </ol>

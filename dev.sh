@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# dev.sh — run flproxy locally for development: the Rust backend
-# (cargo run -p flproxy-cli) and/or the Vite UI dev server, together or
+# dev.sh — run hamsy-proxy locally for development: the Rust backend
+# (cargo run -p hamsy-cli) and/or the Vite UI dev server, together or
 # separately, with one command.
 #
 # Bash-3.2-compatible on purpose (macOS ships bash 3.2 as /bin/bash): no
@@ -61,23 +61,23 @@ usage() {
   cat <<'EOF'
 Usage: dev.sh [both|build|backend|ui] [--help]
 
-Runs flproxy locally for development, from this checkout, no install
+Runs hamsy-proxy locally for development, from this checkout, no install
 needed. With no argument (or "both"), runs the backend and the UI dev
 server concurrently.
 
 Modes:
-  both      (default) cargo run -p flproxy-cli  +  cd ui && pnpm dev
+  both      (default) cargo run -p hamsy-cli  +  cd ui && pnpm dev
             Backend: proxy on http://127.0.0.1:9080, web UI/API on
             http://127.0.0.1:9081. UI dev server (hot reload) on
             http://localhost:5173, proxying /api and /cert to 9081
             (see ui/vite.config.ts). Open http://localhost:5173.
 
-  build     cd ui && pnpm build, then cargo run -p flproxy-cli. The
+  build     cd ui && pnpm build, then cargo run -p hamsy-cli. The
             binary serves the built UI straight off ./ui/dist (checked
             before the packaged placeholder page) — one server, no Vite.
             Open http://127.0.0.1:9081.
 
-  backend   Just cargo run -p flproxy-cli (proxy on 9080, UI/API on
+  backend   Just cargo run -p hamsy-cli (proxy on 9080, UI/API on
             9081). Serves ./ui/dist if it's already built, else a
             placeholder page. Pair with `./dev.sh ui` for hot reload.
 
@@ -88,10 +88,10 @@ Modes:
 Options:
   --help, -h   Show this help and exit
 
-Every flproxy-cli run above passes --manual, so your OS-wide proxy
-settings are left untouched — flproxy binds 127.0.0.1:9080 same as
+Every hamsy-cli run above passes --manual, so your OS-wide proxy
+settings are left untouched — hamsy-proxy binds 127.0.0.1:9080 same as
 always, it just won't ask the system to route traffic through it.
-Set FLPROXY_DEV_SYSTEM_PROXY=1 to run with --system-proxy instead, if
+Set HAMSY_DEV_SYSTEM_PROXY=1 to run with --system-proxy instead, if
 you actually need to test the real system-proxy behavior.
 
 Ctrl-C stops everything dev.sh started, cleanly — no leftover cargo/vite/
@@ -157,25 +157,25 @@ check_port() {
 }
 
 # ---------------------------------------------------------------------------
-# System-proxy flag for dev runs — flproxy now flips on the OS-wide system
+# System-proxy flag for dev runs — hamsy-proxy now flips on the OS-wide system
 # proxy by default. Dev servers restart constantly (edit, crash, Ctrl-C,
 # repeat), and if a dev run left the machine's proxy setting pointed at
 # 127.0.0.1:9080 and then died, every app on the box would silently lose
 # network access until someone noticed and fixed it by hand. So every
-# flproxy-cli invocation below passes --manual, which leaves the OS proxy
+# hamsy-cli invocation below passes --manual, which leaves the OS proxy
 # alone entirely.
 #
-# Set FLPROXY_DEV_SYSTEM_PROXY=1 to opt back into the real system-wide
+# Set HAMSY_DEV_SYSTEM_PROXY=1 to opt back into the real system-wide
 # behaviour anyway — e.g. to actually exercise the macOS/Windows/Linux
 # proxy-setting code during development. This swaps --manual for
 # --system-proxy (belt-and-braces: forces the system proxy on, same as
 # the new default, but explicit here since --manual is what it's replacing).
 # ---------------------------------------------------------------------------
 
-FLPROXY_FLAG="--manual"
-if [ "${FLPROXY_DEV_SYSTEM_PROXY:-0}" = "1" ]; then
-  FLPROXY_FLAG="--system-proxy"
-  warn "FLPROXY_DEV_SYSTEM_PROXY=1 — this run will change your OS-wide proxy settings."
+HAMSY_FLAG="--manual"
+if [ "${HAMSY_DEV_SYSTEM_PROXY:-0}" = "1" ]; then
+  HAMSY_FLAG="--system-proxy"
+  warn "HAMSY_DEV_SYSTEM_PROXY=1 — this run will change your OS-wide proxy settings."
 fi
 
 # ---------------------------------------------------------------------------
@@ -188,12 +188,12 @@ run_backend() {
   require_cargo
   check_port 9080 "proxy"
   check_port 9081 "web UI/API"
-  info "Starting backend only: cargo run -p flproxy-cli -- $FLPROXY_FLAG"
+  info "Starting backend only: cargo run -p hamsy-cli -- $HAMSY_FLAG"
   info "Proxy   http://127.0.0.1:9080"
   info "Web UI  http://127.0.0.1:9081"
   echo
   cd "$ROOT_DIR"
-  exec cargo run -p flproxy-cli -- "$FLPROXY_FLAG"
+  exec cargo run -p hamsy-cli -- "$HAMSY_FLAG"
 }
 
 run_ui() {
@@ -215,11 +215,11 @@ run_build() {
   check_port 9081 "web UI/API"
   info "Building UI: cd ui && pnpm build"
   (cd "$ROOT_DIR/ui" && pnpm build)
-  info "Starting backend, serving the built UI off ./ui/dist: cargo run -p flproxy-cli -- $FLPROXY_FLAG"
+  info "Starting backend, serving the built UI off ./ui/dist: cargo run -p hamsy-cli -- $HAMSY_FLAG"
   info "Open http://127.0.0.1:9081"
   echo
   cd "$ROOT_DIR"
-  exec cargo run -p flproxy-cli -- "$FLPROXY_FLAG"
+  exec cargo run -p hamsy-cli -- "$HAMSY_FLAG"
 }
 
 # ---------------------------------------------------------------------------
@@ -320,7 +320,7 @@ fi
 
 # Job control on, so each job backgrounded below gets its own process
 # group (pgid == its own pid). That's what lets cleanup() below kill an
-# entire tree — cargo plus the flproxy child it spawns, or pnpm plus the
+# entire tree — cargo plus the hamsy child it spawns, or pnpm plus the
 # vite/node process it spawns — with one `kill -- -PID`, instead of
 # leaving grandchildren orphaned and still listening on 9080/9081/5173.
 set -m
@@ -331,7 +331,7 @@ trap on_term TERM
 
 (
   cd "$ROOT_DIR"
-  cargo run -p flproxy-cli -- "$FLPROXY_FLAG" 2>&1 | while IFS= read -r line; do
+  cargo run -p hamsy-cli -- "$HAMSY_FLAG" 2>&1 | while IFS= read -r line; do
     printf '%s %s\n' "$API_TAG" "$line"
   done
 ) &

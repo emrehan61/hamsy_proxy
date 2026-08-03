@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
-use flproxy_core::{
+use hamsy_core::{
     BodyPayload, Flow, FlowId, FlowState, RequestRecord, ResponseRecord, ServerEvent, WsDirection,
     WsMessage,
 };

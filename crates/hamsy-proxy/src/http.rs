@@ -4,7 +4,7 @@
 //! for plain absolute-form HTTP proxying (`server.rs`) and for MITM'd
 //! relative-form requests arriving over a terminated TLS connection
 //! (`connect.rs`). It decides whether to capture/record the request at all,
-//! runs `flproxy-core` rules against it, dispatches to the upstream server,
+//! runs `hamsy-core` rules against it, dispatches to the upstream server,
 //! and records the resulting [`Flow`].
 //!
 //! # The body-buffering decision
@@ -23,7 +23,7 @@
 //! regardless of whether that particular rule would even match this
 //! request. This trades a bit of unnecessary buffering (when some unrelated
 //! rule elsewhere has a body condition) for the guarantee that a mutation is
-//! never silently skipped, without needing to leave `flproxy-core` or
+//! never silently skipped, without needing to leave `hamsy-core` or
 //! duplicate its matching semantics.
 //!
 //! When not buffering, the body is streamed through a [`crate::tee::TeeBody`]
@@ -44,7 +44,7 @@ use parking_lot::Mutex;
 use tokio::time::Duration;
 use uuid::Uuid;
 
-use flproxy_core::{
+use hamsy_core::{
     Action, BodyKind, BodyPayload, Flow, FlowId, FlowState, HeaderPair, MockedResponse, RequestCtx,
     RequestRecord, ResourceType, ResponseCtx, ResponseOutcome, ResponseRecord, Rule, RuleSet,
     TlsInfo,
@@ -346,7 +346,7 @@ fn payload_from_capture(
     max_bytes: usize,
 ) -> BodyPayload {
     let mut payload =
-        flproxy_core::to_payload(&captured, content_type, content_encoding, max_bytes);
+        hamsy_core::to_payload(&captured, content_type, content_encoding, max_bytes);
     if capture_truncated {
         payload.truncated = true;
         payload.size = payload.size.max(total);
@@ -424,7 +424,7 @@ pub(crate) async fn dispatch(
     outbound: Request<BoxBody>,
 ) -> Result<(
     Response<ReleaseOnComplete<Incoming>>,
-    flproxy_core::Timings,
+    hamsy_core::Timings,
     Option<String>,
 )> {
     let host = url
@@ -465,7 +465,7 @@ pub(crate) async fn dispatch(
     // "request fully sent" and "response headers received", so `send`
     // (time spent uploading the request) can't be measured separately here;
     // the whole span is attributed to `wait`. Documented simplification.
-    let timings = flproxy_core::Timings {
+    let timings = hamsy_core::Timings {
         blocked: 0.0,
         dns: -1.0,
         connect: connect_ms,
@@ -580,7 +580,7 @@ async fn handle_captured_request(
         http_version: http_version_str.clone(),
         headers: req_headers.clone(),
         body: match &req_body_plan {
-            ReqBody::Buffered(b) => flproxy_core::to_payload(
+            ReqBody::Buffered(b) => hamsy_core::to_payload(
                 b,
                 content_type.as_deref(),
                 content_encoding.as_deref(),
@@ -609,7 +609,7 @@ async fn handle_captured_request(
     flow.summary.resource_type = resource_type;
     flow.tls = conn.tls.clone();
     ctx.flows.insert(flow.clone());
-    let _ = ctx.events.send(flproxy_core::ServerEvent::Flow {
+    let _ = ctx.events.send(hamsy_core::ServerEvent::Flow {
         flow: flow.summary(),
     });
 
@@ -634,7 +634,7 @@ async fn handle_captured_request(
             status_text: "Forbidden".to_string(),
             http_version: http_version_str.clone(),
             headers: vec![HeaderPair::new("Content-Type", "application/json")],
-            body: flproxy_core::to_payload(
+            body: hamsy_core::to_payload(
                 body_bytes.as_bytes(),
                 Some("application/json"),
                 None,
@@ -651,7 +651,7 @@ async fn handle_captured_request(
         if let Some(summary) = summary {
             let _ = ctx
                 .events
-                .send(flproxy_core::ServerEvent::Flow { flow: summary });
+                .send(hamsy_core::ServerEvent::Flow { flow: summary });
         }
         return error_response(StatusCode::FORBIDDEN, &reason);
     }
@@ -747,7 +747,7 @@ async fn handle_captured_request(
                         }
                     }
                 }) {
-                    let _ = events.send(flproxy_core::ServerEvent::Flow { flow: summary });
+                    let _ = events.send(hamsy_core::ServerEvent::Flow { flow: summary });
                 }
             };
             crate::box_body(FinalizeBody::new(outbound_body, finalize))
@@ -818,7 +818,7 @@ async fn handle_captured_request(
     }) {
         let _ = ctx
             .events
-            .send(flproxy_core::ServerEvent::Flow { flow: summary });
+            .send(hamsy_core::ServerEvent::Flow { flow: summary });
     }
 
     // ----- Step 5: response phase -----
@@ -857,7 +857,7 @@ async fn handle_captured_request(
             status_text: status_text.clone(),
             http_version: resp_http_version.clone(),
             headers: resp_headers.clone(),
-            body: flproxy_core::to_payload(
+            body: hamsy_core::to_payload(
                 &bytes,
                 resp_content_type.as_deref(),
                 resp_content_encoding.as_deref(),
@@ -905,7 +905,7 @@ async fn handle_captured_request(
                 .to_string(),
             http_version: resp_http_version,
             headers: final_headers.clone(),
-            body: flproxy_core::to_payload(
+            body: hamsy_core::to_payload(
                 &final_body_bytes,
                 resp_content_type.as_deref(),
                 None,
@@ -925,7 +925,7 @@ async fn handle_captured_request(
         }) {
             let _ = ctx
                 .events
-                .send(flproxy_core::ServerEvent::Flow { flow: summary });
+                .send(hamsy_core::ServerEvent::Flow { flow: summary });
         }
 
         let mut response_body: BoxBody = crate::full_body(final_body_bytes);
@@ -994,7 +994,7 @@ async fn handle_captured_request(
             f.summary.matched_rules = matched_rules.clone();
             f.summary.modified = modified;
         }) {
-            let _ = events_for_finalize.send(flproxy_core::ServerEvent::Flow { flow: summary });
+            let _ = events_for_finalize.send(hamsy_core::ServerEvent::Flow { flow: summary });
         }
     };
     let final_body = crate::box_body(FinalizeBody::new(tee_body, finalize));
@@ -1024,7 +1024,7 @@ async fn finalize_error(
     }) {
         let _ = ctx
             .events
-            .send(flproxy_core::ServerEvent::Flow { flow: summary });
+            .send(hamsy_core::ServerEvent::Flow { flow: summary });
     }
     error_response(StatusCode::BAD_GATEWAY, &message)
 }
@@ -1052,7 +1052,7 @@ async fn respond_mocked(
         status_text,
         http_version,
         headers: mocked.headers.clone(),
-        body: flproxy_core::to_payload(&mocked.body, content_type.as_deref(), None, max_body_bytes),
+        body: hamsy_core::to_payload(&mocked.body, content_type.as_deref(), None, max_body_bytes),
     };
     let finished_at = now_ms();
     if let Some(summary) = ctx.flows.update(flow_id, |f| {
@@ -1064,7 +1064,7 @@ async fn respond_mocked(
     }) {
         let _ = ctx
             .events
-            .send(flproxy_core::ServerEvent::Flow { flow: summary });
+            .send(hamsy_core::ServerEvent::Flow { flow: summary });
     }
     build_client_response(
         mocked.status,
@@ -1096,7 +1096,7 @@ pub(crate) fn build_client_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flproxy_core::{BodyCond, BodyCondOp, Matcher};
+    use hamsy_core::{BodyCond, BodyCondOp, Matcher};
 
     fn sample_rule(actions: Vec<Action>, matcher: Matcher) -> Rule {
         Rule {

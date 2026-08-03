@@ -14,9 +14,9 @@ use crate::state::ApiState;
 struct EmbeddedUi;
 
 /// Resolves the directory a built UI lives in, checking (in order):
-/// `$FLPROXY_UI_DIR`, `<cwd>/ui/dist`, `<exe_dir>/ui/dist`.
+/// `$HAMSY_UI_DIR`, `<cwd>/ui/dist`, `<exe_dir>/ui/dist`.
 fn resolve_ui_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("FLPROXY_UI_DIR") {
+    if let Ok(dir) = std::env::var("HAMSY_UI_DIR") {
         let path = PathBuf::from(dir);
         if path.is_dir() {
             return Some(path);
@@ -125,7 +125,7 @@ fn fallback_page(proxy_port: u16) -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>flproxy</title>
+<title>hamsy-proxy</title>
 <style>
   body {{ background: #111; color: #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
@@ -140,7 +140,7 @@ fn fallback_page(proxy_port: u16) -> String {
   <h1>Web UI not built</h1>
   <p>Run <code>pnpm --dir ui build</code> to build the web UI.</p>
   <p>The MITM proxy is listening on port <code>{proxy_port}</code>.</p>
-  <p><a href="/cert/flproxy-ca.crt">Download the flproxy root CA certificate</a></p>
+  <p><a href="/cert/hamsy-ca.crt">Download the hamsy-proxy root CA certificate</a></p>
 </main>
 </body>
 </html>

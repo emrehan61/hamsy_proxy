@@ -1,9 +1,9 @@
 [package]
-name = "flproxy-core"
+name = "hamsy-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure logic crate for flproxy: shared types, rule engine, body codecs, flow store, HAR export."
+description = "Pure logic crate for hamsy-proxy: shared types, rule engine, body codecs, flow store, HAR export."
 
 [dependencies]
 serde = { workspace = true }

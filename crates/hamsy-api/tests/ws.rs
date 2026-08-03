@@ -6,14 +6,14 @@ mod common;
 
 use std::time::Duration;
 
-use flproxy_core::ServerEvent;
+use hamsy_core::ServerEvent;
 use futures_util::StreamExt;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as TMessage;
 
 async fn spawn_server() -> (
     std::net::SocketAddr,
-    flproxy_api::ApiState,
+    hamsy_api::ApiState,
     tokio::task::JoinHandle<()>,
 ) {
     let state = common::make_state();
@@ -21,7 +21,7 @@ async fn spawn_server() -> (
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let app = flproxy_api::router(state.clone());
+    let app = hamsy_api::router(state.clone());
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });

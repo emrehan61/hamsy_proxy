@@ -3,7 +3,7 @@
 
 use uuid::Uuid;
 
-use flproxy_core::{
+use hamsy_core::{
     BodyPayload, Flow, FlowId, FlowState, HeaderPair, RequestCtx, ResourceType, ResponseRecord,
     ServerEvent,
 };
@@ -17,10 +17,10 @@ use crate::http::{self, ConnInfo};
 /// creating and recording a new [`Flow`] for it.
 ///
 /// The new flow is marked as a replay by setting
-/// [`flproxy_core::FlowSummary::client_addr`] to `"replay"` - there is no
+/// [`hamsy_core::FlowSummary::client_addr`] to `"replay"` - there is no
 /// dedicated boolean field on `Flow`/`FlowSummary` for this, so the task
 /// spec calls for repurposing `client_addr` as the marker.
-pub async fn replay(ctx: &ProxyContext, req: flproxy_core::RequestRecord) -> Result<FlowId> {
+pub async fn replay(ctx: &ProxyContext, req: hamsy_core::RequestRecord) -> Result<FlowId> {
     let url = url::Url::parse(&req.url)
         .map_err(|e| ProxyError::InvalidTarget(format!("invalid replay url '{}': {e}", req.url)))?;
     let scheme = url.scheme().to_string();
@@ -51,7 +51,7 @@ pub async fn replay(ctx: &ProxyContext, req: flproxy_core::RequestRecord) -> Res
 async fn run_replay(
     ctx: &ProxyContext,
     flow_id: FlowId,
-    req: flproxy_core::RequestRecord,
+    req: hamsy_core::RequestRecord,
     url: url::Url,
     conn_info: ConnInfo,
 ) -> Result<()> {
@@ -86,7 +86,7 @@ async fn run_replay(
     });
 
     let ruleset = ctx.ruleset();
-    let body_bytes = flproxy_core::from_payload(&req.body);
+    let body_bytes = hamsy_core::from_payload(&req.body);
     let content_type = headers
         .iter()
         .find(|h| h.name.eq_ignore_ascii_case("content-type"))
@@ -179,7 +179,7 @@ async fn run_replay(
                 status_text: parts.status.canonical_reason().unwrap_or("").to_string(),
                 http_version: format!("{:?}", parts.version),
                 headers: resp_headers,
-                body: flproxy_core::to_payload(
+                body: hamsy_core::to_payload(
                     &bytes,
                     content_type.as_deref(),
                     content_encoding.as_deref(),

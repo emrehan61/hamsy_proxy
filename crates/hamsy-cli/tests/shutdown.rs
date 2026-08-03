@@ -1,11 +1,11 @@
-//! Integration test for the signal-triggered shutdown path (`flproxy run`
+//! Integration test for the signal-triggered shutdown path (`hamsy run`
 //! catching a signal, restoring the system proxy, draining, and exiting
 //! `0`).
 //!
 //! Does NOT cover: any real system-proxy mutation (`--system-proxy` is
 //! never passed here, so `sysproxy_state::acquire` is never called and
 //! nothing touches the machine's actual OS proxy settings), the marker
-//! file/recovery logic (covered by `flproxy-api`'s own unit tests), or
+//! file/recovery logic (covered by `hamsy-api`'s own unit tests), or
 //! Windows signal handling (this file is unix-only; sending SIGHUP/SIGQUIT
 //! from Rust without a new dependency is easiest by shelling out to the
 //! system `kill` command, which doesn't exist on Windows). It only checks
@@ -31,15 +31,15 @@ fn free_port() -> u16 {
 }
 
 /// A fresh, unique temp directory for one test run, hand-rolled (no
-/// `tempfile`/`uuid` dependency in `flproxy-cli`) the same way
-/// `flproxy-core/src/settings.rs`'s tests build unique temp paths.
+/// `tempfile`/`uuid` dependency in `hamsy-cli`) the same way
+/// `hamsy-core/src/settings.rs`'s tests build unique temp paths.
 fn fresh_temp_dir(label: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "flproxy-cli-shutdown-test-{label}-{}-{}",
+        "hamsy-cli-shutdown-test-{label}-{}-{}",
         std::process::id(),
         nanos
     ))
@@ -58,7 +58,7 @@ fn wait_for_ready(port: u16, timeout: Duration) {
     panic!("server on port {port} did not become ready within {timeout:?}");
 }
 
-/// Spawns `flproxy run` (never with `--system-proxy`), waits for it to be
+/// Spawns `hamsy run` (never with `--system-proxy`), waits for it to be
 /// ready, sends `signal_name` via the system `kill` command, then waits
 /// (bounded) for the process to exit and asserts it exited with status
 /// `0`. Cleans up the temp data dir afterward, best-effort.
@@ -67,7 +67,7 @@ fn run_signal_test(signal_name: &str) {
     let proxy_port = free_port();
     let ui_port = free_port();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_flproxy"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hamsy"))
         .args([
             "--data-dir",
             data_dir.to_str().expect("temp dir path is valid UTF-8"),
@@ -82,7 +82,7 @@ fn run_signal_test(signal_name: &str) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn flproxy");
+        .expect("spawn hamsy");
 
     wait_for_ready(ui_port, Duration::from_secs(5));
 
@@ -102,7 +102,7 @@ fn run_signal_test(signal_name: &str) {
             Some(exit_status) => {
                 assert!(
                     exit_status.success(),
-                    "flproxy exited with {exit_status:?} after {signal_name}"
+                    "hamsy exited with {exit_status:?} after {signal_name}"
                 );
                 break;
             }
@@ -115,7 +115,7 @@ fn run_signal_test(signal_name: &str) {
                         use std::io::Read;
                         let _ = s.read_to_string(&mut stderr);
                     }
-                    panic!("flproxy did not exit within 15s of receiving {signal_name}; stderr: {stderr}");
+                    panic!("hamsy did not exit within 15s of receiving {signal_name}; stderr: {stderr}");
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }

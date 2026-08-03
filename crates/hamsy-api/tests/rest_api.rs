@@ -1,11 +1,11 @@
 //! In-process REST API tests, driven via `tower::ServiceExt::oneshot`
-//! against `flproxy_api::router` (no real sockets involved).
+//! against `hamsy_api::router` (no real sockets involved).
 
 mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use flproxy_api::router;
+use hamsy_api::router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -506,7 +506,7 @@ async fn har_export_has_correct_headers_and_shape() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(disposition.starts_with("attachment; filename=\"flproxy-"));
+    assert!(disposition.starts_with("attachment; filename=\"hamsy-"));
     assert!(disposition.ends_with(".har\""));
 
     let body = body_json(resp).await;
@@ -564,7 +564,7 @@ async fn cert_pem_has_correct_content_type() {
     let state = common::make_state();
     let app = router(state);
 
-    let resp = app.oneshot(get("/cert/flproxy-ca.pem")).await.unwrap();
+    let resp = app.oneshot(get("/cert/hamsy-ca.pem")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let content_type = resp
         .headers()
@@ -585,7 +585,7 @@ async fn cert_crt_is_x509_mime_type() {
     let state = common::make_state();
     let app = router(state);
 
-    let resp = app.oneshot(get("/cert/flproxy-ca.crt")).await.unwrap();
+    let resp = app.oneshot(get("/cert/hamsy-ca.crt")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let content_type = resp
         .headers()

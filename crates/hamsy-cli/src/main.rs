@@ -1,8 +1,8 @@
-//! Command-line entry point for flproxy: a local MITM HTTP(S) debugging
-//! proxy. Wires together `flproxy-core`, `flproxy-proxy`, and `flproxy-api`
-//! into a runnable binary (`flproxy run`), plus `cert`/`rules`/`proxy`
-//! management subcommands that operate directly on flproxy's on-disk state
-//! (no IPC with a running `flproxy run` process).
+//! Command-line entry point for hamsy-proxy: a local MITM HTTP(S) debugging
+//! proxy. Wires together `hamsy-core`, `hamsy-proxy`, and `hamsy-api`
+//! into a runnable binary (`hamsy run`), plus `cert`/`rules`/`proxy`
+//! management subcommands that operate directly on hamsy-proxy's on-disk state
+//! (no IPC with a running `hamsy run` process).
 
 mod cert;
 mod hooks;
@@ -19,11 +19,11 @@ use cert::CertCommand;
 use rules::RulesCommand;
 use sysproxy_cmd::ProxyCommand;
 
-/// flproxy: a local MITM HTTP(S) debugging proxy.
+/// hamsy-proxy: a local MITM HTTP(S) debugging proxy.
 ///
-/// Running with no subcommand is equivalent to `flproxy run`.
+/// Running with no subcommand is equivalent to `hamsy run`.
 #[derive(Parser, Debug)]
-#[command(name = "flproxy", version, about = "Local MITM HTTP(S) debugging proxy", long_about = None)]
+#[command(name = "hamsy", version, about = "Local MITM HTTP(S) debugging proxy", long_about = None)]
 struct Cli {
     /// Increase log verbosity: `-v` = debug, `-vv` = trace (absent = info).
     /// Overridden by `RUST_LOG` when set.
@@ -59,12 +59,12 @@ enum Command {
     },
 }
 
-/// Resolves the flproxy data directory: `explicit` if given, otherwise
-/// [`flproxy_core::data_dir`] (which itself honors `$FLPROXY_HOME`).
+/// Resolves the hamsy-proxy data directory: `explicit` if given, otherwise
+/// [`hamsy_core::data_dir`] (which itself honors `$HAMSY_HOME`).
 pub(crate) fn resolve_data_dir(explicit: Option<&Path>) -> PathBuf {
     match explicit {
         Some(dir) => dir.to_path_buf(),
-        None => flproxy_core::data_dir(),
+        None => hamsy_core::data_dir(),
     }
 }
 
@@ -94,14 +94,14 @@ fn init_tracing(verbosity: u8) {
 fn install_panic_restore_hook(data_dir: PathBuf) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        match std::panic::catch_unwind(|| flproxy_api::sysproxy_state::restore_if_marked(&data_dir))
+        match std::panic::catch_unwind(|| hamsy_api::sysproxy_state::restore_if_marked(&data_dir))
         {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
-                eprintln!("flproxy: failed to restore the system proxy after a panic: {err}")
+                eprintln!("hamsy: failed to restore the system proxy after a panic: {err}")
             }
             Err(_) => eprintln!(
-                "flproxy: panicked again while restoring the system proxy after a panic (ignored)"
+                "hamsy: panicked again while restoring the system proxy after a panic (ignored)"
             ),
         }
         previous(info);

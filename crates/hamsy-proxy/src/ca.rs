@@ -77,7 +77,7 @@ fn sanitize_host(host: &str) -> Result<String> {
 }
 
 /// Restricts `offered` (the ALPN protocols a client presented in its
-/// ClientHello) to the subset flproxy actually understands (`h2`,
+/// ClientHello) to the subset hamsy-proxy actually understands (`h2`,
 /// `http/1.1`), preserving the client's preference order.
 fn restrict_alpn(offered: &[Vec<u8>]) -> Vec<Vec<u8>> {
     offered
@@ -238,7 +238,7 @@ impl CertAuthority {
     }
 
     /// Builds (or returns a cached) `rustls::ServerConfig` for `host`,
-    /// advertising only the ALPN protocols in `offered_alpn` that flproxy
+    /// advertising only the ALPN protocols in `offered_alpn` that hamsy-proxy
     /// supports (`h2`, `http/1.1`), preserving client preference order.
     pub fn server_config(
         &self,
@@ -347,9 +347,9 @@ impl CertAuthority {
 fn generate_ca_pem() -> Result<(String, String)> {
     let mut params = CertificateParams::new(Vec::<String>::new()).map_err(cert_err)?;
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "flproxy CA");
-    dn.push(DnType::OrganizationName, "flproxy");
-    dn.push(DnType::OrganizationalUnitName, "flproxy Root CA");
+    dn.push(DnType::CommonName, "hamsy-proxy CA");
+    dn.push(DnType::OrganizationName, "hamsy-proxy");
+    dn.push(DnType::OrganizationalUnitName, "hamsy-proxy Root CA");
     params.distinguished_name = dn;
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.key_usages = vec![

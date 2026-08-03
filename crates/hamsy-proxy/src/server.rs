@@ -161,7 +161,7 @@ where
 }
 
 /// Serves one HTTP/2 connection (always over an already TLS-terminated,
-/// ALPN-negotiated stream; flproxy never speaks cleartext h2c).
+/// ALPN-negotiated stream; hamsy-proxy never speaks cleartext h2c).
 pub(crate) async fn serve_h2<IO>(ctx: ProxyContext, io: TokioIo<IO>, conn_info: ConnInfo)
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,

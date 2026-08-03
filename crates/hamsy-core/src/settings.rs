@@ -1,4 +1,4 @@
-//! Global proxy settings, persisted as JSON in the flproxy data directory.
+//! Global proxy settings, persisted as JSON in the hamsy-proxy data directory.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,10 +32,10 @@ pub struct Settings {
     /// Host globs that are never captured.
     pub capture_exclude_hosts: Vec<String>,
     /// Whether to leave the OS system proxy alone (opt out of the default
-    /// "point the whole machine at flproxy on startup" behaviour).
+    /// "point the whole machine at hamsy on startup" behaviour).
     ///
     /// This used to be `autoSystemProxy`, defaulting to `false` (system
-    /// proxy off by default). Every existing `~/.flproxy/settings.json` on
+    /// proxy off by default). Every existing `~/.hamsy/settings.json` on
     /// disk therefore has an explicit `"autoSystemProxy": false` in it,
     /// indistinguishable from a deliberate opt-out -- there's no way to
     /// tell "never set" apart from "user turned it off on purpose". Renaming
@@ -129,17 +129,17 @@ pub(crate) fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<
     Ok(())
 }
 
-/// Returns the flproxy data directory: `$FLPROXY_HOME` if set, otherwise
-/// `~/.flproxy` (using `$HOME` on Unix or `%USERPROFILE%` on Windows).
+/// Returns the hamsy-proxy data directory: `$HAMSY_HOME` if set, otherwise
+/// `~/.hamsy` (using `$HOME` on Unix or `%USERPROFILE%` on Windows).
 /// Creates the directory if it doesn't already exist.
 pub fn data_dir() -> PathBuf {
-    let dir = if let Ok(custom) = std::env::var("FLPROXY_HOME") {
+    let dir = if let Ok(custom) = std::env::var("HAMSY_HOME") {
         PathBuf::from(custom)
     } else {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        Path::new(&home).join(".flproxy")
+        Path::new(&home).join(".hamsy")
     };
     let _ = fs::create_dir_all(&dir);
     dir
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn load_missing_file_returns_default() {
         let path = std::env::temp_dir().join(format!(
-            "flproxy-test-missing-{}.json",
+            "hamsy-test-missing-{}.json",
             uuid::Uuid::new_v4()
         ));
         let s = Settings::load(&path);
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn load_corrupt_file_returns_default() {
         let path = std::env::temp_dir().join(format!(
-            "flproxy-test-corrupt-{}.json",
+            "hamsy-test-corrupt-{}.json",
             uuid::Uuid::new_v4()
         ));
         fs::write(&path, "not json").unwrap();
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn save_and_load_roundtrip() {
         let path = std::env::temp_dir().join(format!(
-            "flproxy-test-roundtrip-{}.json",
+            "hamsy-test-roundtrip-{}.json",
             uuid::Uuid::new_v4()
         ));
         let s = Settings {

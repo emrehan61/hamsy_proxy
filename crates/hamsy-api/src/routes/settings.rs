@@ -2,7 +2,7 @@
 
 use axum::extract::State;
 use axum::Json;
-use flproxy_core::{ServerEvent, Settings};
+use hamsy_core::{ServerEvent, Settings};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
