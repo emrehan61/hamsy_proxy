@@ -24,11 +24,10 @@ import Icon from "./Icon";
  * file, then activates the last successfully-imported session. Exported
  * from here — rather than added to the finished, do-not-modify
  * harSessions.ts data layer — because it's UI glue (toasts + tab
- * activation) shared by three call sites: this component's own
- * "+ Import HAR" file input, Traffic.tsx's live-toolbar "Import HAR"
- * button, and Traffic.tsx's drag&drop handler. One implementation keeps
- * "import N files -> N toasts -> activate the last one" identical across
- * all three.
+ * activation) shared by two call sites: Traffic.tsx's live-toolbar
+ * "Import HAR" button, and Traffic.tsx's drag&drop handler. One
+ * implementation keeps "import N files -> N toasts -> activate the last
+ * one" identical across both.
  */
 export async function importHarFileList(files: FileList | File[]): Promise<void> {
   const list = Array.from(files);
@@ -54,7 +53,6 @@ function isTextInputTarget(target: EventTarget | null): boolean {
 }
 
 const SessionTabs: Component = () => {
-  let fileInputEl: HTMLInputElement | undefined;
   // Plain (non-reactive) ref map, `null` sentinel for the Live tab — kept in
   // sync as tabs mount/unmount via each tab's `ref` callback.
   const tabRefs = new Map<string | null, HTMLElement>();
@@ -81,13 +79,6 @@ const SessionTabs: Component = () => {
       const next = ids[(idx + delta + ids.length) % ids.length];
       if (next !== undefined) activateAndFocus(next);
     }
-  };
-
-  const onFileInputChange = (e: Event) => {
-    const input = e.currentTarget as HTMLInputElement;
-    const files = input.files;
-    input.value = "";
-    if (files && files.length > 0) void importHarFileList(files);
   };
 
   // Ctrl/Cmd+W closes the active HAR tab (never Live). Best-effort only:
@@ -169,19 +160,6 @@ const SessionTabs: Component = () => {
           )}
         </For>
       </div>
-
-      <button type="button" class="session-tabs__add-btn" aria-label="Import HAR" onClick={() => fileInputEl?.click()}>
-        <Icon name="plus" size={14} />
-        Import HAR
-      </button>
-      <input
-        ref={(el) => (fileInputEl = el)}
-        type="file"
-        accept=".har,application/json"
-        multiple
-        class="session-tabs__file-input"
-        onChange={onFileInputChange}
-      />
     </div>
   );
 };

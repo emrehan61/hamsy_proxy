@@ -31,8 +31,20 @@ pub struct Settings {
     pub capture_include_hosts: Vec<String>,
     /// Host globs that are never captured.
     pub capture_exclude_hosts: Vec<String>,
-    /// Whether to automatically configure the OS system proxy on startup.
-    pub auto_system_proxy: bool,
+    /// Whether to leave the OS system proxy alone (opt out of the default
+    /// "point the whole machine at flproxy on startup" behaviour).
+    ///
+    /// This used to be `autoSystemProxy`, defaulting to `false` (system
+    /// proxy off by default). Every existing `~/.flproxy/settings.json` on
+    /// disk therefore has an explicit `"autoSystemProxy": false` in it,
+    /// indistinguishable from a deliberate opt-out -- there's no way to
+    /// tell "never set" apart from "user turned it off on purpose". Renaming
+    /// the key to `manualProxy` sidesteps that: serde silently ignores the
+    /// now-unknown old key (this struct is `#[serde(default)]`), so a
+    /// missing `manualProxy` deserializes to `false`, meaning "system proxy
+    /// on" -- flipping every existing install over to the new default-on
+    /// behaviour cleanly, with no migration code needed.
+    pub manual_proxy: bool,
     /// Whether to capture WebSocket frames.
     pub capture_websockets: bool,
     /// UI theme name.
@@ -55,7 +67,7 @@ impl Default for Settings {
             passthrough_hosts: Vec::new(),
             capture_include_hosts: Vec::new(),
             capture_exclude_hosts: Vec::new(),
-            auto_system_proxy: false,
+            manual_proxy: false,
             capture_websockets: true,
             theme: "dark".to_string(),
             upstream_proxy: None,
@@ -146,7 +158,7 @@ mod tests {
         assert_eq!(s.max_flows, 10_000);
         assert_eq!(s.max_body_bytes, 5 * 1024 * 1024);
         assert!(s.intercept_https);
-        assert!(!s.auto_system_proxy);
+        assert!(!s.manual_proxy);
         assert!(s.capture_websockets);
         assert_eq!(s.theme, "dark");
         assert!(s.upstream_proxy.is_none());

@@ -314,9 +314,13 @@ const Traffic: Component = () => {
   const onImportHarClick = () => harToolbarFileInputEl?.click();
   const onHarFileInputChange = (e: Event) => {
     const input = e.currentTarget as HTMLInputElement;
-    const files = input.files;
+    // `input.files` is cleared in place by the `value = ""` reset below
+    // (Blink mutates the existing FileList rather than replacing it), so
+    // snapshot into an array first. The reset itself is what lets the user
+    // re-pick the same file and still get a change event.
+    const files = Array.from(input.files ?? []);
     input.value = "";
-    if (files && files.length > 0) void importHarFileList(files);
+    if (files.length > 0) void importHarFileList(files);
   };
 
   // ---- HAR import (drag & drop anywhere on the page) ----

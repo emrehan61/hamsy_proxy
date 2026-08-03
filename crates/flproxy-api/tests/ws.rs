@@ -6,8 +6,8 @@ mod common;
 
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use flproxy_core::ServerEvent;
+use futures_util::StreamExt;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as TMessage;
 

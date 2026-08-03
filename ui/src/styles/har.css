@@ -120,30 +120,6 @@
   color: var(--fg);
 }
 
-.session-tabs__add-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-  flex-shrink: 0;
-  padding: var(--s1) var(--s2);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.session-tabs__add-btn:hover {
-  color: var(--fg);
-  border-color: var(--border);
-}
-
-.session-tabs__file-input {
-  display: none;
-}
-
 /* ---- HarSessionView ---- */
 
 .har-session-view {

@@ -44,7 +44,7 @@ const EMPTY_SETTINGS: SettingsType = {
   passthroughHosts: [],
   captureIncludeHosts: [],
   captureExcludeHosts: [],
-  autoSystemProxy: false,
+  manualProxy: false,
   captureWebsockets: false,
   theme: "dark",
   upstreamProxy: null,
@@ -379,7 +379,8 @@ const Settings: Component = () => {
               </p>
             </div>
             <div class="settings-field settings-field--row">
-              <Toggle checked={local.autoSystemProxy} onChange={(v) => setField("autoSystemProxy", v)} label="Enable automatically on startup" />
+              <Toggle checked={local.manualProxy} onChange={(v) => setField("manualProxy", v)} label="Manual proxy setup" />
+              <p class="settings-field__desc">Don't change the OS system proxy on startup; configure clients yourself.</p>
             </div>
           </section>
 

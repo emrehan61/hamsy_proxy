@@ -551,7 +551,16 @@ mod imp {
         Ok(out.trim().trim_matches('\'') == "manual")
     }
 
-    pub fn enable(host: &str, port: u16, _bypass: &[String]) -> Result<(), String> {
+    /// Formats `entries` as a gsettings/GVariant string-array literal, e.g.
+    /// `['localhost', '127.0.0.1', '::1', '*.local']` -- the text form
+    /// `gsettings set <schema> <key>` expects for an `as` (array-of-string)
+    /// value such as `ignore-hosts`.
+    fn gvariant_string_array(entries: &[String]) -> String {
+        let quoted: Vec<String> = entries.iter().map(|e| format!("'{e}'")).collect();
+        format!("[{}]", quoted.join(", "))
+    }
+
+    pub fn enable(host: &str, port: u16, bypass: &[String]) -> Result<(), String> {
         let port_str = port.to_string();
         run(
             "gsettings",
@@ -577,6 +586,13 @@ mod imp {
             "gsettings",
             &["set", "org.gnome.system.proxy.https", "port", &port_str],
         )?;
+        if !bypass.is_empty() {
+            let literal = gvariant_string_array(bypass);
+            run(
+                "gsettings",
+                &["set", "org.gnome.system.proxy", "ignore-hosts", &literal],
+            )?;
+        }
         Ok(())
     }
 
@@ -663,6 +679,38 @@ mod imp {
             )?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn gvariant_string_array_formats_default_bypass_list() {
+            let entries = vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+                "*.local".to_string(),
+            ];
+            assert_eq!(
+                gvariant_string_array(&entries),
+                "['localhost', '127.0.0.1', '::1', '*.local']"
+            );
+        }
+
+        #[test]
+        fn gvariant_string_array_formats_single_entry() {
+            assert_eq!(
+                gvariant_string_array(&["localhost".to_string()]),
+                "['localhost']"
+            );
+        }
+
+        #[test]
+        fn gvariant_string_array_formats_empty_list() {
+            assert_eq!(gvariant_string_array(&[]), "[]");
+        }
     }
 }
 

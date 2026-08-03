@@ -17,9 +17,9 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
 use bytes::Bytes;
+use flproxy_core::{ClientCommand, FlowId, FlowQuery, FlowSummary, ServerEvent};
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-use flproxy_core::{ClientCommand, FlowId, FlowQuery, FlowSummary, ServerEvent};
 use tokio::sync::broadcast;
 use tokio::time::interval;
 

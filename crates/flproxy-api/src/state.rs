@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use parking_lot::RwLock;
 use flproxy_core::{FlowStore, RulesStore, ServerEvent, Settings};
+use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 use crate::hooks::{CertHook, NoopReplay, ReplayHook, StubCert};

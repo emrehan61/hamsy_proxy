@@ -35,9 +35,15 @@ pub struct RunArgs {
     /// Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`).
     #[arg(long = "data-dir")]
     pub data_dir: Option<PathBuf>,
-    /// Enable the OS system proxy on start, restoring its prior configuration on shutdown.
+    /// Force-enable the OS system proxy on start, restoring its prior configuration on
+    /// shutdown. This is now the default behaviour, so passing this flag is redundant
+    /// except to override a persisted `manualProxy: true` setting; kept for backward
+    /// compatibility with existing scripts/muscle memory.
     #[arg(long = "system-proxy")]
     pub system_proxy: bool,
+    /// Don't touch the OS system proxy; configure your client to use it manually.
+    #[arg(long = "manual", alias = "no-system-proxy")]
+    pub manual: bool,
     /// Don't open a browser tab once the servers are listening.
     #[arg(long = "no-open")]
     pub no_open: bool,
@@ -154,7 +160,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let bind_addr = settings.bind_addr.clone();
     let proxy_port = settings.proxy_port;
     let ui_port = settings.ui_port;
-    let auto_system_proxy = settings.auto_system_proxy;
+    let manual_proxy_setting = settings.manual_proxy;
     let max_flows = settings.max_flows;
 
     // Build the shared handles once, mirroring
@@ -248,12 +254,29 @@ pub async fn run(args: RunArgs) -> Result<()> {
         }
     }
 
-    let system_proxy_requested = args.system_proxy || auto_system_proxy;
+    // System proxy is on by default. `--manual` (or a persisted
+    // `manualProxy: true`) opts out; `--system-proxy` forces it on
+    // regardless (e.g. to override a persisted opt-out for one run).
+    let system_proxy_requested = if args.manual {
+        false
+    } else if args.system_proxy {
+        true
+    } else {
+        !manual_proxy_setting
+    };
     if system_proxy_requested {
         let bypass: Vec<String> = SYSTEM_PROXY_BYPASS.iter().map(|s| s.to_string()).collect();
         match flproxy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", proxy_port, &bypass) {
-            Ok(()) => tracing::info!("enabled the OS system proxy"),
-            Err(err) => tracing::warn!(%err, "failed to enable the OS system proxy"),
+            Ok(()) => {
+                tracing::info!("enabled the OS system proxy");
+                println!("  System proxy enabled (127.0.0.1:{proxy_port}).");
+            }
+            Err(err) => {
+                tracing::warn!(%err, "failed to enable the OS system proxy");
+                eprintln!(
+                    "\n  Warning: could not set the OS system proxy automatically.\n    {err}\n    Configure your client manually: HTTP/HTTPS proxy 127.0.0.1:{proxy_port}\n    (macOS needs an admin account; Linux needs GNOME/gsettings.)\n"
+                );
+            }
         }
     }
 

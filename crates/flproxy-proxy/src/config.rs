@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use flproxy_core::{RuleSet, RulesStore, ServerEvent, Settings};
+use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 use crate::ca::CertAuthority;

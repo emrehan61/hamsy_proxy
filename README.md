@@ -70,10 +70,17 @@ This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to 
 ## Quick start
 
 ```
-flproxy                 # same as `flproxy run`
+flproxy                 # same as `flproxy run` — captures system-wide out of the box
 flproxy cert install     # trust the CA in the OS keychain (best-effort; prints manual steps on failure)
-flproxy proxy on         # or pass --system-proxy to `flproxy run` to do this automatically
 ```
+
+That's it: `flproxy` points your OS's HTTP(S) proxy setting at itself on startup (macOS, Windows, and Linux) and restores whatever was there before on shutdown, so there's no separate "turn on the proxy" step anymore — `flproxy proxy on`/`off`/`status` still exist, but only for controlling the system proxy independently of a running `flproxy`. If you'd rather leave your OS proxy settings alone and point clients at flproxy yourself, run `flproxy --manual` and configure them to use `127.0.0.1:9080`.
+
+Setting the OS proxy automatically is best-effort and a little platform-dependent — a failure here is never fatal, flproxy just prints a warning with manual instructions and keeps running:
+
+- **macOS** — uses `networksetup`; needs an admin account (some managed/corporate Macs restrict this).
+- **Linux** — uses GNOME's `gsettings`; other desktops (KDE, XFCE, headless servers, WSL) don't have it, so flproxy warns and falls back to telling you to set `http_proxy`/`https_proxy` (or your desktop's own proxy settings) by hand.
+- **Windows** — writes the per-user `HKCU\...\Internet Settings` registry keys; apps that were already running on WinINet (some older/native apps) may not notice the change until restarted.
 
 Then open the web UI and browse — traffic starts appearing immediately. Here's the actual startup banner (captured from a local run on the default ports):
 
@@ -115,7 +122,8 @@ Options:
   -u, --ui-port <UI_PORT>        Override the web UI/API listener port
   -b, --bind <BIND>              Override the address both servers bind to
       --data-dir <DATA_DIR>      Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`)
-      --system-proxy             Enable the OS system proxy on start, restoring its prior configuration on shutdown
+      --system-proxy             Force-enable the OS system proxy on start (this is now the default; kept for backward compatibility / to override a persisted opt-out)
+      --manual                   Don't touch the OS system proxy; configure your client to use it manually (alias: --no-system-proxy)
       --no-open                  Don't open a browser tab once the servers are listening
       --paused                   Start with capture paused
       --no-https                 Disable HTTPS/TLS interception (blind-tunnel HTTPS instead of MITM'ing it)
@@ -137,7 +145,8 @@ Options:
   -u, --ui-port <UI_PORT>        Override the web UI/API listener port
   -b, --bind <BIND>              Override the address both servers bind to
       --data-dir <DATA_DIR>      Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`)
-      --system-proxy             Enable the OS system proxy on start, restoring its prior configuration on shutdown
+      --system-proxy             Force-enable the OS system proxy on start (this is now the default; kept for backward compatibility / to override a persisted opt-out)
+      --manual                   Don't touch the OS system proxy; configure your client to use it manually (alias: --no-system-proxy)
       --no-open                  Don't open a browser tab once the servers are listening
       --paused                   Start with capture paused
       --no-https                 Disable HTTPS/TLS interception (blind-tunnel HTTPS instead of MITM'ing it)
@@ -233,7 +242,7 @@ Options:
   -h, --help        Print help
 ```
 
-flproxy always restores whatever proxy configuration existed *before* it made any change — not just "off". The instant the system proxy is enabled (by `flproxy run --system-proxy`/`autoSystemProxy`, the web UI's system-proxy toggle, or `flproxy proxy on`), flproxy takes a snapshot of the OS proxy settings as they stood at that moment and writes it to `<data-dir>/sysproxy-state.json` alongside the pid and target host:port — so if you had a corporate proxy or a different tool's proxy configured, that's what comes back, not a blank "disabled" state. `Ctrl-C`/`SIGINT`, `SIGTERM`, `SIGHUP` (e.g. closing the terminal window), and `SIGQUIT`/`Ctrl-\` on Unix — or `Ctrl-C`, `Ctrl-Break`, console close, logoff, and system shutdown on Windows — all trigger this restore immediately, *before* draining in-flight connections, so the machine is never left pointed at a proxy that's about to go away. A hard kill (`SIGKILL`, a crash, a power cut) is the one thing nothing running in-process can catch; that case is instead recovered automatically (with a logged warning) the next time `flproxy run` starts (including the bare `flproxy`) or `flproxy proxy on` runs, by reading the same marker file — other subcommands (`cert`/`rules`/`proxy off`/`proxy status`) don't touch it. Sending a second signal while a drain is already in progress skips the wait entirely and exits immediately — safe, since the restore already happened before draining started.
+flproxy always restores whatever proxy configuration existed *before* it made any change — not just "off". The instant the system proxy is enabled (by a plain `flproxy run` — the default unless `--manual`/`--no-system-proxy` or a persisted `manualProxy: true` opts out — the web UI's system-proxy toggle, or `flproxy proxy on`), flproxy takes a snapshot of the OS proxy settings as they stood at that moment and writes it to `<data-dir>/sysproxy-state.json` alongside the pid and target host:port — so if you had a corporate proxy or a different tool's proxy configured, that's what comes back, not a blank "disabled" state. `Ctrl-C`/`SIGINT`, `SIGTERM`, `SIGHUP` (e.g. closing the terminal window), and `SIGQUIT`/`Ctrl-\` on Unix — or `Ctrl-C`, `Ctrl-Break`, console close, logoff, and system shutdown on Windows — all trigger this restore immediately, *before* draining in-flight connections, so the machine is never left pointed at a proxy that's about to go away. A hard kill (`SIGKILL`, a crash, a power cut) is the one thing nothing running in-process can catch; that case is instead recovered automatically (with a logged warning) the next time `flproxy run` starts (including the bare `flproxy`) or `flproxy proxy on` runs, by reading the same marker file — other subcommands (`cert`/`rules`/`proxy off`/`proxy status`) don't touch it. Sending a second signal while a drain is already in progress skips the wait entirely and exits immediately — safe, since the restore already happened before draining started.
 
 ## Web UI tour
 
@@ -302,7 +311,10 @@ Apps that pin their expected TLS certificate (banking apps, some chat apps) will
 - **The web UI shows a bare "Web UI not built" placeholder page** instead of the real UI — the binary was built without `--features embed-ui`, and no built `ui/dist` was found on disk either. See [Install / build](#install--build) for the exact lookup order (`$FLPROXY_UI_DIR`, then `./ui/dist`, then `<exe dir>/ui/dist`) and how to build it.
 - **The machine seems stuck pointed at a dead flproxy's proxy settings** (it was `kill -9`'d, crashed, or the machine lost power while running) — `flproxy proxy off` forces a restore. In practice you rarely need to: the next `flproxy run` (including the bare `flproxy`) or `flproxy proxy on` notices the leftover marker file and restores it automatically before doing anything else, so this is usually already fixed by the time you go looking for it.
 - **Android apps fail to connect once HTTPS interception is on**, even with the CA installed — expected; see point 4 in [Mobile (iOS/Android)](#mobile-iosandroid) (Android 7+ ignores user-installed CAs by default outside of browsers and cooperating apps).
-- **macOS: `flproxy proxy on` / `flproxy run --system-proxy` fails, or `networksetup` seems to hang** — `networksetup` needs permission to change some network services (most commonly seen on a managed/corporate Mac), and flproxy reports whatever error it returns rather than pretending the change succeeded — the failing `networksetup` command and its stderr are included in the error message.
+- **macOS: `flproxy proxy on` / the automatic system-proxy step at startup fails, or `networksetup` seems to hang** — `networksetup` needs permission to change some network services (most commonly seen on a managed/corporate Mac), and flproxy reports whatever error it returns rather than pretending the change succeeded — the failing `networksetup` command and its stderr are included in the error message.
+- **Linux: startup prints a warning instead of setting the system proxy** — flproxy sets the system proxy via GNOME's `gsettings`; on non-GNOME desktops (KDE, XFCE, a headless server, WSL, ...) that's not available, so this is expected. Set `http_proxy`/`https_proxy` yourself, or configure your desktop's proxy settings manually, then point them at `127.0.0.1:9080`.
+- **Windows: the system proxy setting changed but some already-running app hasn't noticed** — flproxy writes the per-user `HKCU\...\Internet Settings` registry keys directly; apps already running on WinINet may have cached the old settings and need a restart to pick up the change.
+- **Don't want flproxy touching your OS proxy settings at all** — run `flproxy --manual` (or `--no-system-proxy`); it leaves your existing proxy configuration alone and you configure clients yourself, same as flproxy's previous default behavior.
 
 ## HAR export/import
 
@@ -340,7 +352,7 @@ Data lives under `$FLPROXY_HOME` if set, otherwise `~/.flproxy` (`%USERPROFILE%\
 | `passthroughHosts` | `[]` | Host globs that are never MITM'd, even if `interceptHttps` is true. |
 | `captureIncludeHosts` | `[]` | If non-empty, only these host globs are captured. |
 | `captureExcludeHosts` | `[]` | Host globs that are never captured. |
-| `autoSystemProxy` | `false` | Whether to automatically configure the OS system proxy on startup. |
+| `manualProxy` | `false` | Whether to leave the OS system proxy alone on startup (opt out of the default system-wide capture). `false` (the default) behaves like always passing `--system-proxy`; `true` behaves like always passing `--manual`. Passing `--manual`/`--system-proxy` on the command line for one run overrides this without changing the saved value. |
 | `captureWebsockets` | `true` | Whether to capture WebSocket frames. |
 | `theme` | `"dark"` | UI theme name. |
 | `upstreamProxy` | `null` | Optional upstream proxy to chain through, e.g. `"http://host:port"`. |
@@ -356,6 +368,10 @@ cd ui && pnpm typecheck
 ```
 
 `cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `flproxy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, and `cd ui && pnpm typecheck` (`tsc --noEmit`) are all clean.
+
+### Local development
+
+Run `./dev.sh` from the repo root to start the backend (`cargo run -p flproxy-cli`) and the UI dev server together with one command — it prints `http://localhost:5173` to open once both are up, and Ctrl-C stops both cleanly. `./dev.sh build` builds the UI and serves it from a single `flproxy` process instead (no Vite); `./dev.sh backend`/`./dev.sh ui` run just one side. `./dev.sh --help` for details. Every backend it starts passes `--manual`, so a dev run never touches your OS-wide proxy settings — set `FLPROXY_DEV_SYSTEM_PROXY=1` to run with `--system-proxy` instead if you specifically need to exercise that behavior.
 
 Formatting is stock rustfmt — there is deliberately no `rustfmt.toml`, so `cargo fmt` with a default toolchain produces exactly what's committed and no per-project setup is needed.
 

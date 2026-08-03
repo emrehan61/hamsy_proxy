@@ -193,7 +193,7 @@ export interface Settings {
   passthroughHosts: string[];
   captureIncludeHosts: string[];
   captureExcludeHosts: string[];
-  autoSystemProxy: boolean;
+  manualProxy: boolean;
   captureWebsockets: boolean;
   theme: string;
   upstreamProxy: string | null;

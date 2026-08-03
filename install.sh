@@ -413,7 +413,12 @@ echo "Next steps:"
 echo
 echo "  flproxy"
 echo "  flproxy cert install"
-echo "  flproxy proxy on"
+echo
+echo "Plain 'flproxy' captures traffic system-wide out of the box: it points"
+echo "your OS proxy settings at 127.0.0.1:9080 and restores your previous"
+echo "settings on shutdown. Prefer to configure clients yourself instead?"
+echo "Run 'flproxy --manual' to leave your OS proxy settings untouched and"
+echo "point individual apps/browsers at 127.0.0.1:9080 by hand."
 echo
 echo "HTTPS capture will not work until the CA is trusted. 'cert install' is"
 echo "best-effort and prints manual per-OS steps if it can't do it automatically."
