@@ -153,10 +153,10 @@ const RuleEditor: Component<RuleEditorProps> = (props) => {
 
   return (
     <div class="rule-editor">
-      <datalist id="rdproxy-header-names">
+      <datalist id="flproxy-header-names">
         <For each={COMMON_HEADER_NAMES}>{(n) => <option value={n} />}</For>
       </datalist>
-      <datalist id="rdproxy-rule-groups">
+      <datalist id="flproxy-rule-groups">
         <For each={groups()}>{(g) => <option value={g} />}</For>
       </datalist>
 
@@ -174,7 +174,7 @@ const RuleEditor: Component<RuleEditorProps> = (props) => {
         </label>
         <label class="rule-editor__field">
           <span>Group</span>
-          <TextInput value={draft.group ?? ""} onInput={(v) => setDraft("group", v || null)} list="rdproxy-rule-groups" placeholder="none" />
+          <TextInput value={draft.group ?? ""} onInput={(v) => setDraft("group", v || null)} list="flproxy-rule-groups" placeholder="none" />
         </label>
         <div class="rule-editor__spacer" />
         <Show when={dirty()}>

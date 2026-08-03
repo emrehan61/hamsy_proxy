@@ -326,7 +326,7 @@ const Traffic: Component = () => {
     listFlows()
       .then((res) => ingestFlows(res.flows))
       .catch((err) => {
-        console.error("rdproxy: failed to load initial flows", err);
+        console.error("flproxy: failed to load initial flows", err);
       });
 
     window.addEventListener("keydown", onKeyDown);

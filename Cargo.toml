@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-# Add new crates here as they are created (rdproxy-proxy, rdproxy-api, rdproxy-cli, ...).
-members = ["crates/rdproxy-core", "crates/rdproxy-proxy", "crates/rdproxy-api", "crates/rdproxy-cli"]
+# Add new crates here as they are created (flproxy-proxy, flproxy-api, flproxy-cli, ...).
+members = ["crates/flproxy-core", "crates/flproxy-proxy", "crates/flproxy-api", "crates/flproxy-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,7 +22,7 @@ parking_lot = "0.12"
 base64 = "0.22"
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
 
-# Additional dependencies required by rdproxy-core.
+# Additional dependencies required by flproxy-core.
 flate2 = "1"
 brotli = "6"
 zstd = "0.13"

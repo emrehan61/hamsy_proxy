@@ -84,7 +84,7 @@ const MatchEditor: Component<MatchEditorProps> = (props) => {
                   onInput={(v) => props.setRule("match", key, i(), "name", v)}
                   placeholder="Header name"
                   mono
-                  list="rdproxy-header-names"
+                  list="flproxy-header-names"
                   aria-label="Header name"
                 />
                 <Select

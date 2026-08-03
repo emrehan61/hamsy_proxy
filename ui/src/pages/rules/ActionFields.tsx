@@ -59,7 +59,7 @@ const NameValueFields: Component<{
 }> = (props) => (
   <div class="action-fields">
     <Field label={props.nameLabel ?? "Name"}>
-      <TextInput value={props.name} onInput={props.onName} mono list="rdproxy-header-names" />
+      <TextInput value={props.name} onInput={props.onName} mono list="flproxy-header-names" />
     </Field>
     <Show when={props.onValue}>
       <Field label="Value">
@@ -165,7 +165,7 @@ const MockHeadersFields: Component<{ headers: HeaderPair[]; onHeaders: (mutate: 
             onInput={(v) => props.onHeaders((hs) => { const row = hs[i()]; if (row) row.name = v; })}
             placeholder="Header name"
             mono
-            list="rdproxy-header-names"
+            list="flproxy-header-names"
             aria-label="Header name"
           />
           <TextInput

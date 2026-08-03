@@ -86,7 +86,7 @@ export function initSettingsSync(): void {
 
 export type ThemeChoice = "dark" | "light" | "system";
 
-const THEME_STORAGE_KEY = "rdproxy.theme";
+const THEME_STORAGE_KEY = "flproxy.theme";
 
 function resolveInitialThemeChoice(): ThemeChoice {
   try {

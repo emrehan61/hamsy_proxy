@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — build rdproxy from source and put it on your PATH.
+# install.sh — build flproxy from source and put it on your PATH.
 #
 # There's no prebuilt binary to fetch (no releases, no CI yet), so this
 # script always builds from the checkout it's run from: UI first (Vite),
@@ -63,7 +63,7 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [OPTIONS]
 
-Builds rdproxy from source (Rust + the SolidJS UI) and installs the
+Builds flproxy from source (Rust + the SolidJS UI) and installs the
 resulting binary onto your PATH. Always builds from this checkout —
 there is nothing to download.
 
@@ -71,8 +71,8 @@ Options:
   --prefix DIR    Install directory (default: $HOME/.local/bin)
   --yes, -y       Assume yes to prompts (e.g. installing Rust via rustup)
   --skip-deps     Only check dependencies; never install anything
-  --no-ui         Skip the UI build; build rdproxy without --features embed-ui
-  --uninstall     Remove the installed binary (optionally ~/.rdproxy too)
+  --no-ui         Skip the UI build; build flproxy without --features embed-ui
+  --uninstall     Remove the installed binary (optionally ~/.flproxy too)
   --help, -h      Show this help and exit
 EOF
 }
@@ -140,7 +140,7 @@ esac
 # ---------------------------------------------------------------------------
 
 do_uninstall() {
-  bin_path="$PREFIX/rdproxy"
+  bin_path="$PREFIX/flproxy"
   if [ -e "$bin_path" ]; then
     rm -f "$bin_path"
     info "Removed $bin_path"
@@ -148,7 +148,7 @@ do_uninstall() {
     info "No binary found at $bin_path — nothing to remove."
   fi
 
-  data_dir="${RDPROXY_HOME:-$HOME/.rdproxy}"
+  data_dir="${FLPROXY_HOME:-$HOME/.flproxy}"
 
   # A bare --yes never removes user data: settings/rules/CA key are too easy
   # to lose by accident. This always asks interactively, and only ever
@@ -346,14 +346,14 @@ else
 fi
 
 if [ "$NO_UI" -eq 0 ]; then
-  info "Building rdproxy (release, UI embedded)..."
-  (cd "$SCRIPT_DIR" && cargo build --release --features embed-ui -p rdproxy-cli)
+  info "Building flproxy (release, UI embedded)..."
+  (cd "$SCRIPT_DIR" && cargo build --release --features embed-ui -p flproxy-cli)
 else
-  info "Building rdproxy (release, no embedded UI)..."
-  (cd "$SCRIPT_DIR" && cargo build --release -p rdproxy-cli)
+  info "Building flproxy (release, no embedded UI)..."
+  (cd "$SCRIPT_DIR" && cargo build --release -p flproxy-cli)
 fi
 
-BUILT_BIN="$SCRIPT_DIR/target/release/rdproxy"
+BUILT_BIN="$SCRIPT_DIR/target/release/flproxy"
 [ -f "$BUILT_BIN" ] || die "Build finished but $BUILT_BIN is missing."
 
 # ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ if ! mkdir -p "$PREFIX" 2>/dev/null; then
   die "Can't create $PREFIX (permission denied?). Retry with --prefix DIR somewhere writable, or fix permissions yourself — this script never invokes sudo."
 fi
 
-DEST="$PREFIX/rdproxy"
+DEST="$PREFIX/flproxy"
 if [ -e "$DEST" ]; then
   warn "Overwriting existing $DEST"
 fi
@@ -407,13 +407,13 @@ fi
 
 echo
 echo "Defaults: proxy http://127.0.0.1:9080, UI http://127.0.0.1:9081"
-echo "(override with -p/--proxy-port, -u/--ui-port, -b/--bind on 'rdproxy'/'rdproxy run')"
+echo "(override with -p/--proxy-port, -u/--ui-port, -b/--bind on 'flproxy'/'flproxy run')"
 echo
 echo "Next steps:"
 echo
-echo "  rdproxy"
-echo "  rdproxy cert install"
-echo "  rdproxy proxy on"
+echo "  flproxy"
+echo "  flproxy cert install"
+echo "  flproxy proxy on"
 echo
 echo "HTTPS capture will not work until the CA is trusted. 'cert install' is"
 echo "best-effort and prints manual per-OS steps if it can't do it automatically."

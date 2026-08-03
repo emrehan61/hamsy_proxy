@@ -1,4 +1,4 @@
-// Typed fetch client for the rdproxy REST API. One function per endpoint.
+// Typed fetch client for the flproxy REST API. One function per endpoint.
 // All requests are same-origin (dev server proxies /api to the Rust backend).
 
 import type {
