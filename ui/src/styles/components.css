@@ -215,6 +215,12 @@
   border-color: var(--accent);
 }
 
+.select:disabled {
+  color: var(--fg-muted);
+  cursor: default;
+  opacity: 0.5;
+}
+
 /* ---- Modal ---- */
 
 .modal__backdrop {
@@ -257,6 +263,8 @@
 .modal__body {
   padding: var(--s4);
   overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* ---- Toast ---- */

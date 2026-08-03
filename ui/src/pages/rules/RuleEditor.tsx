@@ -3,10 +3,13 @@
 // sections. Edits happen on a local `draft` store cloned from `props.rule`;
 // nothing is persisted until Save. Cmd/Ctrl+S saves; unsaved changes are
 // reported upward via `onDirtyChange` so the list/router can warn before
-// switching away.
+// switching away. Dirty-checking reads the `draft` store directly (never
+// `unwrap`) so every nested edit is tracked, and compares via a key-order-
+// insensitive `stableStringify` so a freshly-built object can never look
+// "different" from the server's serialization of the same data.
 
 import type { Component } from "solid-js";
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
 import type { Rule } from "../../lib/types";
 import TextInput from "../../components/TextInput";
@@ -35,6 +38,18 @@ function isRuleLike(v: unknown): v is Rule {
   return typeof r.name === "string" && typeof r.match === "object" && r.match !== null && Array.isArray(r.actions);
 }
 
+// JSON.stringify keyed on insertion order, so a client-built object (e.g.
+// from defaultActionFor) and the server's serialization of the same data
+// never compare "different" purely because of key order.
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 const RuleEditor: Component<RuleEditorProps> = (props) => {
   const [draft, setDraft] = createStore<Rule>(cloneRule(props.rule));
   const [tab, setTab] = createSignal<"visual" | "json">("visual");
@@ -57,7 +72,7 @@ const RuleEditor: Component<RuleEditorProps> = (props) => {
     ),
   );
 
-  const dirty = createMemo(() => JSON.stringify(unwrap(draft)) !== JSON.stringify(props.rule));
+  const dirty = createMemo(() => stableStringify(draft) !== stableStringify(props.rule));
 
   createEffect(() => props.onDirtyChange(dirty()));
   onCleanup(() => props.onDirtyChange(false));
@@ -69,8 +84,10 @@ const RuleEditor: Component<RuleEditorProps> = (props) => {
     setSaving(true);
     try {
       const saved = await updateRuleAction(draft.id, unwrap(draft));
-      setDraft(reconcile(cloneRule(saved)));
-      setJsonText(JSON.stringify(saved, null, 2));
+      batch(() => {
+        setDraft(reconcile(cloneRule(saved)));
+        setJsonText(JSON.stringify(saved, null, 2));
+      });
       pushToast({ level: "success", message: `Saved "${saved.name}"` });
     } catch {
       pushToast({ level: "error", message: "Failed to save rule" });

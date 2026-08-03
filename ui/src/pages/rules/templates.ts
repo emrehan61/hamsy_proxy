@@ -1,9 +1,13 @@
 // One-click starting points for "New rule". Each builds a full RuleInput
 // (matcher + one action) ready to POST as-is; the editor opens immediately
-// afterward so the user can fill in the blanks.
+// afterward so the user can fill in the blanks. Every action type in
+// ACTION_TYPE_LABELS has a template here (the curated ones are hand-written;
+// the rest fall back to defaultActionFor) so the picker's list and
+// ActionsEditor's pinned-type list always agree. `blank` stays last.
 
 import type { RuleInput } from "../../lib/api";
 import type { Matcher, UrlOp } from "../../lib/types";
+import { ACTION_TYPE_LABELS, defaultActionFor } from "./actionDefaults";
 
 function emptyMatcher(urlOp: UrlOp = "contains"): Matcher {
   return {
@@ -102,6 +106,60 @@ export const RULE_TEMPLATES: RuleTemplate[] = [
     label: "Change status code",
     description: "Force a different response status code.",
     build: () => rule("Change status code", emptyMatcher(), [{ type: "setStatus", status: 200 }]),
+  },
+  {
+    id: "rewrite-url",
+    label: ACTION_TYPE_LABELS.rewriteUrl,
+    description: "Find and replace text within the matching URL.",
+    build: () => rule(ACTION_TYPE_LABELS.rewriteUrl, emptyMatcher(), [defaultActionFor("rewriteUrl")]),
+  },
+  {
+    id: "query-param-set",
+    label: ACTION_TYPE_LABELS.setQueryParam,
+    description: "Set a query string parameter on the URL.",
+    build: () => rule(ACTION_TYPE_LABELS.setQueryParam, emptyMatcher(), [defaultActionFor("setQueryParam")]),
+  },
+  {
+    id: "query-param-remove",
+    label: ACTION_TYPE_LABELS.removeQueryParam,
+    description: "Strip a query string parameter from the URL.",
+    build: () => rule(ACTION_TYPE_LABELS.removeQueryParam, emptyMatcher(), [defaultActionFor("removeQueryParam")]),
+  },
+  {
+    id: "req-header-remove",
+    label: ACTION_TYPE_LABELS.removeRequestHeader,
+    description: "Strip a header from the outgoing request.",
+    build: () => rule(ACTION_TYPE_LABELS.removeRequestHeader, emptyMatcher(), [defaultActionFor("removeRequestHeader")]),
+  },
+  {
+    id: "res-header-remove",
+    label: ACTION_TYPE_LABELS.removeResponseHeader,
+    description: "Strip a header from the incoming response.",
+    build: () => rule(ACTION_TYPE_LABELS.removeResponseHeader, emptyMatcher(), [defaultActionFor("removeResponseHeader")]),
+  },
+  {
+    id: "req-body-replace",
+    label: ACTION_TYPE_LABELS.replaceInRequestBody,
+    description: "Find and replace text within the outgoing body.",
+    build: () => rule(ACTION_TYPE_LABELS.replaceInRequestBody, emptyMatcher(), [defaultActionFor("replaceInRequestBody")]),
+  },
+  {
+    id: "res-body-replace",
+    label: ACTION_TYPE_LABELS.replaceInResponseBody,
+    description: "Find and replace text within the incoming body.",
+    build: () => rule(ACTION_TYPE_LABELS.replaceInResponseBody, emptyMatcher(), [defaultActionFor("replaceInResponseBody")]),
+  },
+  {
+    id: "rewrite-json-request",
+    label: ACTION_TYPE_LABELS.jsonPatchRequest,
+    description: "Patch fields in a JSON request body.",
+    build: () => rule(ACTION_TYPE_LABELS.jsonPatchRequest, emptyMatcher(), [defaultActionFor("jsonPatchRequest")]),
+  },
+  {
+    id: "method",
+    label: ACTION_TYPE_LABELS.setMethod,
+    description: "Change the HTTP method of matching requests.",
+    build: () => rule(ACTION_TYPE_LABELS.setMethod, emptyMatcher(), [defaultActionFor("setMethod")]),
   },
   {
     id: "blank",

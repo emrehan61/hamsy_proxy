@@ -510,6 +510,11 @@
   padding: var(--s2) 0;
 }
 
+.actions-editor__hint {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
 .action-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
