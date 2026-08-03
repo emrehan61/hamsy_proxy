@@ -1213,6 +1213,14 @@
   border-right: 1px solid var(--border);
 }
 
+.sidebar__logo {
+  display: block;
+  width: 24px;
+  height: 24px;
+  margin: 0 auto var(--s3);
+  border-radius: var(--radius);
+}
+
 .sidebar__item {
   display: flex;
   flex-direction: column;
