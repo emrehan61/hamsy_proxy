@@ -1,0 +1,32 @@
+[package]
+name = "hamsy-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line entry point for hamsy-proxy."
+
+[[bin]]
+name = "hamsy"
+path = "src/main.rs"
+
+[dependencies]
+hamsy-core = { path = "../hamsy-core" }
+hamsy-proxy = { path = "../hamsy-proxy" }
+hamsy-api = { path = "../hamsy-api" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+
+# Not present in [workspace.dependencies]; pinned directly here.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+open = "5"
+async-trait = "0.1"
+# Pinned to match hamsy-api's axum version, since we call `axum::serve`
+# directly on the `Router` it builds.
+axum = { version = "0.8" }
+
+[features]
+embed-ui = ["hamsy-api/embed-ui"]

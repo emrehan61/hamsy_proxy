@@ -16,7 +16,7 @@
   padding: var(--s2) var(--s3);
   background: color-mix(in srgb, var(--amber) 18%, transparent);
   color: var(--amber);
-  font-size: 12px;
+  font-size: 15px;
   flex-shrink: 0;
 }
 
@@ -57,7 +57,7 @@
 }
 
 .settings-section__title {
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--fg);
 }
@@ -76,13 +76,13 @@
 }
 
 .settings-field__label {
-  font-size: 12px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--fg-dim);
 }
 
 .settings-field__desc {
-  font-size: 11px;
+  font-size: 14px;
   color: var(--fg-muted);
 }
 
@@ -98,7 +98,7 @@
 
 .settings-field__mono-value {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 15px;
   color: var(--fg);
   background: var(--bg-sunken);
   border: 1px solid var(--border);
@@ -108,7 +108,7 @@
 }
 
 .settings-field__link {
-  font-size: 12px;
+  font-size: 15px;
   color: var(--accent);
   text-decoration: none;
   white-space: nowrap;
@@ -122,7 +122,7 @@
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: var(--s1) var(--s3);
-  font-size: 12px;
+  font-size: 15px;
 }
 
 .settings-about dt {
@@ -137,7 +137,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--s3);
-  font-size: 12px;
+  font-size: 15px;
   max-width: 360px;
 }
 

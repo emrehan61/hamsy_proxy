@@ -35,6 +35,7 @@ const Sidebar: Component = () => {
 
   return (
     <nav class="sidebar" aria-label="Primary">
+      <img src="/favicon.ico" alt="hamsy-proxy" class="sidebar__logo" />
       <For each={NAV_ENTRIES}>
         {(entry) => (
           <A

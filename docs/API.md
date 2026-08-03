@@ -1,10 +1,10 @@
-# flproxy API reference
+# hamsy-proxy API reference
 
-This document specifies the JSON wire format and REST/WebSocket surface actually implemented by `flproxy-api` (`crates/flproxy-api/src/`), reconciled against the source and the crate's own test suite (`crates/flproxy-api/tests/rest_api.rs`, `tests/ws.rs`). Earlier drafts of this document described a few things `flproxy-core`/`flproxy-api` ended up implementing differently (noted inline below); this revision matches the real server.
+This document specifies the JSON wire format and REST/WebSocket surface actually implemented by `hamsy-api` (`crates/hamsy-api/src/`), reconciled against the source and the crate's own test suite (`crates/hamsy-api/tests/rest_api.rs`, `tests/ws.rs`). Earlier drafts of this document described a few things `hamsy-core`/`hamsy-api` ended up implementing differently (noted inline below); this revision matches the real server.
 
 All JSON uses `camelCase` field names, with no exceptions — including the fields inside `Action`/`ServerEvent`/`ClientCommand` struct-like variants (`delayMs`, `bytesPerSec`, `contentType`, `flowId`); see [`docs/RULES.md`](RULES.md) for the serde details. For backwards compatibility, rules persisted before this was fixed may still contain the old snake_case spellings on disk, and the server accepts both on read — but it only ever emits camelCase. All timestamps are milliseconds since the Unix epoch unless stated otherwise.
 
-The server is `flproxy-api`'s `axum::Router` (`flproxy_api::router`), served by `flproxy run` on the configured UI port (default `9081`), or standalone with a `NoopReplay`/`StubCert` backend. There is **no authentication** on any of this — see the Security note in the top-level `README.md`.
+The server is `hamsy-api`'s `axum::Router` (`hamsy_api::router`), served by `hamsy run` on the configured UI port (default `9081`), or standalone with a `NoopReplay`/`StubCert` backend. There is **no authentication** on any of this — see the Security note in the top-level `README.md`.
 
 ---
 
@@ -142,7 +142,7 @@ Lightweight record used in list views. Several fields are `null` until the flow 
 
 `body.kind` is one of `text | base64 | none | truncated`. `size` is always the full decoded body size, even when `truncated: true`.
 
-`request`/`response` are `null` until that half of the flow has actually been received; `originalRequest`/`originalResponse` stay `null` unless `modified` is true. `tls` is `null` for plain HTTP flows. `peerCert*`/`notBefore`/`notAfter` on `tls` are currently always `null` in practice — flproxy's hand-rolled ClientHello parser only extracts SNI/ALPN, not the peer certificate fields (`connect.rs`'s `build_tls_info`).
+`request`/`response` are `null` until that half of the flow has actually been received; `originalRequest`/`originalResponse` stay `null` unless `modified` is true. `tls` is `null` for plain HTTP flows. `peerCert*`/`notBefore`/`notAfter` on `tls` are currently always `null` in practice — hamsy-proxy's hand-rolled ClientHello parser only extracts SNI/ALPN, not the peer certificate fields (`connect.rs`'s `build_tls_info`).
 
 ### WsMessage
 
@@ -334,7 +334,7 @@ On connect, the server sends a `state` snapshot (the same shape as `GET /api/sta
 {"type": "notice", "level": "warning", "message": "dropped 3 events"}
 ```
 
-Note: `flproxy-api` never actually constructs a `flowDetail` event itself today (no route/handler emits `ServerEvent::FlowDetail`); it exists in the wire protocol and is handled the same as any other event by the coalescing logic, but nothing currently sends one.
+Note: `hamsy-api` never actually constructs a `flowDetail` event itself today (no route/handler emits `ServerEvent::FlowDetail`); it exists in the wire protocol and is handled the same as any other event by the coalescing logic, but nothing currently sends one.
 
 ### ClientCommand (client -> server), one example per variant
 
@@ -392,8 +392,8 @@ POST   /api/flows/:id/replay
                      -> 200 { "id": "<new-flow-id>" }
                      -> 404 if `:id` doesn't exist
                      -> 501 if the configured ReplayHook can't replay (e.g.
-                        `flproxy-api` running standalone with no proxy
-                        backend attached; not reachable via `flproxy run`,
+                        `hamsy-api` running standalone with no proxy
+                        backend attached; not reachable via `hamsy run`,
                         which always attaches a real backend)
 
 GET    /api/rules
@@ -461,8 +461,8 @@ POST   /api/system-proxy
                      Enabling snapshots the OS proxy configuration exactly
                      as it was beforehand (written to
                      `<data-dir>/sysproxy-state.json`), so a later disable
-                     — via this same endpoint, `flproxy proxy off`, or
-                     `flproxy run` shutting down — restores that prior
+                     — via this same endpoint, `hamsy proxy off`, or
+                     `hamsy run` shutting down — restores that prior
                      configuration rather than just turning the proxy off.
                      Disabling without ever having enabled it through one
                      of those tracked paths still just turns the proxy
@@ -473,7 +473,7 @@ GET    /api/setup
                           "proxyHost": "192.168.1.10",
                           "proxyPort": 9080,
                           "lanAddresses": ["192.168.1.10", "10.0.0.5"],
-                          "certUrl": "http://192.168.1.10:9081/cert/flproxy-ca.crt",
+                          "certUrl": "http://192.168.1.10:9081/cert/hamsy-ca.crt",
                           "caFingerprint": "SHA256:AB:CD:...",
                           "qrSvg": "<svg>...</svg>"
                         }
@@ -498,18 +498,18 @@ POST   /api/har/import
                      the HAR's own entry order) and are broadcast as a
                      `flows` event.
 
-GET    /cert/flproxy-ca.pem
+GET    /cert/hamsy-ca.pem
                      -> 200, the MITM root CA certificate, PEM-encoded,
                         `Content-Type: application/x-pem-file`
 
-GET    /cert/flproxy-ca.crt
+GET    /cert/hamsy-ca.crt
                      -> 200, the CA certificate, DER-encoded (despite the
                         `.crt` extension, the bytes are identical to
                         `.der`), `Content-Type: application/x-x509-ca-cert`
                         — the MIME type mobile OSes look for when
                         installing a certificate profile
 
-GET    /cert/flproxy-ca.der
+GET    /cert/hamsy-ca.der
                      -> 200, same DER bytes as `.crt`,
                         `Content-Type: application/x-x509-ca-cert`
 

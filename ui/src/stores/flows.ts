@@ -149,7 +149,7 @@ async function loadFlowDetail(id: string): Promise<void> {
     setFlowDetail(id, flow);
   } catch (err) {
     // Swallow here; a later phase can surface this via the ui store's toasts.
-    console.error(`flproxy: failed to load flow detail for ${id}`, err);
+    console.error(`hamsy-proxy: failed to load flow detail for ${id}`, err);
   }
 }
 

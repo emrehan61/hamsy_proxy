@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — build flproxy from source and put it on your PATH.
+# install.sh — build hamsy-proxy from source and put it on your PATH.
 #
 # There's no prebuilt binary to fetch (no releases, no CI yet), so this
 # script always builds from the checkout it's run from: UI first (Vite),
@@ -63,7 +63,7 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [OPTIONS]
 
-Builds flproxy from source (Rust + the SolidJS UI) and installs the
+Builds hamsy-proxy from source (Rust + the SolidJS UI) and installs the
 resulting binary onto your PATH. Always builds from this checkout —
 there is nothing to download.
 
@@ -71,8 +71,8 @@ Options:
   --prefix DIR    Install directory (default: $HOME/.local/bin)
   --yes, -y       Assume yes to prompts (e.g. installing Rust via rustup)
   --skip-deps     Only check dependencies; never install anything
-  --no-ui         Skip the UI build; build flproxy without --features embed-ui
-  --uninstall     Remove the installed binary (optionally ~/.flproxy too)
+  --no-ui         Skip the UI build; build hamsy-proxy without --features embed-ui
+  --uninstall     Remove the installed binary (optionally ~/.hamsy too)
   --help, -h      Show this help and exit
 EOF
 }
@@ -140,7 +140,7 @@ esac
 # ---------------------------------------------------------------------------
 
 do_uninstall() {
-  bin_path="$PREFIX/flproxy"
+  bin_path="$PREFIX/hamsy"
   if [ -e "$bin_path" ]; then
     rm -f "$bin_path"
     info "Removed $bin_path"
@@ -148,7 +148,7 @@ do_uninstall() {
     info "No binary found at $bin_path — nothing to remove."
   fi
 
-  data_dir="${FLPROXY_HOME:-$HOME/.flproxy}"
+  data_dir="${HAMSY_HOME:-$HOME/.hamsy}"
 
   # A bare --yes never removes user data: settings/rules/CA key are too easy
   # to lose by accident. This always asks interactively, and only ever
@@ -346,14 +346,14 @@ else
 fi
 
 if [ "$NO_UI" -eq 0 ]; then
-  info "Building flproxy (release, UI embedded)..."
-  (cd "$SCRIPT_DIR" && cargo build --release --features embed-ui -p flproxy-cli)
+  info "Building hamsy-proxy (release, UI embedded)..."
+  (cd "$SCRIPT_DIR" && cargo build --release --features embed-ui -p hamsy-cli)
 else
-  info "Building flproxy (release, no embedded UI)..."
-  (cd "$SCRIPT_DIR" && cargo build --release -p flproxy-cli)
+  info "Building hamsy-proxy (release, no embedded UI)..."
+  (cd "$SCRIPT_DIR" && cargo build --release -p hamsy-cli)
 fi
 
-BUILT_BIN="$SCRIPT_DIR/target/release/flproxy"
+BUILT_BIN="$SCRIPT_DIR/target/release/hamsy"
 [ -f "$BUILT_BIN" ] || die "Build finished but $BUILT_BIN is missing."
 
 # ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ if ! mkdir -p "$PREFIX" 2>/dev/null; then
   die "Can't create $PREFIX (permission denied?). Retry with --prefix DIR somewhere writable, or fix permissions yourself — this script never invokes sudo."
 fi
 
-DEST="$PREFIX/flproxy"
+DEST="$PREFIX/hamsy"
 if [ -e "$DEST" ]; then
   warn "Overwriting existing $DEST"
 fi
@@ -407,13 +407,18 @@ fi
 
 echo
 echo "Defaults: proxy http://127.0.0.1:9080, UI http://127.0.0.1:9081"
-echo "(override with -p/--proxy-port, -u/--ui-port, -b/--bind on 'flproxy'/'flproxy run')"
+echo "(override with -p/--proxy-port, -u/--ui-port, -b/--bind on 'hamsy'/'hamsy run')"
 echo
 echo "Next steps:"
 echo
-echo "  flproxy"
-echo "  flproxy cert install"
-echo "  flproxy proxy on"
+echo "  hamsy"
+echo "  hamsy cert install"
+echo
+echo "Plain 'hamsy' captures traffic system-wide out of the box: it points"
+echo "your OS proxy settings at 127.0.0.1:9080 and restores your previous"
+echo "settings on shutdown. Prefer to configure clients yourself instead?"
+echo "Run 'hamsy --manual' to leave your OS proxy settings untouched and"
+echo "point individual apps/browsers at 127.0.0.1:9080 by hand."
 echo
 echo "HTTPS capture will not work until the CA is trusted. 'cert install' is"
 echo "best-effort and prints manual per-OS steps if it can't do it automatically."

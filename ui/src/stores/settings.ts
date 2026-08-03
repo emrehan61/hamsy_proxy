@@ -86,7 +86,7 @@ export function initSettingsSync(): void {
 
 export type ThemeChoice = "dark" | "light" | "system";
 
-const THEME_STORAGE_KEY = "flproxy.theme";
+const THEME_STORAGE_KEY = "hamsy.theme";
 
 function resolveInitialThemeChoice(): ThemeChoice {
   try {
