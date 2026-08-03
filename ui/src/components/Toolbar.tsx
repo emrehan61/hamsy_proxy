@@ -18,6 +18,8 @@ export interface ToolbarProps {
   onCopyCurl: () => void;
   flowCount: number;
   hasSelection: boolean;
+  /** Optional so existing `<Toolbar/>` call sites without HAR import stay unaffected — the button only renders when this is provided. */
+  onImportHar?: () => void;
 }
 
 function statusLabel(status: WsStatus): string {
@@ -134,6 +136,11 @@ const Toolbar: Component<ToolbarProps> = (props) => {
         onFiltered={props.onExportHarFiltered}
         hasSelection={props.hasSelection}
       />
+      <Show when={props.onImportHar}>
+        <Button variant="ghost" size="sm" icon="arrow-up" onClick={() => props.onImportHar?.()}>
+          Import HAR
+        </Button>
+      </Show>
       <Button variant="ghost" size="sm" icon="replay" disabled={!props.hasSelection} onClick={props.onReplaySelected}>
         Replay
       </Button>

@@ -1,0 +1,218 @@
+/* HAR-viewer feature styles: the session tab strip, the drag&drop import
+   overlay, and the read-only HAR session view. Kept in its own stylesheet
+   (imported only from Traffic.tsx) rather than folded into global.css,
+   mirroring rules.css/settings.css/setup.css's per-page pattern. Only
+   consumes existing custom properties from theme.css — no hardcoded colors,
+   so light/dark both fall out for free. */
+
+/* ---- Traffic page: drag&drop + hidden import input ---- */
+
+.traffic-page {
+  position: relative; /* anchors .traffic-page__drop-overlay's inset:0 */
+}
+
+.traffic-page__file-input {
+  display: none;
+}
+
+.traffic-page__drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 500;
+  pointer-events: none; /* never swallow the dragleave that would dismiss it */
+}
+
+/* ---- SessionTabs ---- */
+
+.session-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-shrink: 0;
+}
+
+.session-tabs__strip {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  min-width: 0;
+}
+
+.session-tabs__tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--s1);
+  max-width: 200px;
+  padding: var(--s2) var(--s3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: -1px;
+  outline-offset: -2px;
+}
+
+.session-tabs__tab:hover {
+  color: var(--fg);
+  background: var(--row-hover);
+}
+
+.session-tabs__tab--active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.session-tabs__tab-icon {
+  flex-shrink: 0;
+}
+
+.session-tabs__tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.session-tabs__tab-count {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+.session-tabs__tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.session-tabs__tab-close:hover {
+  background: var(--row-selected);
+  color: var(--fg);
+}
+
+.session-tabs__add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  flex-shrink: 0;
+  padding: var(--s1) var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.session-tabs__add-btn:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.session-tabs__file-input {
+  display: none;
+}
+
+/* ---- HarSessionView ---- */
+
+.har-session-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+}
+
+.har-session-view__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-shrink: 0;
+}
+
+.har-session-view__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.har-session-view__count {
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.har-session-view__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
+.har-session-view__body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.har-session-view__list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.har-session-view__table {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.har-session-view__no-match {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
