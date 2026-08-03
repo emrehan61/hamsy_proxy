@@ -1,0 +1,23 @@
+{
+  "name": "rdproxy-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.18.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.0",
+    "@solidjs/router": "^0.15.0",
+    "@tanstack/solid-virtual": "^3.11.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0",
+    "vite-plugin-solid": "^2.11.0",
+    "typescript": "^5.7.0"
+  }
+}

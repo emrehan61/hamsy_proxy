@@ -1,0 +1,174 @@
+/* Styles for src/pages/Setup.tsx. Deliberately more spacious than the rest
+   of the app — this page is read once, not scanned like a data table. */
+
+.setup-page {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s6) var(--s4);
+}
+
+.setup-page__intro {
+  max-width: 640px;
+  margin: 0 auto var(--s6);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.setup-page__intro h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.setup-page__intro p {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.setup-page__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+  text-align: center;
+  color: var(--fg-muted);
+  padding: var(--s6);
+}
+
+.setup-step {
+  display: flex;
+  gap: var(--s4);
+  max-width: 640px;
+  margin: 0 auto var(--s6);
+}
+
+.setup-step__number {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.setup-step__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.setup-step__content h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.setup-page__hostport-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.setup-page__hostport {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  padding: var(--s2) var(--s3);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--fg);
+}
+
+.setup-page__fingerprint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.setup-page__note {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.setup-page__qr {
+  width: 160px;
+  height: 160px;
+  padding: var(--s2);
+  background: #ffffff;
+  border-radius: var(--radius);
+}
+
+.setup-page__qr svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.setup-page__downloads {
+  display: flex;
+  gap: var(--s2);
+}
+
+.setup-page__code {
+  padding: var(--s3);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--fg);
+}
+
+.setup-page__result {
+  font-size: 12px;
+  color: var(--fg);
+  padding: var(--s2) var(--s3);
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+}
+
+.setup-page__caveat {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.setup-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-left: var(--s4);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.setup-instructions li {
+  list-style: decimal;
+}
+
+.setup-instructions code {
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+
+.setup-instructions__emphasis {
+  color: var(--amber);
+}

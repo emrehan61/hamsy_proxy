@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+# Add new crates here as they are created (rdproxy-proxy, rdproxy-api, rdproxy-cli, ...).
+members = ["crates/rdproxy-core", "crates/rdproxy-proxy", "crates/rdproxy-api", "crates/rdproxy-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+http = "1"
+bytes = "1"
+parking_lot = "0.12"
+base64 = "0.22"
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
+
+# Additional dependencies required by rdproxy-core.
+flate2 = "1"
+brotli = "6"
+zstd = "0.13"
+globset = "0.4"
+mime = "0.3"
+percent-encoding = "2"
+url = "2"
+tokio-stream = "0.1"
