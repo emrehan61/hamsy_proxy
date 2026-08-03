@@ -1,4 +1,4 @@
-// Pure, DOM-free mirror of the Rust matcher semantics (rdproxy-core) used by
+// Pure, DOM-free mirror of the Rust matcher semantics (flproxy-core) used by
 // the Rules page's live match tester and its inline validators. Every export
 // here is a plain function over plain data — safe to unit test directly, and
 // safe to call from components without pulling in Solid reactivity.

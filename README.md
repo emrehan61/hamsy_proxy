@@ -1,4 +1,4 @@
-# rdproxy
+# flproxy
 
 A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify, and mock traffic from your machine, your phone, or anything on your network.
 
@@ -8,8 +8,8 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 - **Live web UI** — a virtualized traffic list with request/response detail, filters, copy-as-cURL, and HAR export, streamed over a WebSocket as traffic happens.
 - **Rule engine** — redirect or rewrite URLs, mock responses, add/remove/rewrite request and response headers and bodies (including JSON‑patch style edits), block requests, delay them, or throttle bandwidth.
 - **HAR export/import** — pull a session (or a filtered subset) out as a standard `.har` file, or load one back in.
-- **iOS + Android support** — a Setup page walks a device through pointing its Wi‑Fi proxy at rdproxy and trusting the CA, QR code included.
-- **Single static binary** — build once with the UI embedded and ship `rdproxy` as one file.
+- **iOS + Android support** — a Setup page walks a device through pointing its Wi‑Fi proxy at flproxy and trusting the CA, QR code included.
+- **Single static binary** — build once with the UI embedded and ship `flproxy` as one file.
 
 <!-- TODO: capture a real screenshot of the Traffic page and save it to docs/images/traffic.png, then restore an image link here -->
 
@@ -33,7 +33,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## Install / build
 
-Clone and run `install.sh` — it runs the same build below and installs the resulting `rdproxy` binary onto your PATH:
+Clone and run `install.sh` — it runs the same build below and installs the resulting `flproxy` binary onto your PATH:
 
 ```
 git clone https://github.com/emrehan61/fl_proxy.git
@@ -41,11 +41,11 @@ cd fl_proxy
 ./install.sh
 ```
 
-(SSH instead: `git@github.com:emrehan61/fl_proxy.git`.) The repo is named `fl_proxy` — that's the directory `git clone` creates — but the binary the build produces (and that `install.sh` installs) is `rdproxy`, so don't be thrown when the script finishes and prints `Installed .../rdproxy`.
+(SSH instead: `git@github.com:emrehan61/fl_proxy.git`.) The repo is named `fl_proxy` — that's the directory `git clone` creates — but the binary the build produces (and that `install.sh` installs) is `flproxy`, so don't be thrown when the script finishes and prints `Installed .../flproxy`.
 
 Prerequisites, up front: Rust (stable), Node 22, and pnpm. `install.sh` checks for all three and helps with what it can — missing Rust gets an offer to install it via rustup (prompted, or auto-confirmed under `-y`/`--yes`); pnpm is activated automatically via `corepack enable` + `corepack prepare` (version pinned in `ui/package.json`), no prompt needed. Node is the exception: if it's missing or older than 22, `install.sh` does not install it for you — it fails with a message telling you to install Node >=22 yourself (nvm, brew, or your distro's package manager). Supported platforms are macOS and Linux — `install.sh` is a bash script that checks OS/arch and refuses anything else; on Windows, use the manual `cargo build` steps documented later in this section instead.
 
-Default install location is `$HOME/.local/bin`; it prints an `export PATH=...` line if that's not already on yours. Flags (`./install.sh --help` for the full list): `--prefix DIR` (install somewhere else), `--yes`/`-y` (skip confirmation prompts — e.g. before installing Rust via rustup), `--skip-deps` (only check dependencies, install nothing), `--no-ui` (skip the UI build, build `rdproxy` without `--features embed-ui`), `--uninstall` (remove the installed binary — asks before touching `~/.rdproxy`, and a bare `--yes` won't answer that question for you).
+Default install location is `$HOME/.local/bin`; it prints an `export PATH=...` line if that's not already on yours. Flags (`./install.sh --help` for the full list): `--prefix DIR` (install somewhere else), `--yes`/`-y` (skip confirmation prompts — e.g. before installing Rust via rustup), `--skip-deps` (only check dependencies, install nothing), `--no-ui` (skip the UI build, build `flproxy` without `--features embed-ui`), `--uninstall` (remove the installed binary — asks before touching `~/.flproxy`, and a bare `--yes` won't answer that question for you).
 
 The rest of this section is the manual build `install.sh` itself runs — useful if you're iterating on the UI or don't want the script deciding anything for you.
 
@@ -53,37 +53,37 @@ Prerequisites: Rust (stable — see `rust-toolchain.toml`), Node 22, and pnpm (`
 
 ```
 cd ui && pnpm install && pnpm build
-cargo build --release --features embed-ui -p rdproxy-cli
-./target/release/rdproxy
+cargo build --release --features embed-ui -p flproxy-cli
+./target/release/flproxy
 ```
 
 (`cd ui &&` is used instead of `pnpm --dir ui` because `pnpm --dir` still walks up the directory tree for package-manager detection, and an ancestor directory with its own `package.json`/`packageManager` field — e.g. `$HOME` — can make it pick the wrong package manager; running from inside `ui/` avoids that.)
 
-`--features embed-ui` bakes the built `ui/dist` directory into the `rdproxy` binary (via `rust-embed`), so the result is a single self-contained executable. The release binary built this way (`cargo build --release --features embed-ui -p rdproxy-cli`) is about 14 MB, and was confirmed to run standalone — serving the embedded UI correctly — even when copied to and executed from a directory with no `ui/` anywhere nearby. Without that feature, the binary serves the UI straight off disk, checking (in order) `$RDPROXY_UI_DIR`, `./ui/dist`, then `<dir of the executable>/ui/dist` — falling back to a minimal built-in placeholder page if none of those exist. That's the normal dev workflow: `cargo build -p rdproxy-cli` (no feature flag) plus a UI build, or run the UI's own dev server for hot reload:
+`--features embed-ui` bakes the built `ui/dist` directory into the `flproxy` binary (via `rust-embed`), so the result is a single self-contained executable. The release binary built this way (`cargo build --release --features embed-ui -p flproxy-cli`) is about 14 MB, and was confirmed to run standalone — serving the embedded UI correctly — even when copied to and executed from a directory with no `ui/` anywhere nearby. Without that feature, the binary serves the UI straight off disk, checking (in order) `$FLPROXY_UI_DIR`, `./ui/dist`, then `<dir of the executable>/ui/dist` — falling back to a minimal built-in placeholder page if none of those exist. That's the normal dev workflow: `cargo build -p flproxy-cli` (no feature flag) plus a UI build, or run the UI's own dev server for hot reload:
 
 ```
 cd ui && pnpm dev
 ```
 
-This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to `http://127.0.0.1:9081` (rdproxy's default UI/API port), per `ui/vite.config.ts`.
+This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to `http://127.0.0.1:9081` (flproxy's default UI/API port), per `ui/vite.config.ts`.
 
 ## Quick start
 
 ```
-rdproxy                 # same as `rdproxy run`
-rdproxy cert install     # trust the CA in the OS keychain (best-effort; prints manual steps on failure)
-rdproxy proxy on         # or pass --system-proxy to `rdproxy run` to do this automatically
+flproxy                 # same as `flproxy run`
+flproxy cert install     # trust the CA in the OS keychain (best-effort; prints manual steps on failure)
+flproxy proxy on         # or pass --system-proxy to `flproxy run` to do this automatically
 ```
 
 Then open the web UI and browse — traffic starts appearing immediately. Here's the actual startup banner (captured from a local run on the default ports):
 
 ```
 
-  rdproxy 0.1.0
+  flproxy 0.1.0
 
   Proxy      http://127.0.0.1:9080
   Web UI     http://127.0.0.1:9081
-  CA cert    http://10.10.100.182:9081/cert/rdproxy-ca.crt
+  CA cert    http://10.10.100.182:9081/cert/flproxy-ca.crt
   SHA-256    49:A6:C0:B4:4E:74:2F:F8:E5:51:40:67:3D:EF:1D:86:CB:BC:37:59:8E:DD:F6:F8:31:5C:2F:79:3D:15:24:0A
 
   Devices on your network: point their proxy at 10.10.100.182:9080
@@ -97,10 +97,10 @@ Then open the web UI and browse — traffic starts appearing immediately. Here's
 Top level:
 
 ```
-$ rdproxy --help
+$ flproxy --help
 Local MITM HTTP(S) debugging proxy
 
-Usage: rdproxy [OPTIONS] [COMMAND]
+Usage: flproxy [OPTIONS] [COMMAND]
 
 Commands:
   run    Run the proxy and web UI (the default when no subcommand is given)
@@ -114,7 +114,7 @@ Options:
   -p, --proxy-port <PROXY_PORT>  Override the proxy listener port
   -u, --ui-port <UI_PORT>        Override the web UI/API listener port
   -b, --bind <BIND>              Override the address both servers bind to
-      --data-dir <DATA_DIR>      Override the rdproxy data directory (default: `$RDPROXY_HOME` or `~/.rdproxy`)
+      --data-dir <DATA_DIR>      Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`)
       --system-proxy             Enable the OS system proxy on start, restoring its prior configuration on shutdown
       --no-open                  Don't open a browser tab once the servers are listening
       --paused                   Start with capture paused
@@ -123,20 +123,20 @@ Options:
   -V, --version                  Print version
 ```
 
-`rdproxy` with no subcommand is exactly `rdproxy run` with the same flags.
+`flproxy` with no subcommand is exactly `flproxy run` with the same flags.
 
 ```
-$ rdproxy run --help
+$ flproxy run --help
 Run the proxy and web UI (the default when no subcommand is given)
 
-Usage: rdproxy run [OPTIONS]
+Usage: flproxy run [OPTIONS]
 
 Options:
   -p, --proxy-port <PROXY_PORT>  Override the proxy listener port
   -v, --verbose...               Increase log verbosity: `-v` = debug, `-vv` = trace (absent = info). Overridden by `RUST_LOG` when set
   -u, --ui-port <UI_PORT>        Override the web UI/API listener port
   -b, --bind <BIND>              Override the address both servers bind to
-      --data-dir <DATA_DIR>      Override the rdproxy data directory (default: `$RDPROXY_HOME` or `~/.rdproxy`)
+      --data-dir <DATA_DIR>      Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`)
       --system-proxy             Enable the OS system proxy on start, restoring its prior configuration on shutdown
       --no-open                  Don't open a browser tab once the servers are listening
       --paused                   Start with capture paused
@@ -147,10 +147,10 @@ Options:
 Certificate authority management:
 
 ```
-$ rdproxy cert --help
+$ flproxy cert --help
 Manage the MITM root certificate authority
 
-Usage: rdproxy cert [OPTIONS] <COMMAND>
+Usage: flproxy cert [OPTIONS] <COMMAND>
 
 Commands:
   path         Print the path to the CA certificate file
@@ -166,10 +166,10 @@ Options:
 ```
 
 ```
-$ rdproxy cert export --help
+$ flproxy cert export --help
 Export the CA certificate to a file or stdout (PEM by default)
 
-Usage: rdproxy cert export [OPTIONS]
+Usage: flproxy cert export [OPTIONS]
 
 Options:
       --der         Write DER instead of the default PEM
@@ -183,10 +183,10 @@ Options:
 Rule management (operates directly on `<data-dir>/rules.json`, no running server required):
 
 ```
-$ rdproxy rules --help
+$ flproxy rules --help
 Manage capture/rewrite rules
 
-Usage: rdproxy rules [OPTIONS] <COMMAND>
+Usage: flproxy rules [OPTIONS] <COMMAND>
 
 Commands:
   list    List all rules (id, name, enabled, priority)
@@ -200,10 +200,10 @@ Options:
 ```
 
 ```
-$ rdproxy rules import --help
+$ flproxy rules import --help
 Import rules from a JSON file (a `Rule[]` array)
 
-Usage: rdproxy rules import [OPTIONS] <FILE>
+Usage: flproxy rules import [OPTIONS] <FILE>
 
 Arguments:
   <FILE>  Path to a JSON file containing a `Rule[]` array
@@ -214,13 +214,13 @@ Options:
   -h, --help        Print help
 ```
 
-System proxy control (writes/reads the OS proxy settings directly, independent of whether `rdproxy run` is currently active):
+System proxy control (writes/reads the OS proxy settings directly, independent of whether `flproxy run` is currently active):
 
 ```
-$ rdproxy proxy --help
+$ flproxy proxy --help
 Control the OS system HTTP/HTTPS proxy
 
-Usage: rdproxy proxy [OPTIONS] <COMMAND>
+Usage: flproxy proxy [OPTIONS] <COMMAND>
 
 Commands:
   on      Enable the OS system proxy, pointed at this instance's configured port
@@ -233,7 +233,7 @@ Options:
   -h, --help        Print help
 ```
 
-rdproxy always restores whatever proxy configuration existed *before* it made any change — not just "off". The instant the system proxy is enabled (by `rdproxy run --system-proxy`/`autoSystemProxy`, the web UI's system-proxy toggle, or `rdproxy proxy on`), rdproxy takes a snapshot of the OS proxy settings as they stood at that moment and writes it to `<data-dir>/sysproxy-state.json` alongside the pid and target host:port — so if you had a corporate proxy or a different tool's proxy configured, that's what comes back, not a blank "disabled" state. `Ctrl-C`/`SIGINT`, `SIGTERM`, `SIGHUP` (e.g. closing the terminal window), and `SIGQUIT`/`Ctrl-\` on Unix — or `Ctrl-C`, `Ctrl-Break`, console close, logoff, and system shutdown on Windows — all trigger this restore immediately, *before* draining in-flight connections, so the machine is never left pointed at a proxy that's about to go away. A hard kill (`SIGKILL`, a crash, a power cut) is the one thing nothing running in-process can catch; that case is instead recovered automatically (with a logged warning) the next time `rdproxy run` starts (including the bare `rdproxy`) or `rdproxy proxy on` runs, by reading the same marker file — other subcommands (`cert`/`rules`/`proxy off`/`proxy status`) don't touch it. Sending a second signal while a drain is already in progress skips the wait entirely and exits immediately — safe, since the restore already happened before draining started.
+flproxy always restores whatever proxy configuration existed *before* it made any change — not just "off". The instant the system proxy is enabled (by `flproxy run --system-proxy`/`autoSystemProxy`, the web UI's system-proxy toggle, or `flproxy proxy on`), flproxy takes a snapshot of the OS proxy settings as they stood at that moment and writes it to `<data-dir>/sysproxy-state.json` alongside the pid and target host:port — so if you had a corporate proxy or a different tool's proxy configured, that's what comes back, not a blank "disabled" state. `Ctrl-C`/`SIGINT`, `SIGTERM`, `SIGHUP` (e.g. closing the terminal window), and `SIGQUIT`/`Ctrl-\` on Unix — or `Ctrl-C`, `Ctrl-Break`, console close, logoff, and system shutdown on Windows — all trigger this restore immediately, *before* draining in-flight connections, so the machine is never left pointed at a proxy that's about to go away. A hard kill (`SIGKILL`, a crash, a power cut) is the one thing nothing running in-process can catch; that case is instead recovered automatically (with a logged warning) the next time `flproxy run` starts (including the bare `flproxy`) or `flproxy proxy on` runs, by reading the same marker file — other subcommands (`cert`/`rules`/`proxy off`/`proxy status`) don't touch it. Sending a second signal while a drain is already in progress skips the wait entirely and exits immediately — safe, since the restore already happened before draining started.
 
 ## Web UI tour
 
@@ -246,7 +246,7 @@ The UI (`ui/`) is a Vite + [Solid.js](https://www.solidjs.com/) single-page app 
 
 ## Rules
 
-A rule (`rdproxy_core::Rule`) pairs a **matcher** with a list of **actions**. See [`docs/RULES.md`](docs/RULES.md) for the full field reference, phase semantics, evaluation order, and more worked examples. The short version:
+A rule (`flproxy_core::Rule`) pairs a **matcher** with a list of **actions**. See [`docs/RULES.md`](docs/RULES.md) for the full field reference, phase semantics, evaluation order, and more worked examples. The short version:
 
 - The matcher can check the URL (`urlOp`: `any`/`contains`/`equals`/`startsWith`/`endsWith`/`regex`/`wildcard`), HTTP method, host:port (glob), resource type, request/response headers, and request/response body content.
 - Actions are grouped into request-phase (URL/method/header/body rewriting, `redirect`, `mockResponse`, `block`) and response-phase (status/header/body rewriting) — a few (`delay`, `throttle`) apply in whichever phase the rule matched in.
@@ -281,28 +281,28 @@ One example per action category (there are more variants — see `docs/RULES.md`
 
 1. Set the device's Wi‑Fi proxy to this machine's LAN IP and the proxy port shown in the startup banner / Settings page.
 2. Install the CA from the **Setup** page — it shows a QR code (linking to the certificate download URL) plus `.pem`/`.crt` download buttons and the fingerprint to verify.
-3. **iOS**: after installing the profile, you must *also* go to **Settings → General → About → Certificate Trust Settings** and enable full trust for the rdproxy root certificate. This is the single most common reason HTTPS interception silently does nothing on iOS — installing the profile alone is not enough.
+3. **iOS**: after installing the profile, you must *also* go to **Settings → General → About → Certificate Trust Settings** and enable full trust for the flproxy root certificate. This is the single most common reason HTTPS interception silently does nothing on iOS — installing the profile alone is not enough.
 4. **Android**: Android 7+ ignores user-installed CAs by default unless an app explicitly opts in via its network security config. Without rooting the device or using an emulator (or a system-store cert install), only browsers and cooperating apps will be interceptable — most third-party apps will simply fail to connect once HTTPS is intercepted.
 5. HTTP/2 upstream traffic is captured fine, which matters since many mobile apps/browsers negotiate HTTP/2 by default.
 
 ## Certificate-pinned apps will not work
 
-Apps that pin their expected TLS certificate (banking apps, some chat apps) will reject rdproxy's minted certificate and fail to connect, by design, regardless of whether the CA is trusted. This is the same limitation every MITM debugging proxy has — Proxyman, Charles, mitmproxy included.
+Apps that pin their expected TLS certificate (banking apps, some chat apps) will reject flproxy's minted certificate and fail to connect, by design, regardless of whether the CA is trusted. This is the same limitation every MITM debugging proxy has — Proxyman, Charles, mitmproxy included.
 
 ## Troubleshooting
 
-- **HTTPS sites show a connection error / "your connection is not private"** — the CA isn't trusted by the client yet. Run `rdproxy cert install`. On iOS, installing the profile alone is not enough — you also need the Certificate Trust Settings step in [Mobile (iOS/Android)](#mobile-iosandroid).
-- **The Traffic list stays empty** — check, in rough order of likelihood: capture might be paused (`--paused` at startup, the UI's pause button, or `paused` in `settings.json`); `captureIncludeHosts` might be set to a non-empty list that doesn't include the host you're hitting (once it's non-empty, *only* matching hosts are captured — see the Configuration table); the system proxy might not actually be enabled (`rdproxy proxy status`); or the client itself might be ignoring the OS system proxy — many CLI tools (`curl`, `git`, package managers, ...) look at `$http_proxy`/`$https_proxy` instead:
+- **HTTPS sites show a connection error / "your connection is not private"** — the CA isn't trusted by the client yet. Run `flproxy cert install`. On iOS, installing the profile alone is not enough — you also need the Certificate Trust Settings step in [Mobile (iOS/Android)](#mobile-iosandroid).
+- **The Traffic list stays empty** — check, in rough order of likelihood: capture might be paused (`--paused` at startup, the UI's pause button, or `paused` in `settings.json`); `captureIncludeHosts` might be set to a non-empty list that doesn't include the host you're hitting (once it's non-empty, *only* matching hosts are captured — see the Configuration table); the system proxy might not actually be enabled (`flproxy proxy status`); or the client itself might be ignoring the OS system proxy — many CLI tools (`curl`, `git`, package managers, ...) look at `$http_proxy`/`$https_proxy` instead:
   ```
   export http_proxy=http://127.0.0.1:9080
   export https_proxy=http://127.0.0.1:9080
   ```
-- **`rdproxy` refuses to start, printing "port ... is already in use"** — pass `--proxy-port`/`--ui-port` (the error message names the one that's already in use). Both listeners are bound before anything else happens — before the startup banner prints, before the browser opens — so a port conflict is always reported cleanly rather than leaving a half-started process behind.
-- **Some app breaks entirely once the proxy/CA is on**, rather than just showing one failed request — almost always certificate pinning; see [Certificate-pinned apps will not work](#certificate-pinned-apps-will-not-work). The fix isn't on rdproxy's side: add that app's host to `passthroughHosts` (Settings, or `settings.json` directly) so it's never MITM'd.
-- **The web UI shows a bare "Web UI not built" placeholder page** instead of the real UI — the binary was built without `--features embed-ui`, and no built `ui/dist` was found on disk either. See [Install / build](#install--build) for the exact lookup order (`$RDPROXY_UI_DIR`, then `./ui/dist`, then `<exe dir>/ui/dist`) and how to build it.
-- **The machine seems stuck pointed at a dead rdproxy's proxy settings** (it was `kill -9`'d, crashed, or the machine lost power while running) — `rdproxy proxy off` forces a restore. In practice you rarely need to: the next `rdproxy run` (including the bare `rdproxy`) or `rdproxy proxy on` notices the leftover marker file and restores it automatically before doing anything else, so this is usually already fixed by the time you go looking for it.
+- **`flproxy` refuses to start, printing "port ... is already in use"** — pass `--proxy-port`/`--ui-port` (the error message names the one that's already in use). Both listeners are bound before anything else happens — before the startup banner prints, before the browser opens — so a port conflict is always reported cleanly rather than leaving a half-started process behind.
+- **Some app breaks entirely once the proxy/CA is on**, rather than just showing one failed request — almost always certificate pinning; see [Certificate-pinned apps will not work](#certificate-pinned-apps-will-not-work). The fix isn't on flproxy's side: add that app's host to `passthroughHosts` (Settings, or `settings.json` directly) so it's never MITM'd.
+- **The web UI shows a bare "Web UI not built" placeholder page** instead of the real UI — the binary was built without `--features embed-ui`, and no built `ui/dist` was found on disk either. See [Install / build](#install--build) for the exact lookup order (`$FLPROXY_UI_DIR`, then `./ui/dist`, then `<exe dir>/ui/dist`) and how to build it.
+- **The machine seems stuck pointed at a dead flproxy's proxy settings** (it was `kill -9`'d, crashed, or the machine lost power while running) — `flproxy proxy off` forces a restore. In practice you rarely need to: the next `flproxy run` (including the bare `flproxy`) or `flproxy proxy on` notices the leftover marker file and restores it automatically before doing anything else, so this is usually already fixed by the time you go looking for it.
 - **Android apps fail to connect once HTTPS interception is on**, even with the CA installed — expected; see point 4 in [Mobile (iOS/Android)](#mobile-iosandroid) (Android 7+ ignores user-installed CAs by default outside of browsers and cooperating apps).
-- **macOS: `rdproxy proxy on` / `rdproxy run --system-proxy` fails, or `networksetup` seems to hang** — `networksetup` needs permission to change some network services (most commonly seen on a managed/corporate Mac), and rdproxy reports whatever error it returns rather than pretending the change succeeded — the failing `networksetup` command and its stderr are included in the error message.
+- **macOS: `flproxy proxy on` / `flproxy run --system-proxy` fails, or `networksetup` seems to hang** — `networksetup` needs permission to change some network services (most commonly seen on a managed/corporate Mac), and flproxy reports whatever error it returns rather than pretending the change succeeded — the failing `networksetup` command and its stderr are included in the error message.
 
 ## HAR export/import
 
@@ -313,17 +313,17 @@ Apps that pin their expected TLS certificate (banking apps, some chat apps) will
 
 | Crate/dir | Role |
 |---|---|
-| `rdproxy-core` | Pure logic: flow/rule/settings types, the rule matching/mutation engine, body codecs, the in-memory flow store, HAR import/export. No networking. |
-| `rdproxy-proxy` | The MITM engine: accepts connections, terminates/re-originates TLS, applies rules, dispatches upstream, records flows, relays WebSockets. Built directly on `tokio`/`hyper`/`rustls`. |
-| `rdproxy-api` | The REST + WebSocket API and web UI asset server (`axum`). Depends only on `rdproxy-core`; talks to a proxy backend through small `ReplayHook`/`CertHook` traits. |
-| `rdproxy-cli` | The `rdproxy` binary: wires `rdproxy-proxy` and `rdproxy-api` together for `run`, plus `cert`/`rules`/`proxy` management subcommands that operate on-disk directly. |
+| `flproxy-core` | Pure logic: flow/rule/settings types, the rule matching/mutation engine, body codecs, the in-memory flow store, HAR import/export. No networking. |
+| `flproxy-proxy` | The MITM engine: accepts connections, terminates/re-originates TLS, applies rules, dispatches upstream, records flows, relays WebSockets. Built directly on `tokio`/`hyper`/`rustls`. |
+| `flproxy-api` | The REST + WebSocket API and web UI asset server (`axum`). Depends only on `flproxy-core`; talks to a proxy backend through small `ReplayHook`/`CertHook` traits. |
+| `flproxy-cli` | The `flproxy` binary: wires `flproxy-proxy` and `flproxy-api` together for `run`, plus `cert`/`rules`/`proxy` management subcommands that operate on-disk directly. |
 | `ui/` | The Solid.js web UI, built with Vite. |
 
-Request lifecycle for a MITM'd HTTPS request: a client `CONNECT`s to rdproxy; rdproxy replies `200` immediately and then peeks the tunneled bytes to tell TLS from plaintext. For TLS, it hand-parses the ClientHello for SNI/ALPN (without pulling in a full TLS parser), mints a leaf certificate for that host on the fly (signed by the CA, cached per-host), and terminates TLS itself. The decrypted request then runs through the rule engine's request phase (URL/header/body rewrites, or a `block`/`mockResponse` short-circuit), goes to the real upstream server over a pooled connection, and the response runs through the rule engine's response phase before being recorded as a `Flow` and sent back to the client — all while a WebSocket-connected UI receives the same event stream in real time. Plain HTTP and hosts covered by `passthroughHosts`/`intercept_https=false` skip the TLS-terminate step and are blind-tunneled (though still recorded as a minimal flow if capture is on). HTTP/2 upstream connections are captured correctly too — verified by observing that requests to github.com and google.com are recorded with protocol `HTTP/2.0` in the flow list.
+Request lifecycle for a MITM'd HTTPS request: a client `CONNECT`s to flproxy; flproxy replies `200` immediately and then peeks the tunneled bytes to tell TLS from plaintext. For TLS, it hand-parses the ClientHello for SNI/ALPN (without pulling in a full TLS parser), mints a leaf certificate for that host on the fly (signed by the CA, cached per-host), and terminates TLS itself. The decrypted request then runs through the rule engine's request phase (URL/header/body rewrites, or a `block`/`mockResponse` short-circuit), goes to the real upstream server over a pooled connection, and the response runs through the rule engine's response phase before being recorded as a `Flow` and sent back to the client — all while a WebSocket-connected UI receives the same event stream in real time. Plain HTTP and hosts covered by `passthroughHosts`/`intercept_https=false` skip the TLS-terminate step and are blind-tunneled (though still recorded as a minimal flow if capture is on). HTTP/2 upstream connections are captured correctly too — verified by observing that requests to github.com and google.com are recorded with protocol `HTTP/2.0` in the flow list.
 
 ## Configuration
 
-Data lives under `$RDPROXY_HOME` if set, otherwise `~/.rdproxy` (`%USERPROFILE%\.rdproxy` on Windows):
+Data lives under `$FLPROXY_HOME` if set, otherwise `~/.flproxy` (`%USERPROFILE%\.flproxy` on Windows):
 
 - `settings.json` — the table below.
 - `rules.json` — the rule list, as a JSON array.
@@ -355,7 +355,7 @@ cargo fmt --all --check
 cd ui && pnpm typecheck
 ```
 
-`cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `rdproxy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, and `cd ui && pnpm typecheck` (`tsc --noEmit`) are all clean.
+`cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `flproxy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, and `cd ui && pnpm typecheck` (`tsc --noEmit`) are all clean.
 
 Formatting is stock rustfmt — there is deliberately no `rustfmt.toml`, so `cargo fmt` with a default toolchain produces exactly what's committed and no per-project setup is needed.
 
@@ -363,14 +363,14 @@ Formatting is stock rustfmt — there is deliberately no `rustfmt.toml`, so `car
 
 - Start with the Architecture table above for which crate owns what before touching anything.
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` on whatever you touch before sending it out — both are currently clean on `master`, so a new warning or formatting diff is yours to fix, not a pre-existing one to ignore.
-- Tests live next to the code they cover: `rdproxy-core` has only inline `#[cfg(test)] mod tests` blocks (no `tests/` directory — it's pure logic, no server to spin up). `rdproxy-proxy` and `rdproxy-api` each add a `tests/` directory on top of their inline unit tests (`rdproxy-proxy/tests/proxy_tests.rs` drives a real MITM proxy instance end-to-end; `rdproxy-api/tests/rest_api.rs` and `tests/ws.rs` drive the REST/WebSocket API against a standalone `ApiState`). `rdproxy-cli` has inline tests in `cert.rs`/`rules.rs`/`run.rs` plus the `--ignored` end-to-end tests in `tests/shutdown.rs` mentioned above.
+- Tests live next to the code they cover: `flproxy-core` has only inline `#[cfg(test)] mod tests` blocks (no `tests/` directory — it's pure logic, no server to spin up). `flproxy-proxy` and `flproxy-api` each add a `tests/` directory on top of their inline unit tests (`flproxy-proxy/tests/proxy_tests.rs` drives a real MITM proxy instance end-to-end; `flproxy-api/tests/rest_api.rs` and `tests/ws.rs` drive the REST/WebSocket API against a standalone `ApiState`). `flproxy-cli` has inline tests in `cert.rs`/`rules.rs`/`run.rs` plus the `--ignored` end-to-end tests in `tests/shutdown.rs` mentioned above.
 - Iterating on the UI: run its dev server for hot reload rather than rebuilding the Rust binary on every change — see `cd ui && pnpm dev` in [Install / build](#install--build).
 
 ## Security note
 
-By default rdproxy binds `0.0.0.0` (see `bindAddr` above) so phones and other devices on your LAN can reach it — which also means **anyone on that network can use it as an open HTTP(S) proxy**, and the web UI/API has **no authentication** at all (there's no auth middleware in `rdproxy-api`; the router adds only CORS, compression, and tracing layers). If you're not doing mobile/LAN capture, set `bindAddr` to `127.0.0.1`. Don't run rdproxy on a network you don't trust.
+By default flproxy binds `0.0.0.0` (see `bindAddr` above) so phones and other devices on your LAN can reach it — which also means **anyone on that network can use it as an open HTTP(S) proxy**, and the web UI/API has **no authentication** at all (there's no auth middleware in `flproxy-api`; the router adds only CORS, compression, and tracing layers). If you're not doing mobile/LAN capture, set `bindAddr` to `127.0.0.1`. Don't run flproxy on a network you don't trust.
 
-Installing the CA certificate means **anyone who obtains `ca-key.pem` can transparently MITM your HTTPS traffic** on any device that trusts that CA. Keep it private (it's written with `0600` permissions on Unix, but back it up carefully if you do), and run `rdproxy cert uninstall` to remove the CA from your OS/browser trust store once you're done debugging.
+Installing the CA certificate means **anyone who obtains `ca-key.pem` can transparently MITM your HTTPS traffic** on any device that trusts that CA. Keep it private (it's written with `0600` permissions on Unix, but back it up carefully if you do), and run `flproxy cert uninstall` to remove the CA from your OS/browser trust store once you're done debugging.
 
 ## License
 

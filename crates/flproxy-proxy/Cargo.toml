@@ -1,0 +1,46 @@
+[package]
+name = "flproxy-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MITM HTTP(S) proxy engine for flproxy."
+
+[dependencies]
+flproxy-core = { path = "../flproxy-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+url = { workspace = true }
+time = { workspace = true }
+base64 = { workspace = true }
+
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full", "tokio"] }
+http-body = "1"
+http-body-util = "0.1"
+# Use the "ring" crypto backend (not the default aws_lc_rs) so we don't pull
+# in aws-lc-sys's cmake/nasm build requirement; rcgen also uses `ring`
+# (its default feature), so this keeps a single crypto backend in the tree.
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rcgen = { version = "0.13", features = ["x509-parser"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+rustls-native-certs = "0.8"
+webpki-roots = "0.26"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+x509-parser = "0.16"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+tempfile = "3"
+flate2 = "1"

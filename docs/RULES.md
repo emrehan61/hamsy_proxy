@@ -1,8 +1,8 @@
 # Rule engine
 
-A `Rule` (`crates/rdproxy-core/src/rule.rs`) pairs a `match` (`Matcher`) with an ordered list of `actions` (`Action`). Rules are persisted as `<data-dir>/rules.json` and served/edited via `GET/POST /api/rules`, `PUT/DELETE /api/rules/:id`, `POST /api/rules/:id/toggle`, `POST /api/rules/reorder`, and `POST/GET /api/rules/import`/`/export` (see `docs/API.md`).
+A `Rule` (`crates/flproxy-core/src/rule.rs`) pairs a `match` (`Matcher`) with an ordered list of `actions` (`Action`). Rules are persisted as `<data-dir>/rules.json` and served/edited via `GET/POST /api/rules`, `PUT/DELETE /api/rules/:id`, `POST /api/rules/:id/toggle`, `POST /api/rules/reorder`, and `POST/GET /api/rules/import`/`/export` (see `docs/API.md`).
 
-All field names below are the literal JSON wire names, verified by reading `rule.rs` and by POSTing each example to a running `rdproxy run` instance (see "Verification" at the end of this document).
+All field names below are the literal JSON wire names, verified by reading `rule.rs` and by POSTing each example to a running `flproxy run` instance (see "Verification" at the end of this document).
 
 ## Matcher fields
 
@@ -166,7 +166,7 @@ A rule can fire in both phases if its matcher passes both times and it has actio
 
 Rules are sorted once (when the rule set is (re)compiled, i.e. on every create/update/delete/reorder/import) by `priority` ascending, then by original insertion (list) order for ties. **All matching rules apply** in that order — this is not first-match-wins — except that a `block` or `mockResponse` stops any further rules in the *same phase* from being evaluated. Disabled rules (`enabled: false`) are skipped entirely (never matched, never applied). A rule with an invalid regex or glob pattern anywhere in its matcher/actions is dropped from the compiled set (it never matches) — there is currently no API endpoint that surfaces this as an error to the caller, so a typo'd regex fails silently rather than 400ing at creation time.
 
-Changes made through the API (or `rdproxy rules import`) take effect immediately on the next request — the compiled rule set is rebuilt on every mutation, there's no caching lag.
+Changes made through the API (or `flproxy rules import`) take effect immediately on the next request — the compiled rule set is rebuilt on every mutation, there's no caching lag.
 
 ## Capture-group substitution
 
@@ -174,7 +174,7 @@ When a rule's matcher uses `"urlOp": "regex"`, `redirect`'s `to` and `rewriteUrl
 
 ## Recipes
 
-Each recipe was POSTed to a locally running `rdproxy run` instance's `POST /api/rules` and returned `201 Created` — see "Verification" for the exact commands and responses.
+Each recipe was POSTed to a locally running `flproxy run` instance's `POST /api/rules` and returned `201 Created` — see "Verification" for the exact commands and responses.
 
 **1. Point a staging API path at localhost, preserving the path**
 
@@ -289,7 +289,7 @@ Each recipe was POSTed to a locally running `rdproxy run` instance's `POST /api/
 Each recipe above (plus the `id`/`enabled` etc. defaults filled in by the server) was submitted to a real running instance:
 
 ```
-cargo run -q -p rdproxy-cli -- run --no-open --proxy-port 19082 --ui-port 19083 --data-dir <scratch-dir> &
+cargo run -q -p flproxy-cli -- run --no-open --proxy-port 19082 --ui-port 19083 --data-dir <scratch-dir> &
 curl -sS -X POST http://127.0.0.1:19083/api/rules -H "Content-Type: application/json" --data-binary @recipe.json -w "\nHTTP_STATUS:%{http_code}\n"
 ```
 

@@ -4,6 +4,15 @@
 // Field-level edits within a card go through `produce` so the action object
 // keeps its identity across keystrokes (see ActionFields.tsx's header
 // comment for why that matters).
+//
+// Action type is "pinned" to whatever the first action's type is (i.e. the
+// type chosen via the New Rule template): once a rule has actions, every
+// card's type <Select> only offers that one type, so the template choice
+// stays meaningful instead of being immediately overridable. A card whose
+// own type differs from the pin (legacy/imported rules) keeps its current
+// type as an extra option so the <select> is never rendered with a value
+// outside its options. With zero actions nothing is pinned and the full
+// type list is offered, matching the pre-pinning behaviour.
 
 import type { Component } from "solid-js";
 import { For, Show, createSignal } from "solid-js";
@@ -30,6 +39,19 @@ const ActionsEditor: Component<ActionsEditorProps> = (props) => {
 
   const matcherCaptureCount = () =>
     props.matcher.urlOp === "regex" ? countCaptureGroups(props.matcher.urlValue) : 0;
+
+  // Undefined when the rule has no actions yet (nothing chosen to pin to).
+  const pinnedType = () => props.actions[0]?.type;
+
+  const optionsFor = (action: Action) => {
+    const pinned = pinnedType();
+    if (pinned === undefined) return ACTION_TYPE_OPTIONS;
+    if (action.type === pinned) return ACTION_TYPE_OPTIONS.filter((o) => o.value === pinned);
+    // Defensive: an imported/legacy rule may have a card whose type doesn't
+    // match the pin — keep it selectable so the <select> always has its
+    // current value among its options.
+    return ACTION_TYPE_OPTIONS.filter((o) => o.value === pinned || o.value === action.type);
+  };
 
   const move = (from: number, to: number) => {
     if (from === to) return;
@@ -61,7 +83,8 @@ const ActionsEditor: Component<ActionsEditorProps> = (props) => {
   };
 
   const add = () => {
-    props.setRule("actions", (arr) => [...arr, defaultActionFor("setRequestHeader")]);
+    const pinned = pinnedType();
+    props.setRule("actions", (arr) => [...arr, defaultActionFor(pinned ?? "setRequestHeader")]);
   };
 
   return (
@@ -92,7 +115,8 @@ const ActionsEditor: Component<ActionsEditorProps> = (props) => {
                 <Select
                   value={action.type}
                   onChange={(v) => changeType(index(), v as Action["type"])}
-                  options={ACTION_TYPE_OPTIONS}
+                  options={optionsFor(action)}
+                  disabled={optionsFor(action).length === 1}
                   class="action-card__type"
                 />
                 <Show when={warning()}>
@@ -121,6 +145,9 @@ const ActionsEditor: Component<ActionsEditorProps> = (props) => {
       <Button variant="default" size="sm" icon="plus" onClick={add}>
         Add action
       </Button>
+      <Show when={pinnedType()}>
+        <div class="actions-editor__hint">Action type is fixed by this rule's template — change it from the JSON tab.</div>
+      </Show>
     </div>
   );
 };

@@ -1,0 +1,360 @@
+//! The `run` command: wires the proxy engine ([`flproxy_proxy`]) and the
+//! REST/WebSocket API + web UI server ([`flproxy_api`]) together into one
+//! running flproxy instance, sharing a single [`ProxyContext`] between them.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use clap::Args;
+use parking_lot::RwLock;
+use tokio::net::TcpListener;
+
+use flproxy_core::{FlowStore, RulesStore, Settings};
+use flproxy_proxy::upstream::Connector;
+use flproxy_proxy::{CertAuthority, ProxyContext, ProxyServer};
+
+use crate::hooks::{RealCertHook, RealReplayHook};
+use crate::resolve_data_dir;
+use crate::shutdown;
+
+/// Options for `flproxy run` (and the bare `flproxy` invocation, which is
+/// equivalent to `flproxy run` with whatever flags were given at the top
+/// level).
+#[derive(Args, Debug, Clone, Default)]
+pub struct RunArgs {
+    /// Override the proxy listener port.
+    #[arg(short = 'p', long = "proxy-port")]
+    pub proxy_port: Option<u16>,
+    /// Override the web UI/API listener port.
+    #[arg(short = 'u', long = "ui-port")]
+    pub ui_port: Option<u16>,
+    /// Override the address both servers bind to.
+    #[arg(short = 'b', long = "bind")]
+    pub bind: Option<String>,
+    /// Override the flproxy data directory (default: `$FLPROXY_HOME` or `~/.flproxy`).
+    #[arg(long = "data-dir")]
+    pub data_dir: Option<PathBuf>,
+    /// Enable the OS system proxy on start, restoring its prior configuration on shutdown.
+    #[arg(long = "system-proxy")]
+    pub system_proxy: bool,
+    /// Don't open a browser tab once the servers are listening.
+    #[arg(long = "no-open")]
+    pub no_open: bool,
+    /// Start with capture paused.
+    #[arg(long)]
+    pub paused: bool,
+    /// Disable HTTPS/TLS interception (blind-tunnel HTTPS instead of MITM'ing it).
+    #[arg(long = "no-https")]
+    pub no_https: bool,
+}
+
+/// Bypass list applied when flproxy enables the OS system proxy: traffic to
+/// these hosts is left to connect directly rather than through the proxy.
+const SYSTEM_PROXY_BYPASS: &[&str] = &["localhost", "127.0.0.1", "::1", "*.local"];
+
+/// RAII guard: while alive, this process may have enabled the OS system
+/// proxy via `sysproxy_state::acquire`. Its `Drop` restores from the
+/// marker on *any* exit path this process takes, including an early `?`
+/// return out of `run()` after the proxy was enabled and a panic
+/// unwind. The shutdown sequence below also calls `restore()`
+/// explicitly and immediately on the first signal (before draining);
+/// the `AtomicBool` makes both call sites idempotent -- whichever runs
+/// first does the real work, the other is a no-op.
+struct SystemProxyGuard {
+    data_dir: PathBuf,
+    restored: std::sync::atomic::AtomicBool,
+}
+
+impl SystemProxyGuard {
+    fn new(data_dir: PathBuf) -> Self {
+        SystemProxyGuard {
+            data_dir,
+            restored: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Restores via `spawn_blocking` (the underlying OS commands are
+    /// synchronous `std::process::Command` calls) so this doesn't stall
+    /// the async runtime while the drain is trying to make progress.
+    /// Returns `None` if this guard already restored (via this method
+    /// or `Drop`) -- callers use that to skip printing anything.
+    async fn restore(&self) -> Option<Result<bool, String>> {
+        use std::sync::atomic::Ordering;
+        if self.restored.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        let data_dir = self.data_dir.clone();
+        match tokio::task::spawn_blocking(move || {
+            flproxy_api::sysproxy_state::restore_if_marked(&data_dir)
+        })
+        .await
+        {
+            Ok(result) => Some(result),
+            Err(join_err) => Some(Err(format!(
+                "system-proxy restore task panicked: {join_err}"
+            ))),
+        }
+    }
+}
+
+impl Drop for SystemProxyGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        // Fallback for the early-return-via-`?`/panic-unwind path, where
+        // there's no async context to `spawn_blocking` from. A no-op on
+        // the normal shutdown path, since `restore()` above already ran.
+        if self.restored.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Err(err) = flproxy_api::sysproxy_state::restore_if_marked(&self.data_dir) {
+            tracing::warn!(%err, "failed to restore the system proxy while unwinding");
+        }
+    }
+}
+
+/// Runs the proxy and API/UI servers until interrupted (`Ctrl-C`/`SIGTERM`),
+/// per `args`.
+pub async fn run(args: RunArgs) -> Result<()> {
+    let data_dir = resolve_data_dir(args.data_dir.as_deref());
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("failed to create data dir {}", data_dir.display()))?;
+
+    // A previous flproxy process may have died (crash/hard kill) without
+    // running its own shutdown path, leaving the OS system proxy pointed
+    // at a now-dead instance. This is the earliest point any code can
+    // notice and fix that -- see `sysproxy_state`'s module doc.
+    flproxy_api::sysproxy_state::recover_stale(&data_dir);
+
+    // Registered as early as possible so signal handlers are live for as
+    // much of this process's lifetime as practical.
+    let shutdown_signal_task = tokio::spawn(shutdown::wait_for_shutdown_signal());
+    let system_proxy_guard = SystemProxyGuard::new(data_dir.clone());
+
+    let mut settings = Settings::load(&data_dir.join("settings.json"));
+    if let Some(port) = args.proxy_port {
+        settings.proxy_port = port;
+    }
+    if let Some(port) = args.ui_port {
+        settings.ui_port = port;
+    }
+    if let Some(bind) = args.bind.clone() {
+        settings.bind_addr = bind;
+    }
+    if args.paused {
+        settings.paused = true;
+    }
+    if args.no_https {
+        settings.intercept_https = false;
+    }
+    settings
+        .save(&data_dir.join("settings.json"))
+        .context("failed to save settings")?;
+
+    let bind_addr = settings.bind_addr.clone();
+    let proxy_port = settings.proxy_port;
+    let ui_port = settings.ui_port;
+    let auto_system_proxy = settings.auto_system_proxy;
+    let max_flows = settings.max_flows;
+
+    // Build the shared handles once, mirroring
+    // `flproxy-proxy/tests/common/mod.rs::spawn_proxy_trusting`.
+    let settings = Arc::new(RwLock::new(settings));
+    let flows = Arc::new(FlowStore::new(max_flows));
+    let rules = Arc::new(RulesStore::load(&data_dir.join("rules.json")));
+    let (events, _rx) = tokio::sync::broadcast::channel(4096);
+    let ca = Arc::new(
+        CertAuthority::load_or_generate(&data_dir).context("failed to load or generate the CA")?,
+    );
+    let upstream = Arc::new(Connector::new().context("failed to build the upstream connector")?);
+
+    let ctx = ProxyContext {
+        settings: settings.clone(),
+        rules: rules.clone(),
+        flows: flows.clone(),
+        events: events.clone(),
+        ca: ca.clone(),
+        upstream,
+    };
+
+    let replay_hook = Arc::new(RealReplayHook::new(ctx.clone()));
+    let cert_hook = Arc::new(RealCertHook::new(ca.clone()));
+    let api_state = flproxy_api::ApiState::new(
+        flows.clone(),
+        rules.clone(),
+        settings.clone(),
+        data_dir.join("settings.json"),
+        events.clone(),
+        replay_hook,
+        cert_hook,
+        env!("CARGO_PKG_VERSION"),
+    );
+
+    // Bind both listeners before printing anything, so a port conflict is
+    // reported cleanly before any partial startup state is visible.
+    let proxy_listener = TcpListener::bind((bind_addr.as_str(), proxy_port))
+        .await
+        .with_context(|| {
+            format!(
+                "port {proxy_port} is already in use — pass --proxy-port to use a different one"
+            )
+        })?;
+    let ui_listener = TcpListener::bind((bind_addr.as_str(), ui_port))
+        .await
+        .with_context(|| {
+            format!("port {ui_port} is already in use — pass --ui-port to use a different one")
+        })?;
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let proxy_task = tokio::spawn({
+        let shutdown = shutdown_future(shutdown_rx.clone());
+        async move {
+            if let Err(err) = ProxyServer::new(ctx).serve(proxy_listener, shutdown).await {
+                tracing::error!(%err, "proxy server exited with an error");
+            }
+        }
+    });
+
+    let api_task = tokio::spawn({
+        let shutdown = shutdown_future(shutdown_rx.clone());
+        async move {
+            let router = flproxy_api::router(api_state);
+            if let Err(err) = axum::serve(ui_listener, router)
+                .with_graceful_shutdown(shutdown)
+                .await
+            {
+                tracing::error!(%err, "api server exited with an error");
+            }
+        }
+    });
+
+    let lan_ip = flproxy_api::lan_addresses().into_iter().next();
+    println!(
+        "{}",
+        format_banner(
+            env!("CARGO_PKG_VERSION"),
+            proxy_port,
+            ui_port,
+            lan_ip.as_deref(),
+            &ca.fingerprint_sha256()
+        )
+    );
+
+    if !args.no_open {
+        let url = format!("http://127.0.0.1:{ui_port}");
+        if let Err(err) = open::that(&url) {
+            tracing::warn!(%err, url, "failed to open the browser");
+        }
+    }
+
+    let system_proxy_requested = args.system_proxy || auto_system_proxy;
+    if system_proxy_requested {
+        let bypass: Vec<String> = SYSTEM_PROXY_BYPASS.iter().map(|s| s.to_string()).collect();
+        match flproxy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", proxy_port, &bypass) {
+            Ok(()) => tracing::info!("enabled the OS system proxy"),
+            Err(err) => tracing::warn!(%err, "failed to enable the OS system proxy"),
+        }
+    }
+
+    let signal = shutdown_signal_task
+        .await
+        .expect("shutdown-signal watcher task panicked");
+    println!("\n  Shutting down…");
+    tracing::info!(%signal, "received shutdown signal, restoring system proxy and draining connections");
+
+    match system_proxy_guard.restore().await {
+        Some(Ok(true)) => println!("  System proxy restored."),
+        Some(Ok(false)) => {} // this run never enabled it; nothing to restore
+        Some(Err(err)) => {
+            tracing::warn!(%err, "failed to restore the OS system proxy on shutdown");
+            println!("  Warning: failed to restore the system proxy automatically ({err}); run `flproxy proxy off` to fix it manually.");
+        }
+        None => {} // already restored (shouldn't happen at this call site, it's the first call)
+    }
+
+    let _ = shutdown_tx.send(true);
+
+    tokio::select! {
+        _ = async { let _ = tokio::join!(proxy_task, api_task); } => {
+            println!("  Stopped.");
+        }
+        second = shutdown::wait_for_shutdown_signal() => {
+            // The proxy was already restored above, before draining
+            // started, so it's safe to skip the drain entirely here and
+            // exit immediately -- the failure mode that restore exists to
+            // prevent (the machine routed through a dead proxy) has
+            // already been avoided regardless of what happens to the
+            // in-flight connections now.
+            tracing::warn!(%second, "received a second shutdown signal; exiting immediately without draining");
+            eprintln!("  Second signal received, exiting immediately.");
+            std::process::exit(130);
+        }
+    }
+
+    tracing::info!("flproxy stopped, goodbye");
+    Ok(())
+}
+
+/// Resolves once `rx`'s value flips to `true`, suitable for
+/// [`ProxyServer::serve`] and `axum::serve(..).with_graceful_shutdown`.
+async fn shutdown_future(mut rx: tokio::sync::watch::Receiver<bool>) {
+    let _ = rx.wait_for(|ready| *ready).await;
+}
+
+/// Formats the compact startup banner printed to stdout once both listeners
+/// are bound.
+fn format_banner(
+    version: &str,
+    proxy_port: u16,
+    ui_port: u16,
+    lan_ip: Option<&str>,
+    fingerprint: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("\n  flproxy {version}\n\n"));
+    out.push_str(&format!("  Proxy      http://127.0.0.1:{proxy_port}\n"));
+    out.push_str(&format!("  Web UI     http://127.0.0.1:{ui_port}\n"));
+    let display_ip = lan_ip.unwrap_or("127.0.0.1");
+    out.push_str(&format!(
+        "  CA cert    http://{display_ip}:{ui_port}/cert/flproxy-ca.crt\n"
+    ));
+    out.push_str(&format!("  SHA-256    {fingerprint}\n\n"));
+    match lan_ip {
+        Some(ip) => {
+            out.push_str(&format!(
+                "  Devices on your network: point their proxy at {ip}:{proxy_port}\n"
+            ));
+        }
+        None => {
+            out.push_str(
+                "  No LAN address detected; other devices may not be able to reach this proxy.\n",
+            );
+        }
+    }
+    out.push_str("  Press Ctrl-C to stop.\n");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn banner_includes_lan_ip_when_present() {
+        let banner = format_banner("0.1.0", 9080, 9081, Some("192.168.1.42"), "AB:CD");
+        assert!(banner.contains("flproxy 0.1.0"));
+        assert!(banner.contains("http://127.0.0.1:9080"));
+        assert!(banner.contains("http://192.168.1.42:9081/cert/flproxy-ca.crt"));
+        assert!(banner.contains("192.168.1.42:9080"));
+        assert!(banner.contains("AB:CD"));
+    }
+
+    #[test]
+    fn banner_falls_back_without_lan_ip() {
+        let banner = format_banner("0.1.0", 9080, 9081, None, "AB:CD");
+        assert!(banner.contains("No LAN address detected"));
+        assert!(banner.contains("http://127.0.0.1:9081/cert/flproxy-ca.crt"));
+        assert!(!banner.contains("point their proxy"));
+    }
+}

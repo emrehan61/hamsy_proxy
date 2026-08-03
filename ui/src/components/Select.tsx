@@ -12,6 +12,7 @@ export interface SelectProps {
   options: SelectOption[];
   placeholder?: string;
   class?: string;
+  disabled?: boolean;
 }
 
 const Select: Component<SelectProps> = (props) => {
@@ -19,6 +20,7 @@ const Select: Component<SelectProps> = (props) => {
     <select
       class={`select${props.class ? ` ${props.class}` : ""}`}
       value={props.value}
+      disabled={props.disabled}
       onChange={(e) => props.onChange(e.currentTarget.value)}
     >
       <Show when={props.placeholder}>
