@@ -14,7 +14,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
-use rdproxy_core::{BodyPayload, Flow, FlowId, FlowState, RequestRecord, ResponseRecord, ServerEvent, WsDirection, WsMessage};
+use rdproxy_core::{
+    BodyPayload, Flow, FlowId, FlowState, RequestRecord, ResponseRecord, ServerEvent, WsDirection,
+    WsMessage,
+};
 
 use crate::config::ProxyContext;
 use crate::http::{self, ConnInfo};
@@ -27,7 +30,10 @@ pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
     let has_connection_upgrade = headers
         .get(::http::header::CONNECTION)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.split(',').any(|tok| tok.trim().eq_ignore_ascii_case("upgrade")))
+        .map(|v| {
+            v.split(',')
+                .any(|tok| tok.trim().eq_ignore_ascii_case("upgrade"))
+        })
         .unwrap_or(false);
     let has_upgrade_websocket = headers
         .get(::http::header::UPGRADE)
@@ -42,11 +48,19 @@ pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
 /// origin ourselves, then either transparently relays raw bytes
 /// (`capture_websockets` off) or relays frame-by-frame while recording each
 /// message onto a [`Flow`] (`capture_websockets` on).
-pub async fn handle_upgrade(ctx: ProxyContext, mut req: Request<Incoming>, conn: ConnInfo) -> Response<BoxBody> {
+pub async fn handle_upgrade(
+    ctx: ProxyContext,
+    mut req: Request<Incoming>,
+    conn: ConnInfo,
+) -> Response<BoxBody> {
     let client_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _body) = req.into_parts();
 
-    let dial_scheme: &'static str = if conn.scheme.eq_ignore_ascii_case("https") { "https" } else { "http" };
+    let dial_scheme: &'static str = if conn.scheme.eq_ignore_ascii_case("https") {
+        "https"
+    } else {
+        "http"
+    };
     let ws_scheme: &'static str = if dial_scheme == "https" { "wss" } else { "ws" };
 
     let url = match http::build_target_url(&parts, &conn) {
@@ -54,16 +68,28 @@ pub async fn handle_upgrade(ctx: ProxyContext, mut req: Request<Incoming>, conn:
         Err(e) => return http::error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     };
     let host = url.host_str().unwrap_or("").to_string();
-    let port = url.port_or_known_default().unwrap_or(http::default_port(dial_scheme));
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(http::default_port(dial_scheme));
 
     // Unlike the normal proxy pipeline, we must NOT strip Connection/Upgrade
     // /Sec-WebSocket-* headers - those are exactly what makes this an
     // upgrade handshake. Only proxy-specific headers are removed.
     let mut headers = http::header_pairs_from(&parts.headers);
-    headers.retain(|h| !h.name.eq_ignore_ascii_case("proxy-connection") && !h.name.eq_ignore_ascii_case("proxy-authorization"));
+    headers.retain(|h| {
+        !h.name.eq_ignore_ascii_case("proxy-connection")
+            && !h.name.eq_ignore_ascii_case("proxy-authorization")
+    });
     http::set_host_header(&mut headers, &host, port, dial_scheme);
 
-    let outbound = match http::build_outbound_request(&parts.method, &url, &headers, false, parts.version, crate::empty_body()) {
+    let outbound = match http::build_outbound_request(
+        &parts.method,
+        &url,
+        &headers,
+        false,
+        parts.version,
+        crate::empty_body(),
+    ) {
         Ok(r) => r,
         Err(e) => return http::error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     };
@@ -72,15 +98,29 @@ pub async fn handle_upgrade(ctx: ProxyContext, mut req: Request<Incoming>, conn:
     // Deliberately bypass the pooled connector's release-on-complete
     // wrapper: once upgraded, this connection is repurposed for raw
     // WebSocket bytes and must never be returned to the HTTP pool.
-    let obtained = match ctx.upstream.obtain(dial_scheme, &host, port, false, upstream_proxy.as_deref()).await {
+    let obtained = match ctx
+        .upstream
+        .obtain(dial_scheme, &host, port, false, upstream_proxy.as_deref())
+        .await
+    {
         Ok(o) => o,
-        Err(e) => return http::error_response(StatusCode::BAD_GATEWAY, &format!("could not connect to {host}:{port}: {e}")),
+        Err(e) => {
+            return http::error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("could not connect to {host}:{port}: {e}"),
+            )
+        }
     };
     let mut sender = obtained.sender;
 
     let mut origin_resp = match sender.send_request(outbound).await {
         Ok(r) => r,
-        Err(e) => return http::error_response(StatusCode::BAD_GATEWAY, &format!("upstream websocket handshake failed: {e}")),
+        Err(e) => {
+            return http::error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("upstream websocket handshake failed: {e}"),
+            )
+        }
     };
 
     if origin_resp.status() != StatusCode::SWITCHING_PROTOCOLS {
@@ -119,7 +159,14 @@ pub async fn handle_upgrade(ctx: ProxyContext, mut req: Request<Incoming>, conn:
                 return;
             }
         };
-        relay(ctx, TokioIo::new(client_upgraded), TokioIo::new(origin_upgraded), flow_meta, capture).await;
+        relay(
+            ctx,
+            TokioIo::new(client_upgraded),
+            TokioIo::new(origin_upgraded),
+            flow_meta,
+            capture,
+        )
+        .await;
     });
 
     response
@@ -136,8 +183,13 @@ struct FlowMeta {
 /// Relays traffic between the client and origin WebSocket connections,
 /// either as an opaque byte tunnel (`capture = false`) or frame-by-frame
 /// with per-message recording (`capture = true`).
-async fn relay<C, O>(ctx: ProxyContext, mut client_io: C, mut origin_io: O, meta: FlowMeta, capture: bool)
-where
+async fn relay<C, O>(
+    ctx: ProxyContext,
+    mut client_io: C,
+    mut origin_io: O,
+    meta: FlowMeta,
+    capture: bool,
+) where
     C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     O: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -175,7 +227,9 @@ where
     );
     flow.summary.state = FlowState::Responding;
     ctx.flows.insert(flow.clone());
-    let _ = ctx.events.send(ServerEvent::Flow { flow: flow.summary() });
+    let _ = ctx.events.send(ServerEvent::Flow {
+        flow: flow.summary(),
+    });
 
     let max_bytes = ctx.max_body_bytes();
     let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Server, None).await;
@@ -220,12 +274,21 @@ where
         headers: vec![],
         body: BodyPayload::default(),
     };
-    if let Some(summary) = ctx.flows.update(flow_id, |f| f.mark_complete(resp_record, finished_at)) {
+    if let Some(summary) = ctx
+        .flows
+        .update(flow_id, |f| f.mark_complete(resp_record, finished_at))
+    {
         let _ = ctx.events.send(ServerEvent::Flow { flow: summary });
     }
 }
 
-fn record_message(ctx: &ProxyContext, flow_id: FlowId, direction: WsDirection, msg: &Message, max_bytes: usize) {
+fn record_message(
+    ctx: &ProxyContext,
+    flow_id: FlowId,
+    direction: WsDirection,
+    msg: &Message,
+    max_bytes: usize,
+) {
     let (opcode, data, size): (&str, String, u64) = match msg {
         Message::Text(t) => {
             let bytes = t.as_bytes();
@@ -243,10 +306,23 @@ fn record_message(ctx: &ProxyContext, flow_id: FlowId, direction: WsDirection, m
         Message::Close(_) => ("close", String::new(), 0),
         Message::Frame(_) => return, // raw frames aren't produced when reading
     };
-    let ws_msg = WsMessage { direction, opcode: opcode.to_string(), timestamp: http::now_ms(), data, size };
+    let ws_msg = WsMessage {
+        direction,
+        opcode: opcode.to_string(),
+        timestamp: http::now_ms(),
+        data,
+        size,
+    };
     let broadcast_msg = ws_msg.clone();
-    if ctx.flows.update(flow_id, |f| f.ws_messages.push(ws_msg)).is_some() {
-        let _ = ctx.events.send(ServerEvent::WsMessage { flow_id, message: broadcast_msg });
+    if ctx
+        .flows
+        .update(flow_id, |f| f.ws_messages.push(ws_msg))
+        .is_some()
+    {
+        let _ = ctx.events.send(ServerEvent::WsMessage {
+            flow_id,
+            message: broadcast_msg,
+        });
     }
 }
 

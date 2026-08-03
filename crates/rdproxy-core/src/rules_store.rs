@@ -29,7 +29,11 @@ impl RulesStore {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let ruleset = Arc::new(RuleSet::new(rules.clone()));
-        RulesStore { path: path.to_path_buf(), rules: RwLock::new(rules), ruleset: RwLock::new(ruleset) }
+        RulesStore {
+            path: path.to_path_buf(),
+            rules: RwLock::new(rules),
+            ruleset: RwLock::new(ruleset),
+        }
     }
 
     /// Returns a clone of all stored rules, in their persisted order.
@@ -53,7 +57,10 @@ impl RulesStore {
     /// Returns [`CoreError::NotFound`] if no rule with that id exists.
     pub fn update(&self, id: &str, rule: Rule) -> Result<()> {
         let mut rules = self.rules.write();
-        let pos = rules.iter().position(|r| r.id == id).ok_or(CoreError::NotFound)?;
+        let pos = rules
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(CoreError::NotFound)?;
         rules[pos] = rule;
         self.persist(&rules)
     }
@@ -62,7 +69,10 @@ impl RulesStore {
     /// Returns [`CoreError::NotFound`] if no rule with that id exists.
     pub fn delete(&self, id: &str) -> Result<()> {
         let mut rules = self.rules.write();
-        let pos = rules.iter().position(|r| r.id == id).ok_or(CoreError::NotFound)?;
+        let pos = rules
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(CoreError::NotFound)?;
         rules.remove(pos);
         self.persist(&rules)
     }
@@ -72,7 +82,10 @@ impl RulesStore {
     /// exists.
     pub fn toggle(&self, id: &str) -> Result<()> {
         let mut rules = self.rules.write();
-        let rule = rules.iter_mut().find(|r| r.id == id).ok_or(CoreError::NotFound)?;
+        let rule = rules
+            .iter_mut()
+            .find(|r| r.id == id)
+            .ok_or(CoreError::NotFound)?;
         rule.enabled = !rule.enabled;
         self.persist(&rules)
     }
@@ -209,7 +222,9 @@ mod tests {
     fn import_export_round_trip() {
         let path = temp_path();
         let store = RulesStore::load(&path);
-        store.import(vec![sample_rule("x"), sample_rule("y")]).unwrap();
+        store
+            .import(vec![sample_rule("x"), sample_rule("y")])
+            .unwrap();
         let exported = store.export();
         assert_eq!(exported.len(), 2);
         let _ = fs::remove_file(&path);

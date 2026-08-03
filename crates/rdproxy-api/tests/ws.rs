@@ -11,9 +11,15 @@ use rdproxy_core::ServerEvent;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as TMessage;
 
-async fn spawn_server() -> (std::net::SocketAddr, rdproxy_api::ApiState, tokio::task::JoinHandle<()>) {
+async fn spawn_server() -> (
+    std::net::SocketAddr,
+    rdproxy_api::ApiState,
+    tokio::task::JoinHandle<()>,
+) {
     let state = common::make_state();
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral port");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
     let app = rdproxy_api::router(state.clone());
     let handle = tokio::spawn(async move {
@@ -28,17 +34,21 @@ async fn spawn_server() -> (std::net::SocketAddr, rdproxy_api::ApiState, tokio::
 async fn initial_sync_then_coalesced_flow_updates() {
     let (addr, state, handle) = spawn_server().await;
     let url = format!("ws://{addr}/api/ws");
-    let (mut ws, _response) = tokio_tungstenite::connect_async(url).await.expect("ws connect");
+    let (mut ws, _response) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("ws connect");
 
     // First message on connect: a `state` snapshot.
     let msg = ws.next().await.expect("stream open").expect("ws message");
-    let value: serde_json::Value = serde_json::from_str(&msg.into_text().expect("text frame")).expect("json");
+    let value: serde_json::Value =
+        serde_json::from_str(&msg.into_text().expect("text frame")).expect("json");
     assert_eq!(value["type"], "state");
     assert!(value["state"].get("flowCount").is_some());
 
     // Second message: an initial `flows` batch (empty on a fresh store).
     let msg = ws.next().await.expect("stream open").expect("ws message");
-    let value: serde_json::Value = serde_json::from_str(&msg.into_text().expect("text frame")).expect("json");
+    let value: serde_json::Value =
+        serde_json::from_str(&msg.into_text().expect("text frame")).expect("json");
     assert_eq!(value["type"], "flows");
     assert_eq!(value["flows"].as_array().expect("flows array").len(), 0);
 
@@ -61,7 +71,8 @@ async fn initial_sync_then_coalesced_flow_updates() {
         }
         match tokio::time::timeout(remaining, ws.next()).await {
             Ok(Some(Ok(TMessage::Text(text)))) => {
-                let value: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
                 if value["type"] == "flows" {
                     flows_messages += 1;
                     total_flows_seen += value["flows"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -72,8 +83,14 @@ async fn initial_sync_then_coalesced_flow_updates() {
         }
     }
 
-    assert!(flows_messages < 50, "expected heavy coalescing, got {flows_messages} separate flows messages");
-    assert_eq!(total_flows_seen, 500, "all 500 flow updates should still be delivered, just batched");
+    assert!(
+        flows_messages < 50,
+        "expected heavy coalescing, got {flows_messages} separate flows messages"
+    );
+    assert_eq!(
+        total_flows_seen, 500,
+        "all 500 flow updates should still be delivered, just batched"
+    );
 
     handle.abort();
 }

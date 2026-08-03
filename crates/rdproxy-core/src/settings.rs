@@ -86,7 +86,8 @@ impl Settings {
         if glob_list_matches(&self.capture_exclude_hosts, host) {
             return false;
         }
-        self.capture_include_hosts.is_empty() || glob_list_matches(&self.capture_include_hosts, host)
+        self.capture_include_hosts.is_empty()
+            || glob_list_matches(&self.capture_include_hosts, host)
     }
 
     /// Returns true if `host` matches any passthrough glob (i.e. should
@@ -154,14 +155,20 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_default() {
-        let path = std::env::temp_dir().join(format!("rdproxy-test-missing-{}.json", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "rdproxy-test-missing-{}.json",
+            uuid::Uuid::new_v4()
+        ));
         let s = Settings::load(&path);
         assert_eq!(s.proxy_port, Settings::default().proxy_port);
     }
 
     #[test]
     fn load_corrupt_file_returns_default() {
-        let path = std::env::temp_dir().join(format!("rdproxy-test-corrupt-{}.json", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "rdproxy-test-corrupt-{}.json",
+            uuid::Uuid::new_v4()
+        ));
         fs::write(&path, "not json").unwrap();
         let s = Settings::load(&path);
         assert_eq!(s.proxy_port, Settings::default().proxy_port);
@@ -170,8 +177,15 @@ mod tests {
 
     #[test]
     fn save_and_load_roundtrip() {
-        let path = std::env::temp_dir().join(format!("rdproxy-test-roundtrip-{}.json", uuid::Uuid::new_v4()));
-        let s = Settings { proxy_port: 12345, theme: "light".to_string(), ..Settings::default() };
+        let path = std::env::temp_dir().join(format!(
+            "rdproxy-test-roundtrip-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let s = Settings {
+            proxy_port: 12345,
+            theme: "light".to_string(),
+            ..Settings::default()
+        };
         s.save(&path).unwrap();
         let loaded = Settings::load(&path);
         assert_eq!(loaded.proxy_port, 12345);
@@ -181,8 +195,10 @@ mod tests {
 
     #[test]
     fn host_captured_respects_include_and_exclude() {
-        let excluded_only =
-            Settings { capture_exclude_hosts: vec!["*.ads.com".to_string()], ..Settings::default() };
+        let excluded_only = Settings {
+            capture_exclude_hosts: vec!["*.ads.com".to_string()],
+            ..Settings::default()
+        };
         assert!(excluded_only.host_captured("example.com"));
         assert!(!excluded_only.host_captured("track.ads.com"));
 
@@ -198,7 +214,10 @@ mod tests {
 
     #[test]
     fn host_passthrough_matches_glob() {
-        let s = Settings { passthrough_hosts: vec!["*.bank.com".to_string()], ..Settings::default() };
+        let s = Settings {
+            passthrough_hosts: vec!["*.bank.com".to_string()],
+            ..Settings::default()
+        };
         assert!(s.host_passthrough("secure.bank.com"));
         assert!(!s.host_passthrough("example.com"));
     }

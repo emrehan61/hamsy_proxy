@@ -62,20 +62,22 @@ pub fn handle_connect(
             }
         });
 
-        Response::builder().status(StatusCode::OK).body(crate::empty_body()).unwrap_or_else(|_| {
-            let mut resp = Response::new(crate::empty_body());
-            *resp.status_mut() = StatusCode::OK;
-            resp
-        })
+        Response::builder()
+            .status(StatusCode::OK)
+            .body(crate::empty_body())
+            .unwrap_or_else(|_| {
+                let mut resp = Response::new(crate::empty_body());
+                *resp.status_mut() = StatusCode::OK;
+                resp
+            })
     })
 }
 
 /// Extracts `(host, port)` from a `CONNECT` request's authority-form target.
 fn parse_authority(req: &Request<Incoming>) -> Result<(String, u16)> {
-    let authority = req
-        .uri()
-        .authority()
-        .ok_or_else(|| ProxyError::InvalidTarget("CONNECT request missing target authority".to_string()))?;
+    let authority = req.uri().authority().ok_or_else(|| {
+        ProxyError::InvalidTarget("CONNECT request missing target authority".to_string())
+    })?;
     let host = authority.host().to_string();
     let port = authority
         .port_u16()
@@ -85,8 +87,13 @@ fn parse_authority(req: &Request<Incoming>) -> Result<(String, u16)> {
 
 /// After the `CONNECT` upgrade completes, decides what the tunneled bytes
 /// are (TLS, plaintext HTTP, or opaque) and routes accordingly.
-async fn handle_tunnel<IO>(ctx: ProxyContext, io: TokioIo<IO>, host: String, port: u16, client_addr: SocketAddr)
-where
+async fn handle_tunnel<IO>(
+    ctx: ProxyContext,
+    io: TokioIo<IO>,
+    host: String,
+    port: u16,
+    client_addr: SocketAddr,
+) where
     IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
     let mut io = io;
@@ -105,8 +112,13 @@ where
 
     if peeked[0] != 0x16 {
         if looks_like_plaintext_http(&peeked) {
-            let conn_info =
-                ConnInfo { client_addr, scheme: "http", authority: Some(format!("{host}:{port}")), tls: None, mirror_h2: false };
+            let conn_info = ConnInfo {
+                client_addr,
+                scheme: "http",
+                authority: Some(format!("{host}:{port}")),
+                tls: None,
+                mirror_h2: false,
+            };
             server::serve_h1(ctx, TokioIo::new(rewind), conn_info).await;
         } else if let Err(err) = raw_tunnel(rewind, &host, port).await {
             tracing::debug!(%err, host = %host, port, "opaque tunnel failed");
@@ -121,7 +133,10 @@ where
     }
 
     let info = parse_client_hello(&peeked);
-    let sni = info.as_ref().and_then(|i| i.sni.clone()).unwrap_or_else(|| host.clone());
+    let sni = info
+        .as_ref()
+        .and_then(|i| i.sni.clone())
+        .unwrap_or_else(|| host.clone());
     let offered_alpn = match &info {
         Some(i) if !i.alpn.is_empty() => i.alpn.clone(),
         _ => vec![b"http/1.1".to_vec()],
@@ -166,8 +181,13 @@ where
 /// Records a minimal `CONNECT` flow and blind-tunnels bytes to the origin,
 /// so the UI can show that a passthrough occurred even though no HTTP
 /// content was inspected.
-async fn run_passthrough_flow<S>(ctx: &ProxyContext, client: S, host: &str, port: u16, client_addr: SocketAddr)
-where
+async fn run_passthrough_flow<S>(
+    ctx: &ProxyContext,
+    client: S,
+    host: &str,
+    port: u16,
+    client_addr: SocketAddr,
+) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     if !ctx.should_capture(host) {
@@ -205,7 +225,9 @@ where
     );
     flow.summary.state = FlowState::Requesting;
     ctx.flows.insert(flow.clone());
-    let _ = ctx.events.send(ServerEvent::Flow { flow: flow.summary() });
+    let _ = ctx.events.send(ServerEvent::Flow {
+        flow: flow.summary(),
+    });
 
     let result = raw_tunnel(client, host, port).await;
     let finished_at = now_ms();
@@ -218,12 +240,18 @@ where
                 headers: vec![],
                 body: BodyPayload::default(),
             };
-            if let Some(summary) = ctx.flows.update(flow_id, |f| f.mark_complete(resp_record, finished_at)) {
+            if let Some(summary) = ctx
+                .flows
+                .update(flow_id, |f| f.mark_complete(resp_record, finished_at))
+            {
                 let _ = ctx.events.send(ServerEvent::Flow { flow: summary });
             }
         }
         Err(err) => {
-            if let Some(summary) = ctx.flows.update(flow_id, |f| f.mark_error(err.to_string(), finished_at)) {
+            if let Some(summary) = ctx
+                .flows
+                .update(flow_id, |f| f.mark_error(err.to_string(), finished_at))
+            {
                 let _ = ctx.events.send(ServerEvent::Flow { flow: summary });
             }
         }
@@ -235,26 +263,42 @@ async fn raw_tunnel<S>(mut client: S, host: &str, port: u16) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut upstream = tokio::time::timeout(std::time::Duration::from_secs(15), tokio::net::TcpStream::connect((host, port)))
-        .await
-        .map_err(|_| ProxyError::Timeout(format!("connecting to {host}:{port}")))?
-        .map_err(|e| ProxyError::UpstreamConnect(format!("{host}:{port}: {e}")))?;
+    let mut upstream = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::net::TcpStream::connect((host, port)),
+    )
+    .await
+    .map_err(|_| ProxyError::Timeout(format!("connecting to {host}:{port}")))?
+    .map_err(|e| ProxyError::UpstreamConnect(format!("{host}:{port}: {e}")))?;
     let _ = upstream.set_nodelay(true);
     tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
     Ok(())
 }
 
 fn looks_like_plaintext_http(data: &[u8]) -> bool {
-    const METHODS: &[&[u8]] =
-        &[b"GET ", b"POST ", b"PUT ", b"HEAD ", b"DELETE ", b"OPTIONS ", b"PATCH ", b"CONNECT ", b"TRACE "];
+    const METHODS: &[&[u8]] = &[
+        b"GET ",
+        b"POST ",
+        b"PUT ",
+        b"HEAD ",
+        b"DELETE ",
+        b"OPTIONS ",
+        b"PATCH ",
+        b"CONNECT ",
+        b"TRACE ",
+    ];
     METHODS.iter().any(|m| data.starts_with(m))
 }
 
 fn build_tls_info(conn: &rustls::CommonState, sni: &str) -> rdproxy_core::TlsInfo {
     rdproxy_core::TlsInfo {
         version: conn.protocol_version().map(format_tls_version),
-        cipher_suite: conn.negotiated_cipher_suite().map(|cs| format!("{:?}", cs.suite())),
-        alpn: conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).to_string()),
+        cipher_suite: conn
+            .negotiated_cipher_suite()
+            .map(|cs| format!("{:?}", cs.suite())),
+        alpn: conn
+            .alpn_protocol()
+            .map(|p| String::from_utf8_lossy(p).to_string()),
         sni: Some(sni.to_string()),
         peer_cert_subject: None,
         peer_cert_issuer: None,
@@ -386,7 +430,9 @@ pub fn parse_client_hello(data: &[u8]) -> Option<ClientHelloInfo> {
         while ec.remaining() >= 4 {
             let Some(ext_type) = ec.take_u16() else { break };
             let Some(ext_len) = ec.take_u16() else { break };
-            let Some(ext_data) = ec.take(ext_len as usize) else { break };
+            let Some(ext_data) = ec.take(ext_len as usize) else {
+                break;
+            };
             match ext_type {
                 0x0000 => sni = parse_sni(ext_data),
                 0x0010 => alpn = parse_alpn(ext_data),
@@ -422,7 +468,9 @@ fn parse_alpn(data: &[u8]) -> Vec<Vec<u8>> {
     }
     while c.remaining() > 0 {
         let Some(len) = c.take_u8() else { break };
-        let Some(proto) = c.take(len as usize) else { break };
+        let Some(proto) = c.take(len as usize) else {
+            break;
+        };
         out.push(proto.to_vec());
     }
     out
@@ -442,12 +490,23 @@ pub struct Rewind<S> {
 impl<S> Rewind<S> {
     /// Wraps `io`, replaying `leftover` before any of `io`'s own bytes.
     pub fn new(io: S, leftover: Bytes) -> Self {
-        Rewind { io, leftover: if leftover.is_empty() { None } else { Some(leftover) } }
+        Rewind {
+            io,
+            leftover: if leftover.is_empty() {
+                None
+            } else {
+                Some(leftover)
+            },
+        }
     }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for Rewind<S> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         if let Some(mut data) = self.leftover.take() {
             if !data.is_empty() {
                 let n = std::cmp::min(data.len(), buf.remaining());
@@ -464,7 +523,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for Rewind<S> {
 }
 
 impl<S: AsyncWrite + Unpin> AsyncWrite for Rewind<S> {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.get_mut().io).poll_write(cx, buf)
     }
 

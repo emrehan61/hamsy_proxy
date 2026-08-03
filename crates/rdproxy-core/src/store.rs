@@ -92,8 +92,9 @@ impl FlowStore {
         let mut inner = self.inner.write();
         let id = flow.summary.id;
         if let Some(old) = inner.flows.remove(&id) {
-            inner.total_bytes =
-                inner.total_bytes.saturating_sub(old.summary.request_size + old.summary.response_size);
+            inner.total_bytes = inner
+                .total_bytes
+                .saturating_sub(old.summary.request_size + old.summary.response_size);
             inner.order.retain(|existing| *existing != id);
         }
         inner.total_bytes += flow.summary.request_size + flow.summary.response_size;
@@ -136,21 +137,34 @@ impl FlowStore {
             .filter(|flow| query.after_seq.is_none_or(|after| flow.summary.seq > after))
             .filter(|flow| {
                 query.methods.is_empty()
-                    || query.methods.iter().any(|m| m.eq_ignore_ascii_case(&flow.summary.method))
+                    || query
+                        .methods
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(&flow.summary.method))
             })
             .filter(|flow| {
                 query.status_class.is_none_or(|class| {
-                    flow.summary.status.map(|s| s / 100 == class).unwrap_or(false)
+                    flow.summary
+                        .status
+                        .map(|s| s / 100 == class)
+                        .unwrap_or(false)
                 })
             })
             .filter(|flow| {
-                query.resource_types.is_empty() || query.resource_types.contains(&flow.summary.resource_type)
+                query.resource_types.is_empty()
+                    || query.resource_types.contains(&flow.summary.resource_type)
             })
             .filter(|flow| {
-                host_filter.as_ref().is_none_or(|h| flow.summary.host.to_ascii_lowercase() == *h)
+                host_filter
+                    .as_ref()
+                    .is_none_or(|h| flow.summary.host.to_ascii_lowercase() == *h)
             })
             .filter(|flow| !query.only_modified || flow.summary.modified)
-            .filter(|flow| search.as_ref().is_none_or(|needle| flow_matches_search(flow, needle)))
+            .filter(|flow| {
+                search
+                    .as_ref()
+                    .is_none_or(|needle| flow_matches_search(flow, needle))
+            })
             .map(|flow| flow.summary())
             .collect();
 
@@ -166,14 +180,21 @@ impl FlowStore {
     /// Returns clones of every stored flow, in insertion order.
     pub fn all(&self) -> Vec<Flow> {
         let inner = self.inner.read();
-        inner.order.iter().filter_map(|id| inner.flows.get(id)).cloned().collect()
+        inner
+            .order
+            .iter()
+            .filter_map(|id| inner.flows.get(id))
+            .cloned()
+            .collect()
     }
 
     /// Returns clones of the flows matching `ids`, skipping any that are
     /// not present, in the order requested.
     pub fn ids(&self, ids: &[FlowId]) -> Vec<Flow> {
         let inner = self.inner.read();
-        ids.iter().filter_map(|id| inner.flows.get(id).cloned()).collect()
+        ids.iter()
+            .filter_map(|id| inner.flows.get(id).cloned())
+            .collect()
     }
 
     /// Removes all flows and resets byte accounting (sequence numbers keep
@@ -225,12 +246,20 @@ fn flow_matches_search(flow: &Flow, needle: &str) -> bool {
         }
     }
     if let Some(req) = &flow.request {
-        if req.headers.iter().any(|h| h.value.to_ascii_lowercase().contains(needle)) {
+        if req
+            .headers
+            .iter()
+            .any(|h| h.value.to_ascii_lowercase().contains(needle))
+        {
             return true;
         }
     }
     if let Some(resp) = &flow.response {
-        if resp.headers.iter().any(|h| h.value.to_ascii_lowercase().contains(needle)) {
+        if resp
+            .headers
+            .iter()
+            .any(|h| h.value.to_ascii_lowercase().contains(needle))
+        {
             return true;
         }
     }
@@ -306,16 +335,28 @@ mod tests {
         store.insert(make_flow(2, "POST", "b.com", Some(404), true));
         store.insert(make_flow(3, "GET", "a.com", Some(500), false));
 
-        let by_method = store.list(&FlowQuery { methods: vec!["POST".to_string()], ..Default::default() });
+        let by_method = store.list(&FlowQuery {
+            methods: vec!["POST".to_string()],
+            ..Default::default()
+        });
         assert_eq!(by_method.len(), 1);
 
-        let by_status_class = store.list(&FlowQuery { status_class: Some(4), ..Default::default() });
+        let by_status_class = store.list(&FlowQuery {
+            status_class: Some(4),
+            ..Default::default()
+        });
         assert_eq!(by_status_class.len(), 1);
 
-        let by_host = store.list(&FlowQuery { host: Some("a.com".to_string()), ..Default::default() });
+        let by_host = store.list(&FlowQuery {
+            host: Some("a.com".to_string()),
+            ..Default::default()
+        });
         assert_eq!(by_host.len(), 2);
 
-        let only_modified = store.list(&FlowQuery { only_modified: true, ..Default::default() });
+        let only_modified = store.list(&FlowQuery {
+            only_modified: true,
+            ..Default::default()
+        });
         assert_eq!(only_modified.len(), 1);
     }
 
@@ -324,13 +365,22 @@ mod tests {
         let store = FlowStore::new(10);
         store.insert(make_flow(1, "GET", "example.com", Some(200), false));
 
-        let hit = store.list(&FlowQuery { search: Some("hello".to_string()), ..Default::default() });
+        let hit = store.list(&FlowQuery {
+            search: Some("hello".to_string()),
+            ..Default::default()
+        });
         assert_eq!(hit.len(), 1);
 
-        let hit_url = store.list(&FlowQuery { search: Some("example".to_string()), ..Default::default() });
+        let hit_url = store.list(&FlowQuery {
+            search: Some("example".to_string()),
+            ..Default::default()
+        });
         assert_eq!(hit_url.len(), 1);
 
-        let miss = store.list(&FlowQuery { search: Some("nope".to_string()), ..Default::default() });
+        let miss = store.list(&FlowQuery {
+            search: Some("nope".to_string()),
+            ..Default::default()
+        });
         assert!(miss.is_empty());
     }
 
@@ -340,7 +390,11 @@ mod tests {
         for i in 1..=5u64 {
             store.insert(make_flow(i, "GET", "a.com", Some(200), false));
         }
-        let page = store.list(&FlowQuery { after_seq: Some(2), limit: Some(2), ..Default::default() });
+        let page = store.list(&FlowQuery {
+            after_seq: Some(2),
+            limit: Some(2),
+            ..Default::default()
+        });
         assert_eq!(page.len(), 2);
         assert!(page.iter().all(|f| f.seq > 2));
     }

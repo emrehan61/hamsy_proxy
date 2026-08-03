@@ -56,7 +56,9 @@ where
 /// Returns an empty [`BoxBody`], for responses/requests with no body.
 pub fn empty_body() -> BoxBody {
     use http_body_util::BodyExt;
-    http_body_util::Empty::new().map_err(|never: std::convert::Infallible| match never {}).boxed()
+    http_body_util::Empty::new()
+        .map_err(|never: std::convert::Infallible| match never {})
+        .boxed()
 }
 
 /// Returns a [`BoxBody`] containing exactly `bytes`.

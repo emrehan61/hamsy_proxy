@@ -22,7 +22,11 @@ async fn plain_http_get_through_proxy() {
     let proxy = common::spawn_proxy(Settings::default()).await;
     let client = common::client_trusting_proxy_ca(&proxy);
 
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.expect("body"), "hello world");
 
@@ -36,14 +40,21 @@ async fn plain_http_get_through_proxy() {
 #[tokio::test]
 async fn https_get_through_mitm() {
     let (origin_addr, origin_cert) =
-        common::spawn_tls_origin(|_req: Request<hyper::body::Incoming>| async { Response::new(common::full("secure hello")) }).await;
+        common::spawn_tls_origin(|_req: Request<hyper::body::Incoming>| async {
+            Response::new(common::full("secure hello"))
+        })
+        .await;
 
     // The proxy's own upstream TLS connector must trust the throwaway
     // origin's self-signed cert to re-originate the connection during MITM.
     let proxy = common::spawn_proxy_trusting(Settings::default(), &[origin_cert]).await;
     let client = common::client_trusting_proxy_ca(&proxy);
 
-    let resp = client.get(format!("https://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("https://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.expect("body"), "secure hello");
 
@@ -53,7 +64,10 @@ async fn https_get_through_mitm() {
     assert_eq!(flows[0].scheme, "https");
 
     let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
-    assert_eq!(flow.summary.url, format!("https://localhost:{}/", origin_addr.port()));
+    assert_eq!(
+        flow.summary.url,
+        format!("https://localhost:{}/", origin_addr.port())
+    );
     let tls = flow.tls.expect("tls info recorded");
     assert_eq!(tls.sni.as_deref(), Some("localhost"));
     assert!(tls.version.is_some());
@@ -67,7 +81,11 @@ async fn set_request_header_rule_takes_effect() {
     let origin_addr = common::spawn_http_origin(move |req: Request<hyper::body::Incoming>| {
         let seen2 = seen2.clone();
         async move {
-            let value = req.headers().get("x-injected").and_then(|v| v.to_str().ok()).map(str::to_string);
+            let value = req
+                .headers()
+                .get("x-injected")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             *seen2.lock().unwrap() = value;
             Response::new(common::full("ok"))
         }
@@ -81,12 +99,19 @@ async fn set_request_header_rule_takes_effect() {
         .create(common::simple_rule(
             "set-header",
             Matcher::default(),
-            vec![Action::SetRequestHeader { name: "X-Injected".to_string(), value: "hello".to_string() }],
+            vec![Action::SetRequestHeader {
+                name: "X-Injected".to_string(),
+                value: "hello".to_string(),
+            }],
         ))
         .expect("create rule");
 
     let client = common::client_trusting_proxy_ca(&proxy);
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.status(), 200);
     assert_eq!(seen.lock().unwrap().clone(), Some("hello".to_string()));
 }
@@ -120,10 +145,17 @@ async fn mock_response_short_circuits_before_upstream() {
         .expect("create rule");
 
     let client = common::client_trusting_proxy_ca(&proxy);
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.status(), 201);
     assert_eq!(resp.text().await.expect("body"), "mocked");
-    assert!(!hit.load(Ordering::SeqCst), "origin should never have been contacted");
+    assert!(
+        !hit.load(Ordering::SeqCst),
+        "origin should never have been contacted"
+    );
 
     let flows = proxy.ctx.flows.list(&Default::default());
     assert_eq!(flows.len(), 1);
@@ -133,18 +165,30 @@ async fn mock_response_short_circuits_before_upstream() {
 /// 5. A `block` rule returning `403` to the client.
 #[tokio::test]
 async fn block_rule_returns_403() {
-    let origin_addr =
-        common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async { Response::new(common::full("ok")) }).await;
+    let origin_addr = common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async {
+        Response::new(common::full("ok"))
+    })
+    .await;
 
     let proxy = common::spawn_proxy(Settings::default()).await;
     proxy
         .ctx
         .rules
-        .create(common::simple_rule("blocker", Matcher::default(), vec![Action::Block { reason: "nope".to_string() }]))
+        .create(common::simple_rule(
+            "blocker",
+            Matcher::default(),
+            vec![Action::Block {
+                reason: "nope".to_string(),
+            }],
+        ))
         .expect("create rule");
 
     let client = common::client_trusting_proxy_ca(&proxy);
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.status(), 403);
 
     let flows = proxy.ctx.flows.list(&Default::default());
@@ -156,9 +200,10 @@ async fn block_rule_returns_403() {
 /// 6. A `replaceInResponseBody` rule mutating the body the client receives.
 #[tokio::test]
 async fn replace_in_response_body_mutates_client_view() {
-    let origin_addr =
-        common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async { Response::new(common::full("hello world")) })
-            .await;
+    let origin_addr = common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async {
+        Response::new(common::full("hello world"))
+    })
+    .await;
 
     let proxy = common::spawn_proxy(Settings::default()).await;
     proxy
@@ -167,35 +212,53 @@ async fn replace_in_response_body_mutates_client_view() {
         .create(common::simple_rule(
             "replace",
             Matcher::default(),
-            vec![Action::ReplaceInResponseBody { find: "world".to_string(), replace: "rust".to_string(), regex: false }],
+            vec![Action::ReplaceInResponseBody {
+                find: "world".to_string(),
+                replace: "rust".to_string(),
+                regex: false,
+            }],
         ))
         .expect("create rule");
 
     let client = common::client_trusting_proxy_ca(&proxy);
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.text().await.expect("body"), "hello rust");
 }
 
 /// 7. A redirect action retargeting the request to a DIFFERENT origin server.
 #[tokio::test]
 async fn redirect_action_retargets_to_different_origin() {
-    let origin_a =
-        common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async { Response::new(common::full("origin A")) })
-            .await;
-    let origin_b =
-        common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async { Response::new(common::full("origin B")) })
-            .await;
+    let origin_a = common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async {
+        Response::new(common::full("origin A"))
+    })
+    .await;
+    let origin_b = common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async {
+        Response::new(common::full("origin B"))
+    })
+    .await;
 
     let proxy = common::spawn_proxy(Settings::default()).await;
     let target = format!("http://localhost:{}/", origin_b.port());
     proxy
         .ctx
         .rules
-        .create(common::simple_rule("redirect", Matcher::default(), vec![Action::Redirect { to: target }]))
+        .create(common::simple_rule(
+            "redirect",
+            Matcher::default(),
+            vec![Action::Redirect { to: target }],
+        ))
         .expect("create rule");
 
     let client = common::client_trusting_proxy_ca(&proxy);
-    let resp = client.get(format!("http://localhost:{}/", origin_a.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_a.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.text().await.expect("body"), "origin B");
 }
 
@@ -228,12 +291,27 @@ async fn gzip_response_decoded_in_flow_but_delivered_intact() {
     let proxy = common::spawn_proxy(Settings::default()).await;
     // Disable reqwest's automatic gzip decompression so we can inspect the
     // exact bytes that crossed the wire to the client.
-    let client = common::client_builder(&proxy).no_gzip().build().expect("client");
+    let client = common::client_builder(&proxy)
+        .no_gzip()
+        .build()
+        .expect("client");
 
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
-    assert_eq!(resp.headers().get("content-encoding").and_then(|v| v.to_str().ok()), Some("gzip"));
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        resp.headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok()),
+        Some("gzip")
+    );
     let delivered = resp.bytes().await.expect("body").to_vec();
-    assert_eq!(delivered, compressed, "client must receive the exact gzipped bytes, untouched");
+    assert_eq!(
+        delivered, compressed,
+        "client must receive the exact gzipped bytes, untouched"
+    );
 
     let flows = proxy.ctx.flows.list(&Default::default());
     let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
@@ -255,14 +333,24 @@ async fn oversized_response_truncated_in_flow_but_delivered_whole() {
     })
     .await;
 
-    let settings = Settings { max_body_bytes: 100, ..Settings::default() };
+    let settings = Settings {
+        max_body_bytes: 100,
+        ..Settings::default()
+    };
     let proxy = common::spawn_proxy(settings).await;
     let client = common::client_trusting_proxy_ca(&proxy);
 
-    let resp = client.get(format!("http://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     let delivered = resp.text().await.expect("body");
     assert_eq!(delivered.len(), 10_000);
-    assert_eq!(delivered, big, "client must receive the whole, uncorrupted body");
+    assert_eq!(
+        delivered, big,
+        "client must receive the whole, uncorrupted body"
+    );
 
     let flows = proxy.ctx.flows.list(&Default::default());
     let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
@@ -278,10 +366,15 @@ async fn oversized_response_truncated_in_flow_but_delivered_whole() {
 #[tokio::test]
 async fn passthrough_host_is_not_intercepted() {
     let (origin_addr, origin_cert_der) =
-        common::spawn_tls_origin(|_req: Request<hyper::body::Incoming>| async { Response::new(common::full("origin secure")) })
-            .await;
+        common::spawn_tls_origin(|_req: Request<hyper::body::Incoming>| async {
+            Response::new(common::full("origin secure"))
+        })
+        .await;
 
-    let settings = Settings { passthrough_hosts: vec!["localhost".to_string()], ..Settings::default() };
+    let settings = Settings {
+        passthrough_hosts: vec!["localhost".to_string()],
+        ..Settings::default()
+    };
     let proxy = common::spawn_proxy(settings).await;
 
     // Trust the ORIGIN's own self-signed cert directly - if the proxy were
@@ -293,7 +386,11 @@ async fn passthrough_host_is_not_intercepted() {
         .build()
         .unwrap();
 
-    let resp = client.get(format!("https://localhost:{}/", origin_addr.port())).send().await.expect("request");
+    let resp = client
+        .get(format!("https://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.expect("body"), "origin secure");
     drop(client); // encourage the connection (and thus the raw tunnel) to close promptly

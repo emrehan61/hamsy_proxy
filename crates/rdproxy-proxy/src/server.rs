@@ -37,7 +37,11 @@ impl ProxyServer {
     /// Runs the accept loop on `listener` until `shutdown` resolves, then
     /// stops accepting new connections and waits (with a bounded timeout)
     /// for already-accepted connections to finish on their own.
-    pub async fn serve(self, listener: TcpListener, shutdown: impl Future<Output = ()>) -> Result<()> {
+    pub async fn serve(
+        self,
+        listener: TcpListener,
+        shutdown: impl Future<Output = ()>,
+    ) -> Result<()> {
         let mut tasks = JoinSet::new();
         tokio::pin!(shutdown);
 
@@ -76,10 +80,11 @@ impl ProxyServer {
             }
         }
 
-        let drain = async {
-            while tasks.join_next().await.is_some() {}
-        };
-        if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await.is_err() {
+        let drain = async { while tasks.join_next().await.is_some() {} };
+        if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain)
+            .await
+            .is_err()
+        {
             tracing::warn!("shutdown drain timed out; aborting remaining connections");
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
@@ -105,7 +110,11 @@ fn is_resource_exhausted(err: &std::io::Error) -> bool {
 
 /// Routes one request within a connection: `CONNECT`, WebSocket upgrade, or
 /// the plain HTTP pipeline.
-async fn route(ctx: ProxyContext, req: Request<Incoming>, conn_info: ConnInfo) -> Response<BoxBody> {
+async fn route(
+    ctx: ProxyContext,
+    req: Request<Incoming>,
+    conn_info: ConnInfo,
+) -> Response<BoxBody> {
     if req.method() == Method::CONNECT {
         return connect::handle_connect(ctx, req, conn_info.client_addr).await;
     }

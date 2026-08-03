@@ -185,7 +185,11 @@ pub struct JsonOp {
 /// [`RuleSet::apply_response`] for exactly which variants run in which
 /// phase.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Action {
     /// Redirects the request to `to`. May contain `$1`..`$9`, substituted
     /// from the matcher's URL regex capture groups (only meaningful when
@@ -397,7 +401,9 @@ pub struct RuleError {
 /// failure. Shared by [`RuleSet`] (for `hostPorts`/wildcard URL matching)
 /// and `settings.rs` (for passthrough/capture host globs).
 pub(crate) fn build_glob(pattern: &str) -> Result<GlobMatcher, String> {
-    Glob::new(pattern).map(|g| g.compile_matcher()).map_err(|e| e.to_string())
+    Glob::new(pattern)
+        .map(|g| g.compile_matcher())
+        .map_err(|e| e.to_string())
 }
 
 /// A parsed status-code condition entry.
@@ -525,7 +531,11 @@ fn compile_rule(rule: &Rule) -> Result<CompiledEntry, Vec<String>> {
         }
     }
 
-    let status_matchers = m.status_codes.iter().filter_map(|s| StatusMatcher::parse(s)).collect();
+    let status_matchers = m
+        .status_codes
+        .iter()
+        .filter_map(|s| StatusMatcher::parse(s))
+        .collect();
 
     let req_header_regex = compile_header_regexes(&m.request_headers, &mut errors);
     let resp_header_regex = compile_header_regexes(&m.response_headers, &mut errors);
@@ -574,7 +584,12 @@ fn default_port_for_scheme(scheme: &str) -> u16 {
     }
 }
 
-fn matches_url(m: &Matcher, url_regex: Option<&Regex>, url_glob: Option<&GlobMatcher>, url: &str) -> bool {
+fn matches_url(
+    m: &Matcher,
+    url_regex: Option<&Regex>,
+    url_glob: Option<&GlobMatcher>,
+    url: &str,
+) -> bool {
     match m.url_op {
         UrlOp::Any => true,
         UrlOp::Contains => url.contains(m.url_value.as_str()),
@@ -591,13 +606,21 @@ fn matches_host_port(m: &Matcher, host_globs: &[GlobMatcher], url: &url::Url) ->
         return true;
     }
     let host = url.host_str().unwrap_or("");
-    let port = url.port().unwrap_or_else(|| default_port_for_scheme(url.scheme()));
+    let port = url
+        .port()
+        .unwrap_or_else(|| default_port_for_scheme(url.scheme()));
     let host_port = format!("{host}:{port}");
-    host_globs.iter().any(|g| g.is_match(&host_port) || g.is_match(host))
+    host_globs
+        .iter()
+        .any(|g| g.is_match(&host_port) || g.is_match(host))
 }
 
 fn header_lookup<'a>(headers: &'a [HeaderPair], name: &str) -> Vec<&'a str> {
-    headers.iter().filter(|h| h.name.eq_ignore_ascii_case(name)).map(|h| h.value.as_str()).collect()
+    headers
+        .iter()
+        .filter(|h| h.name.eq_ignore_ascii_case(name))
+        .map(|h| h.value.as_str())
+        .collect()
 }
 
 fn header_cond_matches(cond: &HeaderCond, regex: Option<&Regex>, headers: &[HeaderPair]) -> bool {
@@ -620,8 +643,15 @@ fn header_cond_matches(cond: &HeaderCond, regex: Option<&Regex>, headers: &[Head
     }
 }
 
-fn matches_all_header_conds(conds: &[HeaderCond], regexes: &[Option<Regex>], headers: &[HeaderPair]) -> bool {
-    conds.iter().zip(regexes.iter()).all(|(c, r)| header_cond_matches(c, r.as_ref(), headers))
+fn matches_all_header_conds(
+    conds: &[HeaderCond],
+    regexes: &[Option<Regex>],
+    headers: &[HeaderPair],
+) -> bool {
+    conds
+        .iter()
+        .zip(regexes.iter())
+        .all(|(c, r)| header_cond_matches(c, r.as_ref(), headers))
 }
 
 fn body_cond_matches(cond: Option<&BodyCond>, regex: Option<&Regex>, body: Option<&[u8]>) -> bool {
@@ -652,12 +682,20 @@ fn matches_request(
     resource_type: ResourceType,
 ) -> bool {
     let m = &rule.matcher;
-    matches_url(m, compiled.url_regex.as_ref(), compiled.url_glob.as_ref(), url.as_str())
-        && (m.methods.is_empty() || m.methods.iter().any(|x| x.eq_ignore_ascii_case(method)))
+    matches_url(
+        m,
+        compiled.url_regex.as_ref(),
+        compiled.url_glob.as_ref(),
+        url.as_str(),
+    ) && (m.methods.is_empty() || m.methods.iter().any(|x| x.eq_ignore_ascii_case(method)))
         && matches_host_port(m, &compiled.host_globs, url)
         && (m.resource_types.is_empty() || m.resource_types.contains(&resource_type))
         && matches_all_header_conds(&m.request_headers, &compiled.req_header_regex, headers)
-        && body_cond_matches(m.request_body.as_ref(), compiled.req_body_regex.as_ref(), body)
+        && body_cond_matches(
+            m.request_body.as_ref(),
+            compiled.req_body_regex.as_ref(),
+            body,
+        )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -676,15 +714,25 @@ fn matches_response(
     matches_request(rule, compiled, method, url, headers, body, resource_type)
         && (rule.matcher.status_codes.is_empty()
             || compiled.status_matchers.iter().any(|sm| sm.matches(status)))
-        && matches_all_header_conds(&rule.matcher.response_headers, &compiled.resp_header_regex, resp_headers)
-        && body_cond_matches(rule.matcher.response_body.as_ref(), compiled.resp_body_regex.as_ref(), resp_body)
+        && matches_all_header_conds(
+            &rule.matcher.response_headers,
+            &compiled.resp_header_regex,
+            resp_headers,
+        )
+        && body_cond_matches(
+            rule.matcher.response_body.as_ref(),
+            compiled.resp_body_regex.as_ref(),
+            resp_body,
+        )
 }
 
 /// Substitutes `$1`..`$9` in `template` with capture groups from `captures`.
 /// Any other text (including a lone `$0` or `$` not followed by a digit
 /// 1-9) is passed through unchanged.
 fn substitute_captures(template: &str, captures: Option<&regex::Captures>) -> String {
-    let Some(caps) = captures else { return template.to_string() };
+    let Some(caps) = captures else {
+        return template.to_string();
+    };
     let mut result = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
@@ -705,7 +753,13 @@ fn substitute_captures(template: &str, captures: Option<&regex::Captures>) -> St
     result
 }
 
-fn apply_find_replace(text: &str, find: &str, replace: &str, is_regex: bool, compiled: Option<&Regex>) -> String {
+fn apply_find_replace(
+    text: &str,
+    find: &str,
+    replace: &str,
+    is_regex: bool,
+    compiled: Option<&Regex>,
+) -> String {
     if is_regex {
         match compiled {
             Some(re) => re.replace_all(text, replace).into_owned(),
@@ -745,10 +799,15 @@ fn set_query_param(url: &mut url::Url, name: &str, value: &str) {
 }
 
 fn remove_query_param(url: &mut url::Url, name: &str) -> bool {
-    let original: Vec<(String, String)> =
-        url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
-    let filtered: Vec<(String, String)> =
-        original.iter().filter(|(k, _)| k != name).cloned().collect();
+    let original: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let filtered: Vec<(String, String)> = original
+        .iter()
+        .filter(|(k, _)| k != name)
+        .cloned()
+        .collect();
     if filtered.len() == original.len() {
         return false;
     }
@@ -847,8 +906,12 @@ fn json_set(current: &mut Value, segments: &[PathSegment], value: Value) {
 /// Removes the value at `path`, if present. A no-op if the path (or any
 /// intermediate segment) doesn't exist.
 fn json_remove(current: &mut Value, segments: &[PathSegment]) {
-    let Some((last, init)) = segments.split_last() else { return };
-    let Some(parent) = json_get_mut(current, init) else { return };
+    let Some((last, init)) = segments.split_last() else {
+        return;
+    };
+    let Some(parent) = json_get_mut(current, init) else {
+        return;
+    };
     match (last, parent) {
         (PathSegment::Key(k), Value::Object(map)) => {
             map.remove(k);
@@ -899,10 +962,22 @@ fn apply_json_ops(bytes: &[u8], ops: &[JsonOp]) -> Option<Vec<u8>> {
     for op in ops {
         let segments = parse_path(&op.path);
         match op.op {
-            JsonOpKind::Set => json_set(&mut value, &segments, op.value.clone().unwrap_or(Value::Null)),
+            JsonOpKind::Set => json_set(
+                &mut value,
+                &segments,
+                op.value.clone().unwrap_or(Value::Null),
+            ),
             JsonOpKind::Remove => json_remove(&mut value, &segments),
-            JsonOpKind::Merge => json_merge(&mut value, &segments, op.value.clone().unwrap_or(Value::Null)),
-            JsonOpKind::Append => json_append(&mut value, &segments, op.value.clone().unwrap_or(Value::Null)),
+            JsonOpKind::Merge => json_merge(
+                &mut value,
+                &segments,
+                op.value.clone().unwrap_or(Value::Null),
+            ),
+            JsonOpKind::Append => json_append(
+                &mut value,
+                &segments,
+                op.value.clone().unwrap_or(Value::Null),
+            ),
         }
     }
     serde_json::to_vec(&value).ok()
@@ -1034,12 +1109,19 @@ impl RuleSet {
                 }
                 Err(msgs) => {
                     for message in msgs {
-                        errors.push(RuleError { rule_id: rule.id.clone(), message });
+                        errors.push(RuleError {
+                            rule_id: rule.id.clone(),
+                            message,
+                        });
                     }
                 }
             }
         }
-        RuleSet { rules: out_rules, compiled: out_compiled, errors }
+        RuleSet {
+            rules: out_rules,
+            compiled: out_compiled,
+            errors,
+        }
     }
 
     /// Returns the compiled, sorted, enabled rules (rules that failed to
@@ -1074,7 +1156,15 @@ impl RuleSet {
         let mut throttle_bps: Option<u64> = None;
 
         for (rule, compiled) in self.rules.iter().zip(self.compiled.iter()) {
-            if !matches_request(rule, compiled, &method, &url, &headers, body.as_deref(), ctx.resource_type) {
+            if !matches_request(
+                rule,
+                compiled,
+                &method,
+                &url,
+                &headers,
+                body.as_deref(),
+                ctx.resource_type,
+            ) {
                 continue;
             }
             matched.push(rule.id.clone());
@@ -1084,7 +1174,10 @@ impl RuleSet {
             // the state the matcher actually matched against.
             let match_url_str = url.as_str().to_string();
             let matcher_caps = if rule.matcher.url_op == UrlOp::Regex {
-                compiled.url_regex.as_ref().and_then(|re| re.captures(match_url_str.as_str()))
+                compiled
+                    .url_regex
+                    .as_ref()
+                    .and_then(|re| re.captures(match_url_str.as_str()))
             } else {
                 None
             };
@@ -1099,11 +1192,20 @@ impl RuleSet {
                             rule_modified = true;
                         }
                     }
-                    Action::RewriteUrl { find, replace, regex } => {
+                    Action::RewriteUrl {
+                        find,
+                        replace,
+                        regex,
+                    } => {
                         let replacement = substitute_captures(replace, matcher_caps.as_ref());
                         let current = url.as_str().to_string();
-                        let updated =
-                            apply_find_replace(&current, find, &replacement, *regex, action_regex.as_ref());
+                        let updated = apply_find_replace(
+                            &current,
+                            find,
+                            &replacement,
+                            *regex,
+                            action_regex.as_ref(),
+                        );
                         if updated != current {
                             if let Ok(parsed) = url::Url::parse(&updated) {
                                 url = parsed;
@@ -1129,17 +1231,31 @@ impl RuleSet {
                             rule_modified = true;
                         }
                     }
-                    Action::SetRequestBody { body: new_body, encoding, content_type } => {
+                    Action::SetRequestBody {
+                        body: new_body,
+                        encoding,
+                        content_type,
+                    } => {
                         body = Some(decode_payload_encoding(new_body, *encoding));
                         if let Some(ct) = content_type {
                             set_header(&mut headers, "Content-Type", ct);
                         }
                         rule_modified = true;
                     }
-                    Action::ReplaceInRequestBody { find, replace, regex } => {
+                    Action::ReplaceInRequestBody {
+                        find,
+                        replace,
+                        regex,
+                    } => {
                         if let Some(bytes) = &body {
                             let text = String::from_utf8_lossy(bytes);
-                            let replaced = apply_find_replace(&text, find, replace, *regex, action_regex.as_ref());
+                            let replaced = apply_find_replace(
+                                &text,
+                                find,
+                                replace,
+                                *regex,
+                                action_regex.as_ref(),
+                            );
                             if replaced != text {
                                 body = Some(replaced.into_bytes());
                                 rule_modified = true;
@@ -1154,7 +1270,13 @@ impl RuleSet {
                             }
                         }
                     }
-                    Action::MockResponse { status, headers: mock_headers, body: mock_body, encoding, delay_ms: mock_delay } => {
+                    Action::MockResponse {
+                        status,
+                        headers: mock_headers,
+                        body: mock_body,
+                        encoding,
+                        delay_ms: mock_delay,
+                    } => {
                         mocked = Some(MockedResponse {
                             status: *status,
                             headers: mock_headers.clone(),
@@ -1168,8 +1290,11 @@ impl RuleSet {
                         rule_modified = true;
                     }
                     Action::Block { reason } => {
-                        blocked =
-                            Some(if reason.is_empty() { "blocked by rule".to_string() } else { reason.clone() });
+                        blocked = Some(if reason.is_empty() {
+                            "blocked by rule".to_string()
+                        } else {
+                            reason.clone()
+                        });
                         rule_modified = true;
                     }
                     Action::Delay { ms } => {
@@ -1199,7 +1324,18 @@ impl RuleSet {
             }
         }
 
-        RequestOutcome { method, url: url.to_string(), headers, body, matched, modified, blocked, mocked, delay_ms, throttle_bps }
+        RequestOutcome {
+            method,
+            url: url.to_string(),
+            headers,
+            body,
+            matched,
+            modified,
+            blocked,
+            mocked,
+            delay_ms,
+            throttle_bps,
+        }
     }
 
     /// Runs the response phase: re-evaluates each rule's full matcher
@@ -1251,17 +1387,31 @@ impl RuleSet {
                             rule_modified = true;
                         }
                     }
-                    Action::SetResponseBody { body: new_body, encoding, content_type } => {
+                    Action::SetResponseBody {
+                        body: new_body,
+                        encoding,
+                        content_type,
+                    } => {
                         body = Some(decode_payload_encoding(new_body, *encoding));
                         if let Some(ct) = content_type {
                             set_header(&mut headers, "Content-Type", ct);
                         }
                         rule_modified = true;
                     }
-                    Action::ReplaceInResponseBody { find, replace, regex } => {
+                    Action::ReplaceInResponseBody {
+                        find,
+                        replace,
+                        regex,
+                    } => {
                         if let Some(bytes) = &body {
                             let text = String::from_utf8_lossy(bytes);
-                            let replaced = apply_find_replace(&text, find, replace, *regex, action_regex.as_ref());
+                            let replaced = apply_find_replace(
+                                &text,
+                                find,
+                                replace,
+                                *regex,
+                                action_regex.as_ref(),
+                            );
                             if replaced != text {
                                 body = Some(replaced.into_bytes());
                                 rule_modified = true;
@@ -1315,7 +1465,15 @@ impl RuleSet {
             }
         }
 
-        ResponseOutcome { status, headers, body, matched, modified, delay_ms, throttle_bps }
+        ResponseOutcome {
+            status,
+            headers,
+            body,
+            matched,
+            modified,
+            delay_ms,
+            throttle_bps,
+        }
     }
 }
 
@@ -1325,7 +1483,11 @@ mod tests {
     use url::Url;
 
     fn matcher_url(op: UrlOp, value: &str) -> Matcher {
-        Matcher { url_op: op, url_value: value.to_string(), ..Matcher::default() }
+        Matcher {
+            url_op: op,
+            url_value: value.to_string(),
+            ..Matcher::default()
+        }
     }
 
     fn make_rule(id: &str, priority: i32, matcher: Matcher, actions: Vec<Action>) -> Rule {
@@ -1342,7 +1504,13 @@ mod tests {
     }
 
     fn req_ctx(url: &Url) -> RequestCtx<'_> {
-        RequestCtx { method: "GET", url, headers: &[], body: None, resource_type: ResourceType::Other }
+        RequestCtx {
+            method: "GET",
+            url,
+            headers: &[],
+            body: None,
+            resource_type: ResourceType::Other,
+        }
     }
 
     #[test]
@@ -1359,7 +1527,12 @@ mod tests {
     #[test]
     fn url_op_equals() {
         let url = Url::parse("http://example.com/exact").unwrap();
-        let rule = make_rule("r1", 0, matcher_url(UrlOp::Equals, "http://example.com/exact"), vec![]);
+        let rule = make_rule(
+            "r1",
+            0,
+            matcher_url(UrlOp::Equals, "http://example.com/exact"),
+            vec![],
+        );
         let set = RuleSet::new(vec![rule]);
         assert_eq!(set.apply_request(req_ctx(&url)).matched, vec!["r1"]);
     }
@@ -1367,7 +1540,12 @@ mod tests {
     #[test]
     fn url_op_starts_ends_with() {
         let url = Url::parse("http://example.com/prefix/suffix.json").unwrap();
-        let starts = make_rule("s", 0, matcher_url(UrlOp::StartsWith, "http://example.com/prefix"), vec![]);
+        let starts = make_rule(
+            "s",
+            0,
+            matcher_url(UrlOp::StartsWith, "http://example.com/prefix"),
+            vec![],
+        );
         let ends = make_rule("e", 0, matcher_url(UrlOp::EndsWith, ".json"), vec![]);
         let set = RuleSet::new(vec![starts, ends]);
         let matched = set.apply_request(req_ctx(&url)).matched;
@@ -1388,14 +1566,22 @@ mod tests {
     #[test]
     fn url_op_wildcard() {
         let url = Url::parse("http://example.com/assets/app.js").unwrap();
-        let rule = make_rule("r1", 0, matcher_url(UrlOp::Wildcard, "http://example.com/assets/*.js"), vec![]);
+        let rule = make_rule(
+            "r1",
+            0,
+            matcher_url(UrlOp::Wildcard, "http://example.com/assets/*.js"),
+            vec![],
+        );
         let set = RuleSet::new(vec![rule]);
         assert_eq!(set.apply_request(req_ctx(&url)).matched, vec!["r1"]);
     }
 
     #[test]
     fn wildcard_host_ports() {
-        let matcher = Matcher { host_ports: vec!["*.example.com".to_string()], ..Matcher::default() };
+        let matcher = Matcher {
+            host_ports: vec!["*.example.com".to_string()],
+            ..Matcher::default()
+        };
         let rule = make_rule("r1", 0, matcher, vec![]);
         let set = RuleSet::new(vec![rule]);
 
@@ -1425,10 +1611,16 @@ mod tests {
     #[test]
     fn status_class_and_range() {
         let url = Url::parse("http://example.com/").unwrap();
-        let class_matcher = Matcher { status_codes: vec!["4xx".to_string()], ..Matcher::default() };
+        let class_matcher = Matcher {
+            status_codes: vec!["4xx".to_string()],
+            ..Matcher::default()
+        };
         let class_rule = make_rule("class", 0, class_matcher, vec![]);
 
-        let range_matcher = Matcher { status_codes: vec!["500-599".to_string()], ..Matcher::default() };
+        let range_matcher = Matcher {
+            status_codes: vec!["500-599".to_string()],
+            ..Matcher::default()
+        };
         let range_rule = make_rule("range", 0, range_matcher, vec![]);
 
         let set = RuleSet::new(vec![class_rule, range_rule]);
@@ -1451,7 +1643,9 @@ mod tests {
             "r1",
             0,
             matcher,
-            vec![Action::Redirect { to: "http://new.example.com/$1".to_string() }],
+            vec![Action::Redirect {
+                to: "http://new.example.com/$1".to_string(),
+            }],
         );
         let set = RuleSet::new(vec![rule]);
         let out = set.apply_request(req_ctx(&url));
@@ -1463,14 +1657,26 @@ mod tests {
     fn json_patch_set_remove_merge_append() {
         let body = br#"{"a":1,"b":{"x":1},"list":[1,2]}"#;
         let ops = vec![
-            JsonOp { op: JsonOpKind::Set, path: "a".to_string(), value: Some(Value::from(99)) },
-            JsonOp { op: JsonOpKind::Remove, path: "b.x".to_string(), value: None },
+            JsonOp {
+                op: JsonOpKind::Set,
+                path: "a".to_string(),
+                value: Some(Value::from(99)),
+            },
+            JsonOp {
+                op: JsonOpKind::Remove,
+                path: "b.x".to_string(),
+                value: None,
+            },
             JsonOp {
                 op: JsonOpKind::Merge,
                 path: "b".to_string(),
                 value: Some(serde_json::json!({"y": 2})),
             },
-            JsonOp { op: JsonOpKind::Append, path: "list".to_string(), value: Some(Value::from(3)) },
+            JsonOp {
+                op: JsonOpKind::Append,
+                path: "list".to_string(),
+                value: Some(Value::from(3)),
+            },
             JsonOp {
                 op: JsonOpKind::Set,
                 path: "created.nested[0].name".to_string(),
@@ -1498,13 +1704,18 @@ mod tests {
             "blocker",
             0,
             Matcher::default(),
-            vec![Action::Block { reason: "nope".to_string() }],
+            vec![Action::Block {
+                reason: "nope".to_string(),
+            }],
         );
         let follower = make_rule(
             "follower",
             1,
             Matcher::default(),
-            vec![Action::SetRequestHeader { name: "X-Test".to_string(), value: "1".to_string() }],
+            vec![Action::SetRequestHeader {
+                name: "X-Test".to_string(),
+                value: "1".to_string(),
+            }],
         );
         let set = RuleSet::new(vec![blocker, follower]);
         let out = set.apply_request(req_ctx(&url));
@@ -1532,7 +1743,10 @@ mod tests {
             "follower",
             1,
             Matcher::default(),
-            vec![Action::SetRequestHeader { name: "X-Test".to_string(), value: "1".to_string() }],
+            vec![Action::SetRequestHeader {
+                name: "X-Test".to_string(),
+                value: "1".to_string(),
+            }],
         );
         let set = RuleSet::new(vec![mocker, follower]);
         let out = set.apply_request(req_ctx(&url));
@@ -1627,7 +1841,10 @@ mod tests {
 
     #[test]
     fn bad_glob_does_not_panic_and_is_reported() {
-        let matcher = Matcher { host_ports: vec!["[".to_string()], ..Matcher::default() };
+        let matcher = Matcher {
+            host_ports: vec!["[".to_string()],
+            ..Matcher::default()
+        };
         let rule = make_rule("badglob", 0, matcher, vec![]);
         let set = RuleSet::new(vec![rule]);
         assert!(set.rules().is_empty());
@@ -1641,7 +1858,10 @@ mod tests {
             "r1",
             0,
             Matcher::default(),
-            vec![Action::SetRequestHeader { name: "X-Foo".to_string(), value: "new".to_string() }],
+            vec![Action::SetRequestHeader {
+                name: "X-Foo".to_string(),
+                value: "new".to_string(),
+            }],
         );
         let set = RuleSet::new(vec![rule]);
         let headers = vec![
@@ -1649,9 +1869,20 @@ mod tests {
             HeaderPair::new("x-foo", "old2"),
             HeaderPair::new("X-Bar", "keep"),
         ];
-        let ctx = RequestCtx { method: "GET", url: &url, headers: &headers, body: None, resource_type: ResourceType::Other };
+        let ctx = RequestCtx {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+            body: None,
+            resource_type: ResourceType::Other,
+        };
         let out = set.apply_request(ctx);
-        let foo_values: Vec<&str> = out.headers.iter().filter(|h| h.name.eq_ignore_ascii_case("X-Foo")).map(|h| h.value.as_str()).collect();
+        let foo_values: Vec<&str> = out
+            .headers
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("X-Foo"))
+            .map(|h| h.value.as_str())
+            .collect();
         assert_eq!(foo_values, vec!["new"]);
         assert!(out.headers.iter().any(|h| h.name == "X-Bar"));
     }
@@ -1670,7 +1901,11 @@ mod action_wire_format_tests {
     use std::collections::BTreeSet;
 
     fn keys(v: &Value) -> BTreeSet<String> {
-        v.as_object().expect("action must serialize to a JSON object").keys().cloned().collect()
+        v.as_object()
+            .expect("action must serialize to a JSON object")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     fn key_set(extra: &[&str]) -> BTreeSet<String> {
@@ -1684,7 +1919,11 @@ mod action_wire_format_tests {
     /// compares for equality with the original.
     fn check_wire_format(action: Action, expected_keys: &[&str]) {
         let value = serde_json::to_value(&action).unwrap();
-        assert_eq!(keys(&value), key_set(expected_keys), "unexpected wire keys for {value}");
+        assert_eq!(
+            keys(&value),
+            key_set(expected_keys),
+            "unexpected wire keys for {value}"
+        );
 
         let round_tripped: Action = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, action);
@@ -1692,13 +1931,22 @@ mod action_wire_format_tests {
 
     #[test]
     fn redirect_wire_format() {
-        check_wire_format(Action::Redirect { to: "http://x".to_string() }, &["to"]);
+        check_wire_format(
+            Action::Redirect {
+                to: "http://x".to_string(),
+            },
+            &["to"],
+        );
     }
 
     #[test]
     fn rewrite_url_wire_format() {
         check_wire_format(
-            Action::RewriteUrl { find: "a".to_string(), replace: "b".to_string(), regex: true },
+            Action::RewriteUrl {
+                find: "a".to_string(),
+                replace: "b".to_string(),
+                regex: true,
+            },
             &["find", "replace", "regex"],
         );
     }
@@ -1706,40 +1954,64 @@ mod action_wire_format_tests {
     #[test]
     fn set_query_param_wire_format() {
         check_wire_format(
-            Action::SetQueryParam { name: "n".to_string(), value: "v".to_string() },
+            Action::SetQueryParam {
+                name: "n".to_string(),
+                value: "v".to_string(),
+            },
             &["name", "value"],
         );
     }
 
     #[test]
     fn remove_query_param_wire_format() {
-        check_wire_format(Action::RemoveQueryParam { name: "n".to_string() }, &["name"]);
+        check_wire_format(
+            Action::RemoveQueryParam {
+                name: "n".to_string(),
+            },
+            &["name"],
+        );
     }
 
     #[test]
     fn set_request_header_wire_format() {
         check_wire_format(
-            Action::SetRequestHeader { name: "n".to_string(), value: "v".to_string() },
+            Action::SetRequestHeader {
+                name: "n".to_string(),
+                value: "v".to_string(),
+            },
             &["name", "value"],
         );
     }
 
     #[test]
     fn remove_request_header_wire_format() {
-        check_wire_format(Action::RemoveRequestHeader { name: "n".to_string() }, &["name"]);
+        check_wire_format(
+            Action::RemoveRequestHeader {
+                name: "n".to_string(),
+            },
+            &["name"],
+        );
     }
 
     #[test]
     fn set_response_header_wire_format() {
         check_wire_format(
-            Action::SetResponseHeader { name: "n".to_string(), value: "v".to_string() },
+            Action::SetResponseHeader {
+                name: "n".to_string(),
+                value: "v".to_string(),
+            },
             &["name", "value"],
         );
     }
 
     #[test]
     fn remove_response_header_wire_format() {
-        check_wire_format(Action::RemoveResponseHeader { name: "n".to_string() }, &["name"]);
+        check_wire_format(
+            Action::RemoveResponseHeader {
+                name: "n".to_string(),
+            },
+            &["name"],
+        );
     }
 
     #[test]
@@ -1831,7 +2103,11 @@ mod action_wire_format_tests {
     #[test]
     fn replace_in_request_body_wire_format() {
         check_wire_format(
-            Action::ReplaceInRequestBody { find: "a".to_string(), replace: "b".to_string(), regex: false },
+            Action::ReplaceInRequestBody {
+                find: "a".to_string(),
+                replace: "b".to_string(),
+                regex: false,
+            },
             &["find", "replace", "regex"],
         );
     }
@@ -1839,7 +2115,11 @@ mod action_wire_format_tests {
     #[test]
     fn replace_in_response_body_wire_format() {
         check_wire_format(
-            Action::ReplaceInResponseBody { find: "a".to_string(), replace: "b".to_string(), regex: false },
+            Action::ReplaceInResponseBody {
+                find: "a".to_string(),
+                replace: "b".to_string(),
+                regex: false,
+            },
             &["find", "replace", "regex"],
         );
     }
@@ -1848,7 +2128,11 @@ mod action_wire_format_tests {
     fn json_patch_request_wire_format() {
         check_wire_format(
             Action::JsonPatchRequest {
-                ops: vec![JsonOp { op: JsonOpKind::Set, path: "a".to_string(), value: Some(Value::from(1)) }],
+                ops: vec![JsonOp {
+                    op: JsonOpKind::Set,
+                    path: "a".to_string(),
+                    value: Some(Value::from(1)),
+                }],
             },
             &["ops"],
         );
@@ -1858,7 +2142,11 @@ mod action_wire_format_tests {
     fn json_patch_response_wire_format() {
         check_wire_format(
             Action::JsonPatchResponse {
-                ops: vec![JsonOp { op: JsonOpKind::Remove, path: "a".to_string(), value: None }],
+                ops: vec![JsonOp {
+                    op: JsonOpKind::Remove,
+                    path: "a".to_string(),
+                    value: None,
+                }],
             },
             &["ops"],
         );
@@ -1922,7 +2210,12 @@ mod action_wire_format_tests {
 
     #[test]
     fn block_wire_format() {
-        check_wire_format(Action::Block { reason: "nope".to_string() }, &["reason"]);
+        check_wire_format(
+            Action::Block {
+                reason: "nope".to_string(),
+            },
+            &["reason"],
+        );
     }
 
     #[test]
@@ -1932,12 +2225,20 @@ mod action_wire_format_tests {
 
     #[test]
     fn throttle_wire_format() {
-        check_wire_format(Action::Throttle { bytes_per_sec: 1024 }, &["bytesPerSec"]);
+        check_wire_format(
+            Action::Throttle {
+                bytes_per_sec: 1024,
+            },
+            &["bytesPerSec"],
+        );
     }
 
     #[test]
     fn throttle_serializes_bytes_per_sec_as_camel_case() {
-        let value = serde_json::to_value(Action::Throttle { bytes_per_sec: 4096 }).unwrap();
+        let value = serde_json::to_value(Action::Throttle {
+            bytes_per_sec: 4096,
+        })
+        .unwrap();
         assert_eq!(value["bytesPerSec"], 4096);
         assert!(value.get("bytes_per_sec").is_none());
     }
@@ -1946,11 +2247,21 @@ mod action_wire_format_tests {
     fn throttle_accepts_legacy_snake_case_bytes_per_sec() {
         let json = serde_json::json!({"type": "throttle", "bytes_per_sec": 2048});
         let action: Action = serde_json::from_value(json).unwrap();
-        assert_eq!(action, Action::Throttle { bytes_per_sec: 2048 });
+        assert_eq!(
+            action,
+            Action::Throttle {
+                bytes_per_sec: 2048
+            }
+        );
     }
 
     #[test]
     fn set_method_wire_format() {
-        check_wire_format(Action::SetMethod { method: "POST".to_string() }, &["method"]);
+        check_wire_format(
+            Action::SetMethod {
+                method: "POST".to_string(),
+            },
+            &["method"],
+        );
     }
 }

@@ -33,7 +33,11 @@ impl TeeState {
     /// Returns `(captured_bytes, total_bytes_seen, truncated)`. `captured`
     /// may be shorter than `total` if the cap was reached.
     pub fn snapshot(&self) -> (Bytes, u64, bool) {
-        (Bytes::copy_from_slice(&self.captured), self.total, self.truncated)
+        (
+            Bytes::copy_from_slice(&self.captured),
+            self.total,
+            self.truncated,
+        )
     }
 }
 
@@ -56,7 +60,14 @@ impl<B> TeeBody<B> {
     /// an abort) to see what's been captured so far.
     pub fn new(inner: B, cap: usize) -> (Self, Arc<Mutex<TeeState>>) {
         let state = Arc::new(Mutex::new(TeeState::default()));
-        (TeeBody { inner, cap, state: state.clone() }, state)
+        (
+            TeeBody {
+                inner,
+                cap,
+                state: state.clone(),
+            },
+            state,
+        )
     }
 }
 
@@ -118,7 +129,9 @@ where
     let mut truncated = false;
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|e| ProxyError::Other(format!("body read error: {e}")))?;
-        let Some(data) = frame.data_ref() else { continue };
+        let Some(data) = frame.data_ref() else {
+            continue;
+        };
         total += data.len() as u64;
         if truncated {
             continue;
@@ -151,7 +164,11 @@ struct TokenBucket {
 impl TokenBucket {
     fn new(bytes_per_sec: u64) -> Self {
         let rate = (bytes_per_sec.max(1)) as f64;
-        TokenBucket { rate, capacity: rate, tokens: rate }
+        TokenBucket {
+            rate,
+            capacity: rate,
+            tokens: rate,
+        }
     }
 
     /// Advances the bucket's clock by `elapsed_secs`, refilling tokens.
@@ -196,7 +213,12 @@ pub struct Throttled<B> {
 impl<B> Throttled<B> {
     /// Wraps `inner`, capping its data throughput at `bytes_per_sec`.
     pub fn new(inner: B, bytes_per_sec: u64) -> Self {
-        Throttled { inner, bucket: TokenBucket::new(bytes_per_sec), last_refill: Instant::now(), pending: None }
+        Throttled {
+            inner,
+            bucket: TokenBucket::new(bytes_per_sec),
+            last_refill: Instant::now(),
+            pending: None,
+        }
     }
 }
 
@@ -232,13 +254,15 @@ where
                     return Poll::Ready(Some(Ok(frame)));
                 };
                 let now = Instant::now();
-                this.bucket.refill(now.duration_since(this.last_refill).as_secs_f64());
+                this.bucket
+                    .refill(now.duration_since(this.last_refill).as_secs_f64());
                 this.last_refill = now;
 
                 match this.bucket.try_take(data.len() as f64) {
                     None => Poll::Ready(Some(Ok(frame))),
                     Some(wait_secs) => {
-                        let mut sleep = Box::pin(tokio::time::sleep(Duration::from_secs_f64(wait_secs)));
+                        let mut sleep =
+                            Box::pin(tokio::time::sleep(Duration::from_secs_f64(wait_secs)));
                         match sleep.as_mut().poll(cx) {
                             Poll::Pending => {
                                 this.pending = Some((sleep, frame));
@@ -280,7 +304,10 @@ impl<B, F: FnOnce() + Send + Unpin + 'static> FinalizeBody<B, F> {
     /// Wraps `inner`, arranging for `on_done` to run exactly once, on
     /// completion or drop, whichever comes first.
     pub fn new(inner: B, on_done: F) -> Self {
-        FinalizeBody { inner, on_done: Some(on_done) }
+        FinalizeBody {
+            inner,
+            on_done: Some(on_done),
+        }
     }
 }
 

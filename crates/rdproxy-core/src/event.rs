@@ -8,7 +8,11 @@ use crate::settings::Settings;
 
 /// A message pushed from the server to subscribed WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ServerEvent {
     /// A single flow was created or updated.
     Flow {
@@ -57,7 +61,11 @@ pub enum ServerEvent {
 
 /// A message sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ClientCommand {
     /// Pauses or resumes capture.
     Pause {
@@ -103,14 +111,16 @@ mod tests {
 #[cfg(test)]
 mod wire_format_tests {
     use super::*;
-    use crate::flow::{
-        BodyPayload, Flow, FlowState, RequestRecord, ResourceType, WsDirection,
-    };
+    use crate::flow::{BodyPayload, Flow, FlowState, RequestRecord, ResourceType, WsDirection};
     use crate::settings::Settings;
     use std::collections::BTreeSet;
 
     fn keys(v: &serde_json::Value) -> BTreeSet<String> {
-        v.as_object().expect("must serialize to a JSON object").keys().cloned().collect()
+        v.as_object()
+            .expect("must serialize to a JSON object")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     fn key_set(extra: &[&str]) -> BTreeSet<String> {
@@ -189,7 +199,11 @@ mod wire_format_tests {
     /// requiring `PartialEq` on the domain types nested inside events).
     fn check_server_event(event: ServerEvent, expected_keys: &[&str]) {
         let value = serde_json::to_value(&event).unwrap();
-        assert_eq!(keys(&value), key_set(expected_keys), "unexpected wire keys for {value}");
+        assert_eq!(
+            keys(&value),
+            key_set(expected_keys),
+            "unexpected wire keys for {value}"
+        );
 
         let round_tripped: ServerEvent = serde_json::from_value(value.clone()).unwrap();
         let re_serialized = serde_json::to_value(&round_tripped).unwrap();
@@ -201,7 +215,11 @@ mod wire_format_tests {
     /// [`check_server_event`].
     fn check_client_command(cmd: ClientCommand, expected_keys: &[&str]) {
         let value = serde_json::to_value(&cmd).unwrap();
-        assert_eq!(keys(&value), key_set(expected_keys), "unexpected wire keys for {value}");
+        assert_eq!(
+            keys(&value),
+            key_set(expected_keys),
+            "unexpected wire keys for {value}"
+        );
 
         let round_tripped: ClientCommand = serde_json::from_value(value.clone()).unwrap();
         let re_serialized = serde_json::to_value(&round_tripped).unwrap();
@@ -210,18 +228,30 @@ mod wire_format_tests {
 
     #[test]
     fn server_event_flow_wire_format() {
-        check_server_event(ServerEvent::Flow { flow: sample_flow_summary() }, &["flow"]);
+        check_server_event(
+            ServerEvent::Flow {
+                flow: sample_flow_summary(),
+            },
+            &["flow"],
+        );
     }
 
     #[test]
     fn server_event_flows_wire_format() {
-        check_server_event(ServerEvent::Flows { flows: vec![sample_flow_summary()] }, &["flows"]);
+        check_server_event(
+            ServerEvent::Flows {
+                flows: vec![sample_flow_summary()],
+            },
+            &["flows"],
+        );
     }
 
     #[test]
     fn server_event_flow_detail_wire_format() {
         check_server_event(
-            ServerEvent::FlowDetail { flow: Box::new(sample_flow()) },
+            ServerEvent::FlowDetail {
+                flow: Box::new(sample_flow()),
+            },
             &["flow"],
         );
     }
@@ -229,7 +259,10 @@ mod wire_format_tests {
     #[test]
     fn server_event_ws_message_wire_format() {
         check_server_event(
-            ServerEvent::WsMessage { flow_id: FlowId::nil(), message: sample_ws_message() },
+            ServerEvent::WsMessage {
+                flow_id: FlowId::nil(),
+                message: sample_ws_message(),
+            },
             &["flowId", "message"],
         );
     }
@@ -253,7 +286,9 @@ mod wire_format_tests {
     #[test]
     fn server_event_state_wire_format() {
         check_server_event(
-            ServerEvent::State { state: serde_json::json!({"paused": false}) },
+            ServerEvent::State {
+                state: serde_json::json!({"paused": false}),
+            },
             &["state"],
         );
     }
@@ -266,7 +301,9 @@ mod wire_format_tests {
     #[test]
     fn server_event_settings_changed_wire_format() {
         check_server_event(
-            ServerEvent::SettingsChanged { settings: Settings::default() },
+            ServerEvent::SettingsChanged {
+                settings: Settings::default(),
+            },
             &["settings"],
         );
     }
@@ -274,7 +311,10 @@ mod wire_format_tests {
     #[test]
     fn server_event_notice_wire_format() {
         check_server_event(
-            ServerEvent::Notice { level: "info".to_string(), message: "hi".to_string() },
+            ServerEvent::Notice {
+                level: "info".to_string(),
+                message: "hi".to_string(),
+            },
             &["level", "message"],
         );
     }
@@ -292,7 +332,9 @@ mod wire_format_tests {
     #[test]
     fn client_command_subscribe_wire_format() {
         check_client_command(
-            ClientCommand::Subscribe { filter: Some("host:example.com".to_string()) },
+            ClientCommand::Subscribe {
+                filter: Some("host:example.com".to_string()),
+            },
             &["filter"],
         );
     }

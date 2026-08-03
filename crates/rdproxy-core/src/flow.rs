@@ -63,7 +63,12 @@ impl ResourceType {
             .to_ascii_lowercase();
 
         if let Some(mime) = mime {
-            let mime = mime.split(';').next().unwrap_or(mime).trim().to_ascii_lowercase();
+            let mime = mime
+                .split(';')
+                .next()
+                .unwrap_or(mime)
+                .trim()
+                .to_ascii_lowercase();
             match mime.as_str() {
                 "text/html" | "application/xhtml+xml" => return ResourceType::Document,
                 "text/css" => return ResourceType::Stylesheet,
@@ -120,7 +125,10 @@ pub struct HeaderPair {
 impl HeaderPair {
     /// Creates a new [`HeaderPair`] from any two `Into<String>` values.
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { name: name.into(), value: value.into() }
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
     }
 }
 
@@ -417,12 +425,18 @@ impl Flow {
             .headers
             .iter()
             .find(|h| h.name.eq_ignore_ascii_case("content-type"))
-            .map(|h| h.value.split(';').next().unwrap_or(&h.value).trim().to_string());
+            .map(|h| {
+                h.value
+                    .split(';')
+                    .next()
+                    .unwrap_or(&h.value)
+                    .trim()
+                    .to_string()
+            });
         self.summary.response_size = response.body.size;
         self.summary.resource_type =
             ResourceType::infer(self.summary.mime_type.as_deref(), &self.summary.path);
-        self.summary.duration_ms =
-            Some((finished_at - self.summary.started_at).max(0) as u64);
+        self.summary.duration_ms = Some((finished_at - self.summary.started_at).max(0) as u64);
         self.summary.state = FlowState::Complete;
         self.response = Some(response);
     }

@@ -123,14 +123,21 @@ pub fn encode_body(bytes: &[u8], encoding: &str) -> Result<Vec<u8>> {
 /// "binary" control characters when deciding whether to display content as
 /// text (tab, newline, and carriage return are allowed).
 fn has_control_bytes(bytes: &[u8]) -> bool {
-    bytes.iter().any(|&b| b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r')
+    bytes
+        .iter()
+        .any(|&b| b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r')
 }
 
 /// Returns true if `mime` denotes a textual content type worth displaying
 /// as UTF-8 text rather than base64 (`text/*`, JSON, XML, JS, form data,
 /// GraphQL, and any `+json`/`+xml` structured-syntax suffix).
 pub fn is_textual_mime(mime: &str) -> bool {
-    let mime = mime.split(';').next().unwrap_or(mime).trim().to_ascii_lowercase();
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
     if mime.starts_with("text/") {
         return true;
     }
@@ -185,11 +192,20 @@ pub fn to_payload(
 
     if decoded.len() <= max_bytes {
         let (kind, data) = if is_text {
-            (BodyKind::Text, String::from_utf8(decoded).unwrap_or_default())
+            (
+                BodyKind::Text,
+                String::from_utf8(decoded).unwrap_or_default(),
+            )
         } else {
             (BodyKind::Base64, BASE64.encode(&decoded))
         };
-        return BodyPayload { kind, data, size, truncated: false, encoding };
+        return BodyPayload {
+            kind,
+            data,
+            size,
+            truncated: false,
+            encoding,
+        };
     }
 
     // Truncate. For text, cut at the nearest valid UTF-8 char boundary at or
@@ -204,7 +220,13 @@ pub fn to_payload(
     } else {
         BASE64.encode(prefix)
     };
-    BodyPayload { kind: BodyKind::Truncated, data, size, truncated: true, encoding }
+    BodyPayload {
+        kind: BodyKind::Truncated,
+        data,
+        size,
+        truncated: true,
+        encoding,
+    }
 }
 
 /// Reconstructs the raw bytes of a [`BodyPayload`], the inverse of

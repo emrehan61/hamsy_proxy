@@ -108,7 +108,10 @@ fn parse_started_date_time(s: &str) -> Option<i64> {
 fn split_server_addr(addr: Option<&str>) -> (Value, Value) {
     match addr {
         Some(a) => match a.rsplit_once(':') {
-            Some((ip, port)) => (Value::String(ip.to_string()), Value::String(port.to_string())),
+            Some((ip, port)) => (
+                Value::String(ip.to_string()),
+                Value::String(port.to_string()),
+            ),
             None => (Value::String(a.to_string()), Value::Null),
         },
         None => (Value::Null, Value::Null),
@@ -122,14 +125,20 @@ fn export_entry(flow: &Flow) -> Value {
     let request = flow.request.as_ref();
     let response = flow.response.as_ref();
 
-    let req_headers: Vec<Value> =
-        request.map(|r| r.headers.iter().map(header_to_json).collect()).unwrap_or_default();
+    let req_headers: Vec<Value> = request
+        .map(|r| r.headers.iter().map(header_to_json).collect())
+        .unwrap_or_default();
     let req_cookies: Vec<Value> = request
-        .and_then(|r| r.headers.iter().find(|h| h.name.eq_ignore_ascii_case("cookie")))
+        .and_then(|r| {
+            r.headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("cookie"))
+        })
         .map(|h| parse_cookie_header(&h.value))
         .unwrap_or_default();
-    let query_string: Vec<Value> =
-        request.map(|r| r.query.iter().map(header_to_json).collect()).unwrap_or_default();
+    let query_string: Vec<Value> = request
+        .map(|r| r.query.iter().map(header_to_json).collect())
+        .unwrap_or_default();
 
     let mut request_json = serde_json::json!({
         "method": flow.summary.method,
@@ -149,12 +158,16 @@ fn export_entry(flow: &Flow) -> Value {
                 .find(|h| h.name.eq_ignore_ascii_case("content-type"))
                 .map(|h| h.value.clone())
                 .unwrap_or_else(|| "application/octet-stream".to_string());
-            obj.insert("postData".to_string(), serde_json::json!({"mimeType": mime, "text": r.body.data}));
+            obj.insert(
+                "postData".to_string(),
+                serde_json::json!({"mimeType": mime, "text": r.body.data}),
+            );
         }
     }
 
-    let resp_headers: Vec<Value> =
-        response.map(|r| r.headers.iter().map(header_to_json).collect()).unwrap_or_default();
+    let resp_headers: Vec<Value> = response
+        .map(|r| r.headers.iter().map(header_to_json).collect())
+        .unwrap_or_default();
     let resp_cookies: Vec<Value> = response
         .map(|r| {
             r.headers
@@ -165,7 +178,11 @@ fn export_entry(flow: &Flow) -> Value {
         })
         .unwrap_or_default();
     let redirect_url = response
-        .and_then(|r| r.headers.iter().find(|h| h.name.eq_ignore_ascii_case("location")))
+        .and_then(|r| {
+            r.headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("location"))
+        })
         .map(|h| h.value.clone())
         .unwrap_or_default();
 
@@ -246,16 +263,27 @@ fn parse_har_headers(value: Option<&Value>) -> Vec<HeaderPair> {
 /// [`crate::body::to_payload`] based on its own bytes and `mimeType`).
 fn parse_post_data(value: Option<&Value>) -> Option<BodyPayload> {
     let obj = value?;
-    let mime = obj.get("mimeType").and_then(|v| v.as_str()).map(String::from);
+    let mime = obj
+        .get("mimeType")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let text = obj.get("text").and_then(|v| v.as_str())?;
-    Some(crate::body::to_payload(text.as_bytes(), mime.as_deref(), None, usize::MAX))
+    Some(crate::body::to_payload(
+        text.as_bytes(),
+        mime.as_deref(),
+        None,
+        usize::MAX,
+    ))
 }
 
 /// Builds a [`BodyPayload`] from a HAR `response.content` object, honoring
 /// the optional `encoding: "base64"` field per the HAR 1.2 spec.
 fn parse_content(value: Option<&Value>) -> Option<BodyPayload> {
     let obj = value?;
-    let mime = obj.get("mimeType").and_then(|v| v.as_str()).map(String::from);
+    let mime = obj
+        .get("mimeType")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
     if text.is_empty() {
         return Some(BodyPayload::default());
@@ -271,7 +299,12 @@ fn parse_content(value: Option<&Value>) -> Option<BodyPayload> {
             encoding: None,
         })
     } else {
-        Some(crate::body::to_payload(text.as_bytes(), mime.as_deref(), None, usize::MAX))
+        Some(crate::body::to_payload(
+            text.as_bytes(),
+            mime.as_deref(),
+            None,
+            usize::MAX,
+        ))
     }
 }
 
@@ -281,14 +314,21 @@ fn parse_entry(entry: &Value, seq: u64) -> Option<Flow> {
 
     let method = request.get("method")?.as_str()?.to_string();
     let url_str = request.get("url")?.as_str()?.to_string();
-    let http_version =
-        request.get("httpVersion").and_then(|v| v.as_str()).unwrap_or("HTTP/1.1").to_string();
+    let http_version = request
+        .get("httpVersion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("HTTP/1.1")
+        .to_string();
     let req_headers = parse_har_headers(request.get("headers"));
     let query = parse_har_headers(request.get("queryString"));
     let req_body = parse_post_data(request.get("postData")).unwrap_or_default();
 
     let status = response.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
-    let status_text = response.get("statusText").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let status_text = response
+        .get("statusText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let resp_http_version = response
         .get("httpVersion")
         .and_then(|v| v.as_str())
@@ -298,9 +338,19 @@ fn parse_entry(entry: &Value, seq: u64) -> Option<Flow> {
     let resp_body = parse_content(response.get("content")).unwrap_or_default();
 
     let parsed_url = url::Url::parse(&url_str).ok();
-    let scheme = parsed_url.as_ref().map(|u| u.scheme().to_string()).unwrap_or_else(|| "http".to_string());
-    let host = parsed_url.as_ref().and_then(|u| u.host_str()).unwrap_or("").to_string();
-    let port = parsed_url.as_ref().and_then(|u| u.port_or_known_default()).unwrap_or(0);
+    let scheme = parsed_url
+        .as_ref()
+        .map(|u| u.scheme().to_string())
+        .unwrap_or_else(|| "http".to_string());
+    let host = parsed_url
+        .as_ref()
+        .and_then(|u| u.host_str())
+        .unwrap_or("")
+        .to_string();
+    let port = parsed_url
+        .as_ref()
+        .and_then(|u| u.port_or_known_default())
+        .unwrap_or(0);
     let path = parsed_url
         .as_ref()
         .map(|u| {
@@ -322,16 +372,30 @@ fn parse_entry(entry: &Value, seq: u64) -> Option<Flow> {
     let matched_rules = ext
         .and_then(|e| e.get("matchedRules"))
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
-    let modified = ext.and_then(|e| e.get("modified")).and_then(Value::as_bool).unwrap_or(false);
+    let modified = ext
+        .and_then(|e| e.get("modified"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let resource_type: Option<ResourceType> = ext
         .and_then(|e| e.get("resourceType"))
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    let started_at =
-        entry.get("startedDateTime").and_then(|v| v.as_str()).and_then(parse_started_date_time).unwrap_or(0);
-    let duration_ms = entry.get("time").and_then(Value::as_f64).unwrap_or(0.0).max(0.0) as i64;
+    let started_at = entry
+        .get("startedDateTime")
+        .and_then(|v| v.as_str())
+        .and_then(parse_started_date_time)
+        .unwrap_or(0);
+    let duration_ms = entry
+        .get("time")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .max(0.0) as i64;
 
     let request_record = RequestRecord {
         method: method.clone(),
@@ -467,7 +531,10 @@ mod tests {
         assert_eq!(round_tripped.summary.url, flow.summary.url);
         assert_eq!(round_tripped.summary.status, Some(200));
         assert!(round_tripped.summary.modified);
-        assert_eq!(round_tripped.summary.matched_rules, vec!["rule-1".to_string()]);
+        assert_eq!(
+            round_tripped.summary.matched_rules,
+            vec!["rule-1".to_string()]
+        );
 
         let req = round_tripped.request.as_ref().unwrap();
         assert_eq!(req.body.data, "hello");

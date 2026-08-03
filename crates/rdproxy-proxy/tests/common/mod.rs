@@ -27,7 +27,9 @@ pub type OriginBody = BoxBody<Bytes, Infallible>;
 
 /// Wraps `bytes` into an [`OriginBody`].
 pub fn full(bytes: impl Into<Bytes>) -> OriginBody {
-    Full::new(bytes.into()).map_err(|never: Infallible| match never {}).boxed()
+    Full::new(bytes.into())
+        .map_err(|never: Infallible| match never {})
+        .boxed()
 }
 
 /// Spawns a plain-HTTP origin server driven by `handler`, returning its
@@ -41,7 +43,9 @@ where
     let addr = listener.local_addr().expect("origin addr");
     tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { break };
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
             let handler = handler.clone();
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
@@ -49,7 +53,9 @@ where
                     let handler = handler.clone();
                     async move { Ok::<_, Infallible>(handler(req).await) }
                 });
-                let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, service).await;
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
             });
         }
     });
@@ -64,30 +70,40 @@ where
     F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Response<OriginBody>> + Send + 'static,
 {
-    let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("self-signed cert");
+    let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .expect("self-signed cert");
     let cert_der = certified.cert.der().to_vec();
-    let key_der: PrivatePkcs8KeyDer<'static> = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
+    let key_der: PrivatePkcs8KeyDer<'static> =
+        PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![certified.cert.der().clone()], key_der.into())
         .expect("tls server config");
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind tls origin");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind tls origin");
     let addr = listener.local_addr().expect("tls origin addr");
     tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { break };
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
             let acceptor = acceptor.clone();
             let handler = handler.clone();
             tokio::spawn(async move {
-                let Ok(tls_stream) = acceptor.accept(stream).await else { return };
+                let Ok(tls_stream) = acceptor.accept(stream).await else {
+                    return;
+                };
                 let io = TokioIo::new(tls_stream);
                 let service = service_fn(move |req| {
                     let handler = handler.clone();
                     async move { Ok::<_, Infallible>(handler(req).await) }
                 });
-                let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, service).await;
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
             });
         }
     });
@@ -126,11 +142,20 @@ pub async fn spawn_proxy_trusting(settings: Settings, extra_roots: &[Vec<u8>]) -
     let rules = Arc::new(RulesStore::load(&dir.path().join("rules.json")));
     let flows = Arc::new(FlowStore::new(1000));
     let (events, _rx) = tokio::sync::broadcast::channel(256);
-    let roots: Vec<rustls_pki_types::CertificateDer<'static>> =
-        extra_roots.iter().map(|der| rustls_pki_types::CertificateDer::from(der.clone())).collect();
+    let roots: Vec<rustls_pki_types::CertificateDer<'static>> = extra_roots
+        .iter()
+        .map(|der| rustls_pki_types::CertificateDer::from(der.clone()))
+        .collect();
     let upstream = Arc::new(Connector::with_extra_roots(&roots).expect("connector"));
 
-    let ctx = ProxyContext { settings: Arc::new(RwLock::new(settings)), rules, flows, events, ca, upstream };
+    let ctx = ProxyContext {
+        settings: Arc::new(RwLock::new(settings)),
+        rules,
+        flows,
+        events,
+        ca,
+        upstream,
+    };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind proxy");
     let addr = listener.local_addr().expect("proxy addr");
@@ -140,7 +165,12 @@ pub async fn spawn_proxy_trusting(settings: Settings, extra_roots: &[Vec<u8>]) -
         let _ = server.serve(listener, std::future::pending()).await;
     });
 
-    TestProxy { addr, ctx, join, _tempdir: dir }
+    TestProxy {
+        addr,
+        ctx,
+        join,
+        _tempdir: dir,
+    }
 }
 
 /// A `reqwest::ClientBuilder` pre-configured to route all traffic through
@@ -166,7 +196,10 @@ pub async fn wait_for_terminal_flow(proxy: &TestProxy) -> rdproxy_core::FlowSumm
     for _ in 0..40 {
         let flows = proxy.ctx.flows.list(&Default::default());
         if let Some(flow) = flows.iter().find(|f| {
-            matches!(f.state, rdproxy_core::FlowState::Complete | rdproxy_core::FlowState::Error)
+            matches!(
+                f.state,
+                rdproxy_core::FlowState::Complete | rdproxy_core::FlowState::Error
+            )
         }) {
             return flow.clone();
         }
@@ -178,5 +211,14 @@ pub async fn wait_for_terminal_flow(proxy: &TestProxy) -> rdproxy_core::FlowSumm
 /// Builds a simple always-matching (or custom-matcher) [`Rule`] with the
 /// given `actions`, for tests that just want "this action always applies".
 pub fn simple_rule(id: &str, matcher: Matcher, actions: Vec<Action>) -> Rule {
-    Rule { id: id.to_string(), name: id.to_string(), enabled: true, priority: 0, group: None, notes: None, matcher, actions }
+    Rule {
+        id: id.to_string(),
+        name: id.to_string(),
+        enabled: true,
+        priority: 0,
+        group: None,
+        notes: None,
+        matcher,
+        actions,
+    }
 }

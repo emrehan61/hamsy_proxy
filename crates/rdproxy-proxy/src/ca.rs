@@ -116,7 +116,11 @@ struct HostCache {
 
 impl HostCache {
     fn new(capacity: usize) -> Self {
-        HostCache { capacity, map: HashMap::new(), order: VecDeque::new() }
+        HostCache {
+            capacity,
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
     }
 
     fn touch(&mut self, host: &str) {
@@ -138,7 +142,13 @@ impl HostCache {
             self.touch(host);
         } else {
             let minted = Arc::new(mint()?);
-            self.map.insert(host.to_string(), HostEntry { minted, configs: Vec::new() });
+            self.map.insert(
+                host.to_string(),
+                HostEntry {
+                    minted,
+                    configs: Vec::new(),
+                },
+            );
             self.order.push_back(host.to_string());
             while self.order.len() > self.capacity {
                 if let Some(oldest) = self.order.pop_front() {
@@ -179,7 +189,10 @@ impl CertAuthority {
         let key_path = dir.join(CA_KEY_FILE);
 
         let (ca_pem, ca_key_pem) = if ca_path.is_file() && key_path.is_file() {
-            (std::fs::read_to_string(&ca_path)?, std::fs::read_to_string(&key_path)?)
+            (
+                std::fs::read_to_string(&ca_path)?,
+                std::fs::read_to_string(&key_path)?,
+            )
         } else {
             let (pem, key_pem) = generate_ca_pem()?;
             write_secret_file(&ca_path, pem.as_bytes())?;
@@ -227,7 +240,11 @@ impl CertAuthority {
     /// Builds (or returns a cached) `rustls::ServerConfig` for `host`,
     /// advertising only the ALPN protocols in `offered_alpn` that rdproxy
     /// supports (`h2`, `http/1.1`), preserving client preference order.
-    pub fn server_config(&self, host: &str, offered_alpn: &[Vec<u8>]) -> Result<Arc<rustls::ServerConfig>> {
+    pub fn server_config(
+        &self,
+        host: &str,
+        offered_alpn: &[Vec<u8>],
+    ) -> Result<Arc<rustls::ServerConfig>> {
         let host = sanitize_host(host)?;
         let restricted = restrict_alpn(offered_alpn);
         let mut cache = self.cache.lock();
@@ -257,8 +274,10 @@ impl CertAuthority {
         // is only meaningful for RSA key exchange, but including it is
         // harmless for our ECDSA leaf key and matches what a real WebPKI
         // leaf carries.
-        params.key_usages =
-            vec![KeyUsagePurpose::DigitalSignature, KeyUsagePurpose::KeyEncipherment];
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyEncipherment,
+        ];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         // Authority Key Identifier: this is the extension that was actually
         // breaking strict verifiers (see module-level bug report). `self.issuer`
@@ -288,7 +307,10 @@ impl CertAuthority {
             .map_err(cert_err)?;
         let cert_der = cert.der().clone();
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.leaf_key.serialize_der()));
-        Ok(MintedCert { cert_chain: vec![cert_der], key })
+        Ok(MintedCert {
+            cert_chain: vec![cert_der],
+            key,
+        })
     }
 
     /// Returns the CA certificate, PEM-encoded.
@@ -305,7 +327,11 @@ impl CertAuthority {
     /// uppercase colon-separated hex (e.g. `AB:CD:12:...`).
     pub fn fingerprint_sha256(&self) -> String {
         let digest = Sha256::digest(self.ca_der.as_ref());
-        digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+        digest
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
     }
 }
 
@@ -353,8 +379,12 @@ fn first_cert_der(pem: &str) -> Result<CertificateDer<'static>> {
     let mut certs = rustls_pemfile::certs(&mut reader);
     let first = certs.next();
     match first {
-        Some(cert) => cert.map_err(|e| ProxyError::Cert(format!("failed to parse CA certificate: {e}"))),
-        None => Err(ProxyError::Cert("CA pem file contained no certificate".to_string())),
+        Some(cert) => {
+            cert.map_err(|e| ProxyError::Cert(format!("failed to parse CA certificate: {e}")))
+        }
+        None => Err(ProxyError::Cert(
+            "CA pem file contained no certificate".to_string(),
+        )),
     }
 }
 
@@ -432,7 +462,10 @@ mod tests {
         let minted = ca.mint("example.org").unwrap();
         assert_eq!(minted.cert_chain.len(), 1);
         let (_, cert) = x509_parser::parse_x509_certificate(minted.cert_chain[0].as_ref()).unwrap();
-        let sans = cert.subject_alternative_name().unwrap().expect("SAN present");
+        let sans = cert
+            .subject_alternative_name()
+            .unwrap()
+            .expect("SAN present");
         let matches_host = sans.value.general_names.iter().any(|gn| {
             matches!(gn, x509_parser::extensions::GeneralName::DNSName(n) if *n == "example.org")
         });
@@ -455,7 +488,10 @@ mod tests {
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
         // Basic Constraints: CA:FALSE, critical.
-        let bc = leaf.basic_constraints().unwrap().expect("Basic Constraints present");
+        let bc = leaf
+            .basic_constraints()
+            .unwrap()
+            .expect("Basic Constraints present");
         assert!(bc.critical);
         assert!(!bc.value.ca);
 
@@ -502,7 +538,10 @@ mod tests {
         assert_eq!(leaf_aki, ca_ski, "leaf AKI must match the CA's own SKI");
 
         // Serial number: present and nonzero.
-        assert!(!leaf.raw_serial().iter().all(|b| *b == 0), "serial must be nonzero");
+        assert!(
+            !leaf.raw_serial().iter().all(|b| *b == 0),
+            "serial must be nonzero"
+        );
     }
 
     #[test]
@@ -528,7 +567,10 @@ mod tests {
         let ca = CertAuthority::load_or_generate(dir.path()).unwrap();
         let minted = ca.mint("127.0.0.1").unwrap();
         let (_, cert) = x509_parser::parse_x509_certificate(minted.cert_chain[0].as_ref()).unwrap();
-        let sans = cert.subject_alternative_name().unwrap().expect("SAN present");
+        let sans = cert
+            .subject_alternative_name()
+            .unwrap()
+            .expect("SAN present");
         let has_ip_san = sans.value.general_names.iter().any(|gn| {
             matches!(gn, x509_parser::extensions::GeneralName::IPAddress(octets) if *octets == [127, 0, 0, 1])
         });

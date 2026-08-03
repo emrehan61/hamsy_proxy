@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rdproxy_api::ApiState;
-use rdproxy_core::{BodyPayload, Flow, FlowStore, HeaderPair, RequestRecord, ResponseRecord, RulesStore, Settings};
+use rdproxy_core::{
+    BodyPayload, Flow, FlowStore, HeaderPair, RequestRecord, ResponseRecord, RulesStore, Settings,
+};
 
 /// Returns a fresh temp-file path (never actually written unless the test
 /// exercises persistence), namespaced by `prefix`.
@@ -23,7 +25,13 @@ pub fn make_state() -> ApiState {
 pub fn make_state_with_capacity(capacity: usize) -> ApiState {
     let flows = Arc::new(FlowStore::new(capacity));
     let rules = Arc::new(RulesStore::load(&temp_path("rdproxy-api-test-rules")));
-    ApiState::new_standalone(flows, rules, Settings::default(), temp_path("rdproxy-api-test-settings"), "test")
+    ApiState::new_standalone(
+        flows,
+        rules,
+        Settings::default(),
+        temp_path("rdproxy-api-test-settings"),
+        "test",
+    )
 }
 
 /// Builds a simple complete (or still-pending, if `status` is `None`) flow

@@ -45,9 +45,9 @@ use tokio::time::Duration;
 use uuid::Uuid;
 
 use rdproxy_core::{
-    Action, BodyKind, BodyPayload, Flow, FlowId, FlowState, HeaderPair, MockedResponse,
-    RequestCtx, RequestRecord, ResourceType, ResponseCtx, ResponseOutcome, ResponseRecord, Rule,
-    RuleSet, TlsInfo,
+    Action, BodyKind, BodyPayload, Flow, FlowId, FlowState, HeaderPair, MockedResponse, RequestCtx,
+    RequestRecord, ResourceType, ResponseCtx, ResponseOutcome, ResponseRecord, Rule, RuleSet,
+    TlsInfo,
 };
 
 use crate::config::ProxyContext;
@@ -123,11 +123,26 @@ pub(crate) fn build_target_url(parts: &http::request::Parts, conn: &ConnInfo) ->
     let authority = conn
         .authority
         .clone()
-        .or_else(|| parts.headers.get(http::header::HOST).and_then(|h| h.to_str().ok()).map(str::to_string))
-        .ok_or_else(|| ProxyError::InvalidTarget("no authority to resolve relative request against".to_string()))?;
-    let path_and_query = parts.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+        .or_else(|| {
+            parts
+                .headers
+                .get(http::header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| {
+            ProxyError::InvalidTarget(
+                "no authority to resolve relative request against".to_string(),
+            )
+        })?;
+    let path_and_query = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
     let full = format!("{}://{authority}{path_and_query}", conn.scheme);
-    url::Url::parse(&full).map_err(|e| ProxyError::InvalidTarget(format!("invalid request target '{full}': {e}")))
+    url::Url::parse(&full)
+        .map_err(|e| ProxyError::InvalidTarget(format!("invalid request target '{full}': {e}")))
 }
 
 /// Header names dropped before forwarding a request/response, per-hop only.
@@ -143,18 +158,27 @@ const HOP_BY_HOP: &[&str] = &[
 ];
 
 fn strip_hop_by_hop(headers: &mut Vec<HeaderPair>) {
-    headers.retain(|h| !HOP_BY_HOP.iter().any(|hop| h.name.eq_ignore_ascii_case(hop)));
+    headers.retain(|h| {
+        !HOP_BY_HOP
+            .iter()
+            .any(|hop| h.name.eq_ignore_ascii_case(hop))
+    });
 }
 
 pub(crate) fn header_pairs_from(map: &HeaderMap) -> Vec<HeaderPair> {
     // Non-UTF8 header values (unusual, but a hostile/broken client could
     // send them) are dropped rather than causing a panic or a lossy-but-odd
     // recorded value.
-    map.iter().filter_map(|(k, v)| v.to_str().ok().map(|val| HeaderPair::new(k.as_str(), val))).collect()
+    map.iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|val| HeaderPair::new(k.as_str(), val)))
+        .collect()
 }
 
 fn header_value<'a>(headers: &'a [HeaderPair], name: &str) -> Option<&'a str> {
-    headers.iter().find(|h| h.name.eq_ignore_ascii_case(name)).map(|h| h.value.as_str())
+    headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .map(|h| h.value.as_str())
 }
 
 fn set_header(headers: &mut Vec<HeaderPair>, name: &str, value: &str) {
@@ -172,15 +196,18 @@ fn apply_headers_to_map(map: &mut HeaderMap, pairs: &[HeaderPair]) -> Result<()>
     for h in pairs {
         let name = http::header::HeaderName::from_bytes(h.name.as_bytes())
             .map_err(|e| ProxyError::Other(format!("invalid header name '{}': {e}", h.name)))?;
-        let value = http::header::HeaderValue::from_str(&h.value)
-            .map_err(|e| ProxyError::Other(format!("invalid header value for '{}': {e}", h.name)))?;
+        let value = http::header::HeaderValue::from_str(&h.value).map_err(|e| {
+            ProxyError::Other(format!("invalid header value for '{}': {e}", h.name))
+        })?;
         map.append(name, value);
     }
     Ok(())
 }
 
 fn query_pairs(url: &url::Url) -> Vec<HeaderPair> {
-    url.query_pairs().map(|(k, v)| HeaderPair::new(k.into_owned(), v.into_owned())).collect()
+    url.query_pairs()
+        .map(|(k, v)| HeaderPair::new(k.into_owned(), v.into_owned()))
+        .collect()
 }
 
 fn path_with_query(url: &url::Url) -> String {
@@ -195,13 +222,24 @@ fn resource_type_for_request(headers: &[HeaderPair], path: &str) -> ResourceType
 }
 
 pub(crate) fn set_host_header(headers: &mut Vec<HeaderPair>, host: &str, port: u16, scheme: &str) {
-    let default_port = if scheme.eq_ignore_ascii_case("https") { 443 } else { 80 };
-    let value = if port == default_port { host.to_string() } else { format!("{host}:{port}") };
+    let default_port = if scheme.eq_ignore_ascii_case("https") {
+        443
+    } else {
+        80
+    };
+    let value = if port == default_port {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    };
     set_header(headers, "Host", &value);
 }
 
 pub(crate) fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Clamps an arbitrary (possibly rule-supplied) status code to a valid
@@ -235,7 +273,8 @@ fn union_matched(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
 
 /// Builds a small JSON error response, used for 400/403/502 pages.
 pub(crate) fn error_response(status: StatusCode, message: &str) -> Response<BoxBody> {
-    let payload = serde_json::json!({ "error": error_label(status), "reason": message }).to_string();
+    let payload =
+        serde_json::json!({ "error": error_label(status), "reason": message }).to_string();
     Response::builder()
         .status(status)
         .header(http::header::CONTENT_TYPE, "application/json")
@@ -268,7 +307,12 @@ fn ruleset_needs_request_body(ruleset: &RuleSet) -> bool {
 fn rule_touches_request_body(rule: &Rule) -> bool {
     rule.matcher.request_body.is_some()
         || rule.actions.iter().any(|a| {
-            matches!(a, Action::SetRequestBody { .. } | Action::ReplaceInRequestBody { .. } | Action::JsonPatchRequest { .. })
+            matches!(
+                a,
+                Action::SetRequestBody { .. }
+                    | Action::ReplaceInRequestBody { .. }
+                    | Action::JsonPatchRequest { .. }
+            )
         })
 }
 
@@ -280,7 +324,12 @@ fn ruleset_needs_response_body(ruleset: &RuleSet) -> bool {
 fn rule_touches_response_body(rule: &Rule) -> bool {
     rule.matcher.response_body.is_some()
         || rule.actions.iter().any(|a| {
-            matches!(a, Action::SetResponseBody { .. } | Action::ReplaceInResponseBody { .. } | Action::JsonPatchResponse { .. })
+            matches!(
+                a,
+                Action::SetResponseBody { .. }
+                    | Action::ReplaceInResponseBody { .. }
+                    | Action::JsonPatchResponse { .. }
+            )
         })
 }
 
@@ -296,7 +345,8 @@ fn payload_from_capture(
     content_encoding: Option<&str>,
     max_bytes: usize,
 ) -> BodyPayload {
-    let mut payload = rdproxy_core::to_payload(&captured, content_type, content_encoding, max_bytes);
+    let mut payload =
+        rdproxy_core::to_payload(&captured, content_type, content_encoding, max_bytes);
     if capture_truncated {
         payload.truncated = true;
         payload.size = payload.size.max(total);
@@ -318,20 +368,40 @@ async fn forward_untouched(
     mut headers: Vec<HeaderPair>,
 ) -> Response<BoxBody> {
     let host = url.host_str().unwrap_or("").to_string();
-    let port = url.port_or_known_default().unwrap_or(default_port(url.scheme()));
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(default_port(url.scheme()));
     set_host_header(&mut headers, &host, port, url.scheme());
 
     let upstream_proxy = ctx.settings.read().upstream_proxy.clone();
     let via_proxy = upstream_proxy.is_some();
     let outbound_body = crate::box_body(body);
-    let outbound = match build_outbound_request(&parts.method, &url, &headers, via_proxy, parts.version, outbound_body) {
+    let outbound = match build_outbound_request(
+        &parts.method,
+        &url,
+        &headers,
+        via_proxy,
+        parts.version,
+        outbound_body,
+    ) {
         Ok(r) => r,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     };
 
-    match dispatch(ctx, &url, conn.mirror_h2, upstream_proxy.as_deref(), outbound).await {
+    match dispatch(
+        ctx,
+        &url,
+        conn.mirror_h2,
+        upstream_proxy.as_deref(),
+        outbound,
+    )
+    .await
+    {
         Ok((resp, _timings, _addr)) => resp.map(crate::box_body),
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, &format!("could not connect to {host}:{port}: {e}")),
+        Err(e) => error_response(
+            StatusCode::BAD_GATEWAY,
+            &format!("could not connect to {host}:{port}: {e}"),
+        ),
     }
 }
 
@@ -352,21 +422,43 @@ pub(crate) async fn dispatch(
     mirror_h2: bool,
     upstream_proxy: Option<&str>,
     outbound: Request<BoxBody>,
-) -> Result<(Response<ReleaseOnComplete<Incoming>>, rdproxy_core::Timings, Option<String>)> {
-    let host = url.host_str().ok_or_else(|| ProxyError::InvalidTarget("missing host".to_string()))?.to_string();
-    let port = url.port_or_known_default().unwrap_or(default_port(url.scheme()));
+) -> Result<(
+    Response<ReleaseOnComplete<Incoming>>,
+    rdproxy_core::Timings,
+    Option<String>,
+)> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| ProxyError::InvalidTarget("missing host".to_string()))?
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(default_port(url.scheme()));
     let scheme = url.scheme().to_string();
     let https = scheme.eq_ignore_ascii_case("https");
 
-    let obtained = ctx.upstream.obtain(&scheme, &host, port, mirror_h2, upstream_proxy).await?;
-    let crate::upstream::Obtained { mut sender, connect_ms, ssl_ms, server_addr, .. } = obtained;
+    let obtained = ctx
+        .upstream
+        .obtain(&scheme, &host, port, mirror_h2, upstream_proxy)
+        .await?;
+    let crate::upstream::Obtained {
+        mut sender,
+        connect_ms,
+        ssl_ms,
+        server_addr,
+        ..
+    } = obtained;
 
     let wait_start = tokio::time::Instant::now();
-    let resp = sender.send_request(outbound).await.map_err(ProxyError::from)?;
+    let resp = sender
+        .send_request(outbound)
+        .await
+        .map_err(ProxyError::from)?;
     let wait_ms = wait_start.elapsed().as_secs_f64() * 1000.0;
 
     let (resp_parts, resp_body) = resp.into_parts();
-    let released = ReleaseOnComplete::new(resp_body, ctx.upstream.clone(), https, host, port, sender);
+    let released =
+        ReleaseOnComplete::new(resp_body, ctx.upstream.clone(), https, host, port, sender);
     let resp = Response::from_parts(resp_parts, released);
 
     // NOTE: hyper's high-level client API doesn't expose a hook between
@@ -405,7 +497,11 @@ pub(crate) fn build_outbound_request(
     body: BoxBody,
 ) -> Result<Request<BoxBody>> {
     let needs_absolute_form = via_proxy || version == http::Version::HTTP_2;
-    let target = if needs_absolute_form { url.as_str().to_string() } else { path_with_query(url) };
+    let target = if needs_absolute_form {
+        url.as_str().to_string()
+    } else {
+        path_with_query(url)
+    };
     let req = Request::builder()
         .method(method.clone())
         .uri(target)
@@ -434,7 +530,9 @@ async fn handle_captured_request(
     let method_str = parts.method.to_string();
     let http_version_str = format!("{:?}", parts.version);
     let mut host = url.host_str().unwrap_or("").to_string();
-    let mut port = url.port_or_known_default().unwrap_or(default_port(url.scheme()));
+    let mut port = url
+        .port_or_known_default()
+        .unwrap_or(default_port(url.scheme()));
     let scheme = url.scheme().to_string();
 
     let ruleset = ctx.ruleset();
@@ -482,9 +580,12 @@ async fn handle_captured_request(
         http_version: http_version_str.clone(),
         headers: req_headers.clone(),
         body: match &req_body_plan {
-            ReqBody::Buffered(b) => {
-                rdproxy_core::to_payload(b, content_type.as_deref(), content_encoding.as_deref(), max_body_bytes)
-            }
+            ReqBody::Buffered(b) => rdproxy_core::to_payload(
+                b,
+                content_type.as_deref(),
+                content_encoding.as_deref(),
+                max_body_bytes,
+            ),
             ReqBody::Streamed(_) => BodyPayload::default(),
         },
         query: query.clone(),
@@ -508,7 +609,9 @@ async fn handle_captured_request(
     flow.summary.resource_type = resource_type;
     flow.tls = conn.tls.clone();
     ctx.flows.insert(flow.clone());
-    let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow { flow: flow.summary() });
+    let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow {
+        flow: flow.summary(),
+    });
 
     // ----- Step 2: request-phase rules -----
     let outcome = ruleset.apply_request(RequestCtx {
@@ -520,14 +623,23 @@ async fn handle_captured_request(
     });
 
     if let Some(reason) = outcome.blocked.clone() {
-        let original = if outcome.modified { Some(req_record.clone()) } else { None };
+        let original = if outcome.modified {
+            Some(req_record.clone())
+        } else {
+            None
+        };
         let body_bytes = serde_json::json!({ "error": "blocked", "reason": reason }).to_string();
         let resp_record = ResponseRecord {
             status: 403,
             status_text: "Forbidden".to_string(),
             http_version: http_version_str.clone(),
             headers: vec![HeaderPair::new("Content-Type", "application/json")],
-            body: rdproxy_core::to_payload(body_bytes.as_bytes(), Some("application/json"), None, max_body_bytes),
+            body: rdproxy_core::to_payload(
+                body_bytes.as_bytes(),
+                Some("application/json"),
+                None,
+                max_body_bytes,
+            ),
         };
         let finished_at = now_ms();
         let summary = ctx.flows.update(flow_id, |f| {
@@ -537,7 +649,9 @@ async fn handle_captured_request(
             f.summary.modified = true;
         });
         if let Some(summary) = summary {
-            let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow { flow: summary });
+            let _ = ctx
+                .events
+                .send(rdproxy_core::ServerEvent::Flow { flow: summary });
         }
         return error_response(StatusCode::FORBIDDEN, &reason);
     }
@@ -546,13 +660,29 @@ async fn handle_captured_request(
         if mocked.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(mocked.delay_ms)).await;
         }
-        let original = if outcome.modified { Some(req_record.clone()) } else { None };
-        return respond_mocked(&ctx, flow_id, http_version_str.clone(), original, outcome.matched.clone(), max_body_bytes, mocked)
-            .await;
+        let original = if outcome.modified {
+            Some(req_record.clone())
+        } else {
+            None
+        };
+        return respond_mocked(
+            &ctx,
+            flow_id,
+            http_version_str.clone(),
+            original,
+            outcome.matched.clone(),
+            max_body_bytes,
+            mocked,
+        )
+        .await;
     }
 
     // ----- Step 3: apply request mutations, recompute target -----
-    let original_request = if outcome.modified { Some(req_record.clone()) } else { None };
+    let original_request = if outcome.modified {
+        Some(req_record.clone())
+    } else {
+        None
+    };
 
     if outcome.url != url.to_string() {
         if let Ok(parsed) = url::Url::parse(&outcome.url) {
@@ -567,11 +697,16 @@ async fn handle_captured_request(
     if !outcome.method.eq_ignore_ascii_case(&method_str) {
         // method changed via SetMethod; parsed below when building the request.
     }
-    let final_method = http::Method::from_bytes(outcome.method.as_bytes()).unwrap_or(parts.method.clone());
+    let final_method =
+        http::Method::from_bytes(outcome.method.as_bytes()).unwrap_or(parts.method.clone());
 
     let outbound_body = if let Some(new_body) = &outcome.body {
         remove_header(&mut req_headers, "content-encoding");
-        set_header(&mut req_headers, "Content-Length", &new_body.len().to_string());
+        set_header(
+            &mut req_headers,
+            "Content-Length",
+            &new_body.len().to_string(),
+        );
         crate::full_body(new_body.clone())
     } else if let ReqBody::Buffered(b) = &req_body_plan {
         // Buffered but not mutated: still forward the exact bytes we read.
@@ -594,8 +729,14 @@ async fn handle_captured_request(
             let modified = outcome.modified;
             let finalize = move || {
                 let (captured, total, truncated) = state.lock().snapshot();
-                let payload =
-                    payload_from_capture(captured, total, truncated, content_type.as_deref(), content_encoding.as_deref(), max_body_bytes);
+                let payload = payload_from_capture(
+                    captured,
+                    total,
+                    truncated,
+                    content_type.as_deref(),
+                    content_encoding.as_deref(),
+                    max_body_bytes,
+                );
                 if let Some(summary) = flows.update(flow_id, |f| {
                     if let Some(r) = f.request.as_mut() {
                         r.body = payload.clone();
@@ -624,19 +765,49 @@ async fn handle_captured_request(
 
     let upstream_proxy = ctx.settings.read().upstream_proxy.clone();
     let via_proxy = upstream_proxy.is_some();
-    let outbound = match build_outbound_request(&final_method, &url, &req_headers, via_proxy, parts.version, outbound_body) {
+    let outbound = match build_outbound_request(
+        &final_method,
+        &url,
+        &req_headers,
+        via_proxy,
+        parts.version,
+        outbound_body,
+    ) {
         Ok(r) => r,
         Err(e) => {
-            return finalize_error(&ctx, flow_id, original_request, outcome.matched.clone(), outcome.modified, &e).await;
+            return finalize_error(
+                &ctx,
+                flow_id,
+                original_request,
+                outcome.matched.clone(),
+                outcome.modified,
+                &e,
+            )
+            .await;
         }
     };
 
     // ----- Step 4: dispatch upstream -----
-    let dispatch_result = dispatch(&ctx, &url, conn.mirror_h2, upstream_proxy.as_deref(), outbound).await;
+    let dispatch_result = dispatch(
+        &ctx,
+        &url,
+        conn.mirror_h2,
+        upstream_proxy.as_deref(),
+        outbound,
+    )
+    .await;
     let (resp, timings, server_addr) = match dispatch_result {
         Ok(v) => v,
         Err(e) => {
-            return finalize_error(&ctx, flow_id, original_request, outcome.matched.clone(), outcome.modified, &e).await;
+            return finalize_error(
+                &ctx,
+                flow_id,
+                original_request,
+                outcome.matched.clone(),
+                outcome.modified,
+                &e,
+            )
+            .await;
         }
     };
 
@@ -645,7 +816,9 @@ async fn handle_captured_request(
         f.server_addr = server_addr.clone();
         f.timings = timings.clone();
     }) {
-        let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow { flow: summary });
+        let _ = ctx
+            .events
+            .send(rdproxy_core::ServerEvent::Flow { flow: summary });
     }
 
     // ----- Step 5: response phase -----
@@ -654,14 +827,26 @@ async fn handle_captured_request(
     let resp_content_type = header_value(&resp_headers, "content-type").map(str::to_string);
     let resp_content_encoding = header_value(&resp_headers, "content-encoding").map(str::to_string);
     let need_resp_body = ruleset_needs_response_body(&ruleset);
-    let status_text = resp_parts.status.canonical_reason().unwrap_or("").to_string();
+    let status_text = resp_parts
+        .status
+        .canonical_reason()
+        .unwrap_or("")
+        .to_string();
     let resp_http_version = format!("{:?}", resp_parts.version);
 
     if need_resp_body {
         let (bytes, _total, hit_hard_cap) = match collect_capped(resp_body, HARD_BUFFER_CAP).await {
             Ok(v) => v,
             Err(e) => {
-                return finalize_error(&ctx, flow_id, original_request, outcome.matched.clone(), outcome.modified, &e).await;
+                return finalize_error(
+                    &ctx,
+                    flow_id,
+                    original_request,
+                    outcome.matched.clone(),
+                    outcome.modified,
+                    &e,
+                )
+                .await;
             }
         };
         if hit_hard_cap {
@@ -672,7 +857,12 @@ async fn handle_captured_request(
             status_text: status_text.clone(),
             http_version: resp_http_version.clone(),
             headers: resp_headers.clone(),
-            body: rdproxy_core::to_payload(&bytes, resp_content_type.as_deref(), resp_content_encoding.as_deref(), max_body_bytes),
+            body: rdproxy_core::to_payload(
+                &bytes,
+                resp_content_type.as_deref(),
+                resp_content_encoding.as_deref(),
+                max_body_bytes,
+            ),
         };
 
         let resp_outcome: ResponseOutcome = ruleset.apply_response(ResponseCtx {
@@ -686,7 +876,11 @@ async fn handle_captured_request(
             resp_body: Some(&bytes),
         });
 
-        let original_response = if resp_outcome.modified { Some(resp_record.clone()) } else { None };
+        let original_response = if resp_outcome.modified {
+            Some(resp_record.clone())
+        } else {
+            None
+        };
         let mut final_headers = resp_outcome.headers.clone();
         let final_body_bytes: Vec<u8> = match &resp_outcome.body {
             Some(b) => {
@@ -704,10 +898,19 @@ async fn handle_captured_request(
 
         let final_record = ResponseRecord {
             status: resp_outcome.status,
-            status_text: StatusCode::from_u16(resp_outcome.status).ok().and_then(|s| s.canonical_reason()).unwrap_or(&status_text).to_string(),
+            status_text: StatusCode::from_u16(resp_outcome.status)
+                .ok()
+                .and_then(|s| s.canonical_reason())
+                .unwrap_or(&status_text)
+                .to_string(),
             http_version: resp_http_version,
             headers: final_headers.clone(),
-            body: rdproxy_core::to_payload(&final_body_bytes, resp_content_type.as_deref(), None, max_body_bytes),
+            body: rdproxy_core::to_payload(
+                &final_body_bytes,
+                resp_content_type.as_deref(),
+                None,
+                max_body_bytes,
+            ),
         };
 
         let matched_rules = union_matched(outcome.matched.clone(), resp_outcome.matched.clone());
@@ -720,7 +923,9 @@ async fn handle_captured_request(
             f.summary.matched_rules = matched_rules;
             f.summary.modified = modified;
         }) {
-            let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow { flow: summary });
+            let _ = ctx
+                .events
+                .send(rdproxy_core::ServerEvent::Flow { flow: summary });
         }
 
         let mut response_body: BoxBody = crate::full_body(final_body_bytes);
@@ -754,13 +959,24 @@ async fn handle_captured_request(
     let matched_rules = union_matched(outcome.matched.clone(), resp_outcome.matched.clone());
     let modified = outcome.modified || resp_outcome.modified;
     let final_status = resp_outcome.status;
-    let final_status_text = StatusCode::from_u16(final_status).ok().and_then(|s| s.canonical_reason()).unwrap_or(&status_text).to_string();
+    let final_status_text = StatusCode::from_u16(final_status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or(&status_text)
+        .to_string();
     let flows_for_finalize = ctx.flows.clone();
     let events_for_finalize = ctx.events.clone();
     let headers_for_finalize = final_headers.clone();
     let finalize = move || {
         let (captured, total, truncated) = tee_state.lock().snapshot();
-        let payload = payload_from_capture(captured, total, truncated, resp_content_type.as_deref(), resp_content_encoding.as_deref(), max_body_bytes);
+        let payload = payload_from_capture(
+            captured,
+            total,
+            truncated,
+            resp_content_type.as_deref(),
+            resp_content_encoding.as_deref(),
+            max_body_bytes,
+        );
         let record = ResponseRecord {
             status: final_status,
             status_text: final_status_text,
@@ -806,7 +1022,9 @@ async fn finalize_error(
         f.summary.modified = modified;
         f.mark_error(message.clone(), finished_at);
     }) {
-        let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow { flow: summary });
+        let _ = ctx
+            .events
+            .send(rdproxy_core::ServerEvent::Flow { flow: summary });
     }
     error_response(StatusCode::BAD_GATEWAY, &message)
 }
@@ -820,8 +1038,15 @@ async fn respond_mocked(
     max_body_bytes: usize,
     mocked: MockedResponse,
 ) -> Response<BoxBody> {
-    let status_text = safe_status(mocked.status).canonical_reason().unwrap_or("").to_string();
-    let content_type = mocked.headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-type")).map(|h| h.value.clone());
+    let status_text = safe_status(mocked.status)
+        .canonical_reason()
+        .unwrap_or("")
+        .to_string();
+    let content_type = mocked
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("content-type"))
+        .map(|h| h.value.clone());
     let resp_record = ResponseRecord {
         status: mocked.status,
         status_text,
@@ -837,12 +1062,22 @@ async fn respond_mocked(
         f.summary.modified = true;
         f.summary.from_cache = true;
     }) {
-        let _ = ctx.events.send(rdproxy_core::ServerEvent::Flow { flow: summary });
+        let _ = ctx
+            .events
+            .send(rdproxy_core::ServerEvent::Flow { flow: summary });
     }
-    build_client_response(mocked.status, &mocked.headers, crate::full_body(mocked.body))
+    build_client_response(
+        mocked.status,
+        &mocked.headers,
+        crate::full_body(mocked.body),
+    )
 }
 
-pub(crate) fn build_client_response(status: u16, headers: &[HeaderPair], body: BoxBody) -> Response<BoxBody> {
+pub(crate) fn build_client_response(
+    status: u16,
+    headers: &[HeaderPair],
+    body: BoxBody,
+) -> Response<BoxBody> {
     let mut builder = Response::builder().status(safe_status(status));
     let map = builder.headers_mut();
     if let Some(map) = map {
@@ -892,18 +1127,31 @@ mod tests {
     fn ruleset_needs_request_body_detects_matcher_and_actions() {
         let with_cond = RuleSet::new(vec![sample_rule(
             vec![],
-            Matcher { request_body: Some(BodyCond { op: BodyCondOp::Contains, value: "x".to_string() }), ..Matcher::default() },
+            Matcher {
+                request_body: Some(BodyCond {
+                    op: BodyCondOp::Contains,
+                    value: "x".to_string(),
+                }),
+                ..Matcher::default()
+            },
         )]);
         assert!(ruleset_needs_request_body(&with_cond));
 
         let with_action = RuleSet::new(vec![sample_rule(
-            vec![Action::ReplaceInRequestBody { find: "a".to_string(), replace: "b".to_string(), regex: false }],
+            vec![Action::ReplaceInRequestBody {
+                find: "a".to_string(),
+                replace: "b".to_string(),
+                regex: false,
+            }],
             Matcher::default(),
         )]);
         assert!(ruleset_needs_request_body(&with_action));
 
         let without = RuleSet::new(vec![sample_rule(
-            vec![Action::SetRequestHeader { name: "X".to_string(), value: "1".to_string() }],
+            vec![Action::SetRequestHeader {
+                name: "X".to_string(),
+                value: "1".to_string(),
+            }],
             Matcher::default(),
         )]);
         assert!(!ruleset_needs_request_body(&without));
@@ -911,9 +1159,18 @@ mod tests {
 
     #[test]
     fn build_target_url_absolute_form_passthrough() {
-        let req = Request::builder().uri("http://example.com/path?x=1").body(()).unwrap();
+        let req = Request::builder()
+            .uri("http://example.com/path?x=1")
+            .body(())
+            .unwrap();
         let (parts, _) = req.into_parts();
-        let conn = ConnInfo { client_addr: "127.0.0.1:1".parse().unwrap(), scheme: "http", authority: None, tls: None, mirror_h2: false };
+        let conn = ConnInfo {
+            client_addr: "127.0.0.1:1".parse().unwrap(),
+            scheme: "http",
+            authority: None,
+            tls: None,
+            mirror_h2: false,
+        };
         let url = build_target_url(&parts, &conn).unwrap();
         assert_eq!(url.as_str(), "http://example.com/path?x=1");
     }
@@ -941,7 +1198,14 @@ mod tests {
 
     #[test]
     fn payload_from_capture_overrides_size_and_kind_when_truncated() {
-        let payload = payload_from_capture(Bytes::from_static(b"partial"), 1_000_000, true, Some("text/plain"), None, 1024);
+        let payload = payload_from_capture(
+            Bytes::from_static(b"partial"),
+            1_000_000,
+            true,
+            Some("text/plain"),
+            None,
+            1024,
+        );
         assert_eq!(payload.kind, BodyKind::Truncated);
         assert!(payload.truncated);
         assert_eq!(payload.size, 1_000_000);
@@ -950,18 +1214,35 @@ mod tests {
     #[test]
     fn build_outbound_request_http2_uses_absolute_form() {
         let url = url::Url::parse("https://example.com/foo?bar=1").unwrap();
-        let req =
-            build_outbound_request(&Method::GET, &url, &[], false, http::Version::HTTP_2, crate::empty_body()).unwrap();
+        let req = build_outbound_request(
+            &Method::GET,
+            &url,
+            &[],
+            false,
+            http::Version::HTTP_2,
+            crate::empty_body(),
+        )
+        .unwrap();
         assert!(req.uri().authority().is_some());
         assert!(req.uri().scheme().is_some());
-        assert_eq!(req.uri(), &http::Uri::try_from("https://example.com/foo?bar=1").unwrap());
+        assert_eq!(
+            req.uri(),
+            &http::Uri::try_from("https://example.com/foo?bar=1").unwrap()
+        );
     }
 
     #[test]
     fn build_outbound_request_http11_direct_uses_origin_form() {
         let url = url::Url::parse("https://example.com/foo?bar=1").unwrap();
-        let req =
-            build_outbound_request(&Method::GET, &url, &[], false, http::Version::HTTP_11, crate::empty_body()).unwrap();
+        let req = build_outbound_request(
+            &Method::GET,
+            &url,
+            &[],
+            false,
+            http::Version::HTTP_11,
+            crate::empty_body(),
+        )
+        .unwrap();
         assert!(req.uri().authority().is_none());
         assert_eq!(req.uri().path_and_query().unwrap(), "/foo?bar=1");
     }
@@ -970,6 +1251,9 @@ mod tests {
     fn union_matched_dedupes_preserving_order() {
         let a = vec!["r1".to_string(), "r2".to_string()];
         let b = vec!["r2".to_string(), "r3".to_string()];
-        assert_eq!(union_matched(a, b), vec!["r1".to_string(), "r2".to_string(), "r3".to_string()]);
+        assert_eq!(
+            union_matched(a, b),
+            vec!["r1".to_string(), "r2".to_string(), "r3".to_string()]
+        );
     }
 }

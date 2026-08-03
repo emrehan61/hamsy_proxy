@@ -88,7 +88,10 @@ impl Sender {
     }
 
     /// Sends `req` on this connection and awaits the response.
-    pub async fn send_request(&mut self, req: Request<BoxBody>) -> hyper::Result<Response<Incoming>> {
+    pub async fn send_request(
+        &mut self,
+        req: Request<BoxBody>,
+    ) -> hyper::Result<Response<Incoming>> {
         match self {
             Sender::Http1(s) => s.send_request(req).await,
             Sender::Http2(s) => s.send_request(req).await,
@@ -117,7 +120,9 @@ struct Pool {
 
 impl Pool {
     fn new() -> Self {
-        Pool { conns: Mutex::new(HashMap::new()) }
+        Pool {
+            conns: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Pops a healthy, non-expired connection for `key`, if any. Expired or
@@ -144,7 +149,10 @@ impl Pool {
             return;
         }
         let mut conns = self.conns.lock();
-        conns.entry(key).or_default().push(PooledConn { sender, idle_since: Instant::now() });
+        conns.entry(key).or_default().push(PooledConn {
+            sender,
+            idle_since: Instant::now(),
+        });
     }
 }
 
@@ -192,7 +200,9 @@ impl Connector {
     /// intended for tests that stand up a throwaway TLS origin server (a
     /// real deployment has no such certs to add, so this is exercised only
     /// via [`Connector::new`] in production, which passes an empty slice).
-    pub fn with_extra_roots(extra_roots: &[rustls_pki_types::CertificateDer<'static>]) -> Result<Self> {
+    pub fn with_extra_roots(
+        extra_roots: &[rustls_pki_types::CertificateDer<'static>],
+    ) -> Result<Self> {
         let mut roots = rustls::RootCertStore::empty();
         let native = rustls_native_certs::load_native_certs();
         for cert in native.certs {
@@ -243,7 +253,11 @@ impl Connector {
             https: is_https,
             host: host.to_string(),
             port,
-            version: if mirror_h2 { HttpVersion::Http2 } else { HttpVersion::Http1 },
+            version: if mirror_h2 {
+                HttpVersion::Http2
+            } else {
+                HttpVersion::Http1
+            },
         };
 
         if let Some(sender) = self.pool.checkout(&key) {
@@ -273,9 +287,14 @@ impl Connector {
 
         if is_https {
             let ssl_start = Instant::now();
-            let server_name = ServerName::try_from(host.to_string())
-                .map_err(|_| ProxyError::InvalidTarget(format!("invalid TLS server name: {host}")))?;
-            let connector = if mirror_h2 { &self.tls_h2 } else { &self.tls_h1 };
+            let server_name = ServerName::try_from(host.to_string()).map_err(|_| {
+                ProxyError::InvalidTarget(format!("invalid TLS server name: {host}"))
+            })?;
+            let connector = if mirror_h2 {
+                &self.tls_h2
+            } else {
+                &self.tls_h1
+            };
             let tls_stream = connector.connect(server_name, tcp).await.map_err(|e| {
                 ProxyError::UpstreamConnect(format!("TLS handshake with {host}:{port} failed: {e}"))
             })?;
@@ -283,11 +302,25 @@ impl Connector {
             let negotiated_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(b"h2");
             let io = TokioIo::new(tls_stream);
             let (sender, version) = handshake(io, negotiated_h2).await?;
-            Ok(Obtained { sender, version, connect_ms, ssl_ms, server_addr: Some(server_addr), via_proxy })
+            Ok(Obtained {
+                sender,
+                version,
+                connect_ms,
+                ssl_ms,
+                server_addr: Some(server_addr),
+                via_proxy,
+            })
         } else {
             let io = TokioIo::new(tcp);
             let (sender, version) = handshake(io, false).await?;
-            Ok(Obtained { sender, version, connect_ms, ssl_ms: -1.0, server_addr: Some(server_addr), via_proxy })
+            Ok(Obtained {
+                sender,
+                version,
+                connect_ms,
+                ssl_ms: -1.0,
+                server_addr: Some(server_addr),
+                via_proxy,
+            })
         }
     }
 
@@ -339,13 +372,18 @@ where
 /// Sequential rather than a parallel happy-eyeballs race, per spec.
 async fn dial_tcp(host: &str, port: u16) -> Result<(TcpStream, std::net::SocketAddr, f64)> {
     let start = Instant::now();
-    let lookup = tokio::time::timeout(OVERALL_CONNECT_TIMEOUT, tokio::net::lookup_host((host, port)))
-        .await
-        .map_err(|_| ProxyError::Timeout(format!("DNS lookup timed out for {host}:{port}")))?
-        .map_err(|e| ProxyError::UpstreamConnect(format!("{host}:{port}: DNS lookup failed: {e}")))?;
+    let lookup = tokio::time::timeout(
+        OVERALL_CONNECT_TIMEOUT,
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| ProxyError::Timeout(format!("DNS lookup timed out for {host}:{port}")))?
+    .map_err(|e| ProxyError::UpstreamConnect(format!("{host}:{port}: DNS lookup failed: {e}")))?;
     let addrs: Vec<std::net::SocketAddr> = lookup.collect();
     if addrs.is_empty() {
-        return Err(ProxyError::UpstreamConnect(format!("{host}:{port}: no addresses found")));
+        return Err(ProxyError::UpstreamConnect(format!(
+            "{host}:{port}: no addresses found"
+        )));
     }
 
     let deadline = start + OVERALL_CONNECT_TIMEOUT;
@@ -422,8 +460,18 @@ pub struct ReleaseOnComplete<B> {
 impl<B> ReleaseOnComplete<B> {
     /// Wraps `inner`, arranging for `sender` to be returned to `connector`'s
     /// pool (under `(https, host, port)`) once `inner` cleanly completes.
-    pub fn new(inner: B, connector: Arc<Connector>, https: bool, host: String, port: u16, sender: Sender) -> Self {
-        ReleaseOnComplete { inner, release: Some((connector, https, host, port, sender)) }
+    pub fn new(
+        inner: B,
+        connector: Arc<Connector>,
+        https: bool,
+        host: String,
+        port: u16,
+        sender: Sender,
+    ) -> Self {
+        ReleaseOnComplete {
+            inner,
+            release: Some((connector, https, host, port, sender)),
+        }
     }
 }
 
@@ -461,11 +509,14 @@ where
 /// Parses an upstream proxy URL like `"http://host:port"` into
 /// `(host, port)`, defaulting the port to `80` if absent.
 fn parse_proxy_url(raw: &str) -> Result<(String, u16)> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| ProxyError::InvalidTarget(format!("invalid upstream proxy url '{raw}': {e}")))?;
+    let url = url::Url::parse(raw).map_err(|e| {
+        ProxyError::InvalidTarget(format!("invalid upstream proxy url '{raw}': {e}"))
+    })?;
     let host = url
         .host_str()
-        .ok_or_else(|| ProxyError::InvalidTarget(format!("upstream proxy url '{raw}' has no host")))?
+        .ok_or_else(|| {
+            ProxyError::InvalidTarget(format!("upstream proxy url '{raw}' has no host"))
+        })?
         .to_string();
     let port = url.port().unwrap_or(80);
     Ok((host, port))

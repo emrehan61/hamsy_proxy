@@ -25,7 +25,9 @@ pub async fn replay(ctx: &ProxyContext, req: rdproxy_core::RequestRecord) -> Res
         .map_err(|e| ProxyError::InvalidTarget(format!("invalid replay url '{}': {e}", req.url)))?;
     let scheme = url.scheme().to_string();
     if scheme != "http" && scheme != "https" {
-        return Err(ProxyError::InvalidTarget(format!("unsupported replay scheme '{scheme}'")));
+        return Err(ProxyError::InvalidTarget(format!(
+            "unsupported replay scheme '{scheme}'"
+        )));
     }
 
     let conn_info = ConnInfo {
@@ -56,7 +58,9 @@ async fn run_replay(
     let started_at = http::now_ms();
     let seq = ctx.flows.next_seq();
     let host = url.host_str().unwrap_or("").to_string();
-    let port = url.port_or_known_default().unwrap_or(http::default_port(url.scheme()));
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(http::default_port(url.scheme()));
 
     let mut headers: Vec<HeaderPair> = req.headers.clone();
     http::set_host_header(&mut headers, &host, port, url.scheme());
@@ -77,11 +81,16 @@ async fn run_replay(
     );
     flow.summary.state = FlowState::Requesting;
     ctx.flows.insert(flow.clone());
-    let _ = ctx.events.send(ServerEvent::Flow { flow: flow.summary() });
+    let _ = ctx.events.send(ServerEvent::Flow {
+        flow: flow.summary(),
+    });
 
     let ruleset = ctx.ruleset();
     let body_bytes = rdproxy_core::from_payload(&req.body);
-    let content_type = headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-type")).map(|h| h.value.as_str());
+    let content_type = headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("content-type"))
+        .map(|h| h.value.as_str());
     let resource_type = ResourceType::infer(content_type, url.path());
 
     let outcome = ruleset.apply_request(RequestCtx {
@@ -113,17 +122,28 @@ async fn run_replay(
     }
 
     let final_url = url::Url::parse(&outcome.url).unwrap_or(url);
-    let final_method = hyper::Method::from_bytes(outcome.method.as_bytes()).unwrap_or(hyper::Method::GET);
+    let final_method =
+        hyper::Method::from_bytes(outcome.method.as_bytes()).unwrap_or(hyper::Method::GET);
     let final_headers = outcome.headers.clone();
     let final_body = outcome.body.clone().unwrap_or(body_bytes);
     let http_version = http::version_from_str(&req.http_version);
 
     let outbound_body = crate::full_body(final_body);
-    let outbound = match http::build_outbound_request(&final_method, &final_url, &final_headers, false, http_version, outbound_body) {
+    let outbound = match http::build_outbound_request(
+        &final_method,
+        &final_url,
+        &final_headers,
+        false,
+        http_version,
+        outbound_body,
+    ) {
         Ok(r) => r,
         Err(e) => {
             let finished_at = http::now_ms();
-            if let Some(summary) = ctx.flows.update(flow_id, |f| f.mark_error(e.to_string(), finished_at)) {
+            if let Some(summary) = ctx
+                .flows
+                .update(flow_id, |f| f.mark_error(e.to_string(), finished_at))
+            {
                 let _ = ctx.events.send(ServerEvent::Flow { flow: summary });
             }
             return Err(e);
@@ -131,21 +151,40 @@ async fn run_replay(
     };
 
     let upstream_proxy = ctx.settings.read().upstream_proxy.clone();
-    match http::dispatch(ctx, &final_url, conn_info.mirror_h2, upstream_proxy.as_deref(), outbound).await {
+    match http::dispatch(
+        ctx,
+        &final_url,
+        conn_info.mirror_h2,
+        upstream_proxy.as_deref(),
+        outbound,
+    )
+    .await
+    {
         Ok((resp, _timings, server_addr)) => {
             let (parts, body) = resp.into_parts();
-            let (bytes, _total, _truncated) =
-                crate::tee::collect_capped(body, 64 * 1024 * 1024).await.unwrap_or_default();
+            let (bytes, _total, _truncated) = crate::tee::collect_capped(body, 64 * 1024 * 1024)
+                .await
+                .unwrap_or_default();
             let resp_headers = http::header_pairs_from(&parts.headers);
-            let content_type = resp_headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-type")).map(|h| h.value.clone());
-            let content_encoding =
-                resp_headers.iter().find(|h| h.name.eq_ignore_ascii_case("content-encoding")).map(|h| h.value.clone());
+            let content_type = resp_headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("content-type"))
+                .map(|h| h.value.clone());
+            let content_encoding = resp_headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("content-encoding"))
+                .map(|h| h.value.clone());
             let resp_record = ResponseRecord {
                 status: parts.status.as_u16(),
                 status_text: parts.status.canonical_reason().unwrap_or("").to_string(),
                 http_version: format!("{:?}", parts.version),
                 headers: resp_headers,
-                body: rdproxy_core::to_payload(&bytes, content_type.as_deref(), content_encoding.as_deref(), ctx.max_body_bytes()),
+                body: rdproxy_core::to_payload(
+                    &bytes,
+                    content_type.as_deref(),
+                    content_encoding.as_deref(),
+                    ctx.max_body_bytes(),
+                ),
             };
             let finished_at = http::now_ms();
             if let Some(summary) = ctx.flows.update(flow_id, |f| {

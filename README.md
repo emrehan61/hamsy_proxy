@@ -351,15 +351,18 @@ Data lives under `$RDPROXY_HOME` if set, otherwise `~/.rdproxy` (`%USERPROFILE%\
 ```
 cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo fmt --all --check
 cd ui && pnpm typecheck
 ```
 
-`cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `rdproxy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets` and `cd ui && pnpm typecheck` (`tsc --noEmit`) are both clean.
+`cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `rdproxy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, and `cd ui && pnpm typecheck` (`tsc --noEmit`) are all clean.
+
+Formatting is stock rustfmt — there is deliberately no `rustfmt.toml`, so `cargo fmt` with a default toolchain produces exactly what's committed and no per-project setup is needed.
 
 ### Contributing
 
 - Start with the Architecture table above for which crate owns what before touching anything.
-- Run `cargo fmt` and `cargo clippy --workspace --all-targets -- -D warnings` on whatever you touch before sending it out — `clippy --workspace --all-targets -- -D warnings` is currently warning-free on `main`, so a new warning is yours to fix, not a pre-existing one to ignore.
+- Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` on whatever you touch before sending it out — both are currently clean on `master`, so a new warning or formatting diff is yours to fix, not a pre-existing one to ignore.
 - Tests live next to the code they cover: `rdproxy-core` has only inline `#[cfg(test)] mod tests` blocks (no `tests/` directory — it's pure logic, no server to spin up). `rdproxy-proxy` and `rdproxy-api` each add a `tests/` directory on top of their inline unit tests (`rdproxy-proxy/tests/proxy_tests.rs` drives a real MITM proxy instance end-to-end; `rdproxy-api/tests/rest_api.rs` and `tests/ws.rs` drive the REST/WebSocket API against a standalone `ApiState`). `rdproxy-cli` has inline tests in `cert.rs`/`rules.rs`/`run.rs` plus the `--ignored` end-to-end tests in `tests/shutdown.rs` mentioned above.
 - Iterating on the UI: run its dev server for hot reload rather than rebuilding the Rust binary on every change — see `cd ui && pnpm dev` in [Install / build](#install--build).
 
