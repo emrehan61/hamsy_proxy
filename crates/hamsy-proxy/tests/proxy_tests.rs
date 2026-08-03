@@ -399,3 +399,35 @@ async fn passthrough_host_is_not_intercepted() {
     assert_eq!(flow.method, "CONNECT");
     assert_eq!(flow.state, hamsy_core::FlowState::Complete);
 }
+
+/// 11. macOS only: the connecting process's app is resolved from its
+/// loopback socket and recorded onto the flow. The "app" here is this very
+/// test binary (an in-process `reqwest` client dialing the proxy over
+/// loopback) rather than a real installed `.app`, so this only checks that
+/// *some* name was resolved, not any particular value - `client_app_is_...`
+/// in `appid.rs`'s own unit tests cover the path->name mapping itself.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn client_app_is_resolved_for_real_loopback_connection() {
+    let origin_addr = common::spawn_http_origin(|_req: Request<hyper::body::Incoming>| async {
+        Response::new(common::full("hi"))
+    })
+    .await;
+
+    let proxy = common::spawn_proxy(Settings::default()).await;
+    let client = common::client_trusting_proxy_ca(&proxy);
+
+    let resp = client
+        .get(format!("http://localhost:{}/", origin_addr.port()))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), 200);
+
+    let flows = proxy.ctx.flows.list(&Default::default());
+    assert_eq!(flows.len(), 1);
+    assert!(
+        flows[0].app.is_some(),
+        "expected the connecting process's app to be resolved on macOS"
+    );
+}

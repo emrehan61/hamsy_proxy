@@ -14,6 +14,7 @@ export interface FlowFilterState {
   resourceTypes: string[];
   onlyModified: boolean;
   host: string;
+  apps: string[];
 }
 
 // Single pass over `flows` for every filter — do not chain .filter()/.map()
@@ -32,6 +33,7 @@ export function filterFlows<T extends FlowSummary>(flows: T[], f: FlowFilterStat
     if (f.resourceTypes.length > 0 && !f.resourceTypes.includes(flow.resourceType)) continue;
     if (f.onlyModified && !flow.modified) continue;
     if (f.host && flow.host !== f.host) continue;
+    if (f.apps.length > 0 && !f.apps.includes(flow.app ?? "Unknown")) continue;
     if (q) {
       const haystack = `${flow.url} ${flow.host} ${flow.method} ${flow.status ?? ""}`.toLowerCase();
       if (!haystack.includes(q)) continue;

@@ -142,6 +142,32 @@ async fn flows_list_filters_and_after_seq() {
 }
 
 #[tokio::test]
+async fn flows_list_filters_by_app() {
+    let state = common::make_state();
+    let mut curl_flow = common::sample_flow(1, "GET", "a.com", Some(200));
+    curl_flow.summary.app = Some("curl".to_string());
+    let mut chrome_flow = common::sample_flow(2, "GET", "b.com", Some(200));
+    chrome_flow.summary.app = Some("Google Chrome".to_string());
+    state.flows().insert(curl_flow);
+    state.flows().insert(chrome_flow);
+    let app = router(state);
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/flows?app=curl"))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let flows = body["flows"].as_array().unwrap();
+    assert_eq!(flows.len(), 1);
+    assert_eq!(flows[0]["app"], "curl");
+
+    let resp = app.oneshot(get("/api/flows?app=nope")).await.unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["flows"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn flow_get_by_id_404_for_unknown_uuid() {
     let state = common::make_state();
     let app = router(state);

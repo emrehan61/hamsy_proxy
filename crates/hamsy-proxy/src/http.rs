@@ -82,6 +82,10 @@ pub struct ConnInfo {
     /// connection (see `upstream.rs`'s module docs for why this is mirrored
     /// upstream rather than negotiated independently).
     pub mirror_h2: bool,
+    /// Display name of the local application that owns `client_addr`,
+    /// resolved once per accepted connection (see `crate::appid`). `None`
+    /// when unresolved (remote/LAN client, non-macOS, or lookup failure).
+    pub app: Option<String>,
 }
 
 /// Handles one proxied request: the full capture/rule/dispatch/record
@@ -607,6 +611,7 @@ async fn handle_captured_request(
     );
     flow.summary.state = FlowState::Requesting;
     flow.summary.resource_type = resource_type;
+    flow.summary.app = conn.app.clone();
     flow.tls = conn.tls.clone();
     ctx.flows.insert(flow.clone());
     let _ = ctx.events.send(hamsy_core::ServerEvent::Flow {
@@ -1170,6 +1175,7 @@ mod tests {
             authority: None,
             tls: None,
             mirror_h2: false,
+            app: None,
         };
         let url = build_target_url(&parts, &conn).unwrap();
         assert_eq!(url.as_str(), "http://example.com/path?x=1");
@@ -1185,6 +1191,7 @@ mod tests {
             authority: Some("example.com:8443".to_string()),
             tls: None,
             mirror_h2: false,
+            app: None,
         };
         let url = build_target_url(&parts, &conn).unwrap();
         assert_eq!(url.as_str(), "https://example.com:8443/path?x=1");

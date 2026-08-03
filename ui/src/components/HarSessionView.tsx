@@ -37,6 +37,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
   const [resourceTypes, setResourceTypes] = createSignal<string[]>([]);
   const [onlyModified, setOnlyModified] = createSignal(false);
   const [host, setHost] = createSignal("");
+  const [apps, setApps] = createSignal<string[]>([]);
 
   const filteredFlows = createMemo<Flow[]>(() => {
     const s = session();
@@ -48,6 +49,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
       resourceTypes: resourceTypes(),
       onlyModified: onlyModified(),
       host: host(),
+      apps: apps(),
     });
   });
 
@@ -57,7 +59,8 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
     statusClasses().length > 0 ||
     resourceTypes().length > 0 ||
     onlyModified() ||
-    host() !== "";
+    host() !== "" ||
+    apps().length > 0;
 
   // Unique hosts across the session's flows, for the FilterBar host <Select>.
   const hosts = createMemo<string[]>(() => {
@@ -65,6 +68,18 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
     if (!s) return [];
     const seen = new Set<string>();
     for (const flow of s.flows) seen.add(flow.host);
+    return Array.from(seen).sort();
+  });
+
+  // Unique apps across the session's flows, for the FilterBar app chips.
+  // Imported HAR flows have no live-ingest "seen apps" set (that's the live
+  // Traffic view's stores/flows.ts pattern), so this view derives its own
+  // list straight from the already-loaded, static Flow[] instead.
+  const sessionApps = createMemo<string[]>(() => {
+    const s = session();
+    if (!s) return [];
+    const seen = new Set<string>();
+    for (const flow of s.flows) seen.add(flow.app ?? "Unknown");
     return Array.from(seen).sort();
   });
 
@@ -150,6 +165,9 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
                       host={host()}
                       onHostChange={setHost}
                       hosts={hosts()}
+                      apps={sessionApps()}
+                      selectedApps={apps()}
+                      onSelectedAppsChange={setApps}
                     />
                     <div class="har-session-view__table">
                       <Show

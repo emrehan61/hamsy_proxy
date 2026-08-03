@@ -150,6 +150,7 @@ mod wire_format_tests {
             request_size: 0,
             response_size: 0,
             client_addr: "127.0.0.1:1".to_string(),
+            app: None,
             matched_rules: vec![],
             modified: false,
             error: None,

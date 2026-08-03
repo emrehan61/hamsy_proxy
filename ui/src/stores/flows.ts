@@ -48,6 +48,7 @@ export function ingestFlows(incoming: FlowSummary[]): void {
     produce((s) => {
       for (const flow of incoming) {
         noteHost(flow.host);
+        noteApp(flow.app);
         const existingIndex = idToIndex.get(flow.id);
         if (existingIndex !== undefined) {
           // Fine-grained in-place update — only this row's consumers re-run.
@@ -91,6 +92,8 @@ export function clearFlows(): void {
   idToIndex.clear();
   seenHostsSet.clear();
   setSeenHostsVersion((v) => v + 1);
+  seenAppsSet.clear();
+  setSeenAppsVersion((v) => v + 1);
   setSelectedId(null);
   setDetailStore(
     produce((d) => {
@@ -129,6 +132,29 @@ function noteHost(host: string): void {
 export function seenHosts(): string[] {
   seenHostsVersion();
   return Array.from(seenHostsSet);
+}
+
+// ---- seen apps (incremental, versioned so it stays cheaply reactive) ----
+//
+// A missing/null app (unknown origin process) is bucketed under the literal
+// "Unknown" so that traffic is still filterable rather than silently
+// excluded from every app chip.
+
+const seenAppsSet = new Set<string>();
+const [seenAppsVersion, setSeenAppsVersion] = createSignal(0);
+
+function noteApp(app: string | null): void {
+  const name = app ?? "Unknown";
+  if (!seenAppsSet.has(name)) {
+    seenAppsSet.add(name);
+    setSeenAppsVersion((v) => v + 1);
+  }
+}
+
+/** Unique app names seen so far. Reactive via a version counter bumped on ingest. */
+export function seenApps(): string[] {
+  seenAppsVersion();
+  return Array.from(seenAppsSet);
 }
 
 // ---- selection ----

@@ -142,6 +142,7 @@ pub async fn handle_upgrade(
         url: url.to_string(),
         scheme: ws_scheme.to_string(),
         client_addr: conn.client_addr.to_string(),
+        app: conn.app.clone(),
     };
 
     tokio::spawn(async move {
@@ -178,6 +179,7 @@ struct FlowMeta {
     url: String,
     scheme: String,
     client_addr: String,
+    app: Option<String>,
 }
 
 /// Relays traffic between the client and origin WebSocket connections,
@@ -226,6 +228,7 @@ async fn relay<C, O>(
         req_record,
     );
     flow.summary.state = FlowState::Responding;
+    flow.summary.app = meta.app.clone();
     ctx.flows.insert(flow.clone());
     let _ = ctx.events.send(ServerEvent::Flow {
         flow: flow.summary(),

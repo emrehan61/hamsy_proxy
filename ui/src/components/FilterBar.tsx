@@ -3,7 +3,7 @@
 // toggle, and a host select.
 
 import type { Component } from "solid-js";
-import { For, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { ResourceType } from "../lib/types";
 import TextInput from "./TextInput";
 import Toggle from "./Toggle";
@@ -23,6 +23,9 @@ export interface FilterBarProps {
   host: string;
   onHostChange: (v: string) => void;
   hosts: string[];
+  apps: string[];
+  selectedApps: string[];
+  onSelectedAppsChange: (v: string[]) => void;
   searchInputRef?: (el: HTMLInputElement) => void;
 }
 
@@ -75,6 +78,11 @@ const FilterBar: Component<FilterBarProps> = (props) => {
   });
 
   const hostOptions = () => [{ value: "", label: "All hosts" }, ...props.hosts.map((h) => ({ value: h, label: h }))];
+
+  // Sorted for stable chip ordering — `props.apps` grows incrementally as
+  // new apps are detected, so without sorting the row would reshuffle
+  // under the user's cursor every time an unseen app shows up.
+  const sortedApps = createMemo(() => [...props.apps].sort((a, b) => a.localeCompare(b)));
 
   return (
     <div class="filter-bar">
@@ -131,6 +139,26 @@ const FilterBar: Component<FilterBarProps> = (props) => {
           )}
         </For>
       </div>
+
+      <Show when={sortedApps().length > 0}>
+        <div class="filter-bar__chips" role="group" aria-label="Filter by app">
+          <For each={sortedApps()}>
+            {(app) => (
+              <button
+                type="button"
+                class={`filter-bar__chip filter-bar__chip--app${
+                  props.selectedApps.includes(app) ? " filter-bar__chip--active" : ""
+                }`}
+                aria-pressed={props.selectedApps.includes(app)}
+                title={app}
+                onClick={() => props.onSelectedAppsChange(toggleValue(props.selectedApps, app))}
+              >
+                {app}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <Toggle checked={props.onlyModified} onChange={props.onOnlyModifiedChange} label="Modified only" />
 

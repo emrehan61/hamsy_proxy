@@ -65,6 +65,14 @@ const OverviewTab: Component<{ flow: Flow }> = (props) => {
 
       <TimingsBar timings={props.flow.timings} total={props.flow.durationMs ?? undefined} />
 
+      <div class="flow-detail__section">
+        <h3 class="flow-detail__section-title">Origin</h3>
+        <dl class="flow-detail__kv">
+          <dt>App</dt>
+          <dd class="mono">{props.flow.app ?? "Unknown"}</dd>
+        </dl>
+      </div>
+
       <Show when={props.flow.tls}>
         {(tls) => (
           <div class="flow-detail__section">

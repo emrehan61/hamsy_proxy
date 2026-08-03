@@ -24,6 +24,9 @@ pub struct FlowQuery {
     pub resource_types: Vec<ResourceType>,
     /// Restrict to flows whose host equals this value (case-insensitive).
     pub host: Option<String>,
+    /// Restrict to flows whose originating app equals this value
+    /// (case-insensitive). Flows with no resolved app never match.
+    pub app: Option<String>,
     /// Restrict to flows that were modified by a rule.
     pub only_modified: bool,
 }
@@ -129,6 +132,7 @@ impl FlowStore {
         let inner = self.inner.read();
         let search = query.search.as_ref().map(|s| s.to_ascii_lowercase());
         let host_filter = query.host.as_ref().map(|h| h.to_ascii_lowercase());
+        let app_filter = query.app.as_ref().map(|a| a.to_ascii_lowercase());
 
         let mut results: Vec<FlowSummary> = inner
             .order
@@ -158,6 +162,14 @@ impl FlowStore {
                 host_filter
                     .as_ref()
                     .is_none_or(|h| flow.summary.host.to_ascii_lowercase() == *h)
+            })
+            .filter(|flow| {
+                app_filter.as_ref().is_none_or(|a| {
+                    flow.summary
+                        .app
+                        .as_ref()
+                        .is_some_and(|flow_app| flow_app.to_ascii_lowercase() == *a)
+                })
             })
             .filter(|flow| !query.only_modified || flow.summary.modified)
             .filter(|flow| {
@@ -358,6 +370,38 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(only_modified.len(), 1);
+    }
+
+    #[test]
+    fn list_filters_by_app_case_insensitively() {
+        let store = FlowStore::new(10);
+        let mut curl_flow = make_flow(1, "GET", "a.com", Some(200), false);
+        curl_flow.summary.app = Some("curl".to_string());
+        let mut chrome_flow = make_flow(2, "GET", "b.com", Some(200), false);
+        chrome_flow.summary.app = Some("Google Chrome".to_string());
+        // Simulates an unresolved app (e.g. a remote client, or a replay).
+        let unresolved_flow = make_flow(3, "GET", "c.com", Some(200), false);
+        store.insert(curl_flow);
+        store.insert(chrome_flow);
+        store.insert(unresolved_flow);
+
+        let by_app = store.list(&FlowQuery {
+            app: Some("google chrome".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(by_app.len(), 1);
+        assert_eq!(by_app[0].host, "b.com");
+
+        // A flow with no resolved app never matches an app filter, even one
+        // that (oddly) filters for an empty string.
+        let empty_filter = store.list(&FlowQuery {
+            app: Some(String::new()),
+            ..Default::default()
+        });
+        assert!(empty_filter.iter().all(|f| f.host != "c.com"));
+
+        let no_filter = store.list(&FlowQuery::default());
+        assert_eq!(no_filter.len(), 3);
     }
 
     #[test]

@@ -41,6 +41,7 @@ export interface FlowSummary {
   error: string | null;
   websocket: boolean;
   fromCache: boolean;
+  app: string | null;
 }
 
 export interface HeaderPair {
@@ -247,4 +248,5 @@ export interface FlowListParams {
   resourceTypes?: string[];
   host?: string;
   onlyModified?: boolean;
+  app?: string;
 }
