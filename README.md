@@ -38,7 +38,15 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## Install / build
 
-Fastest path — pipe the installer straight from GitHub:
+Recommended — install the prebuilt binary from the latest GitHub Release, no toolchain required:
+
+```
+curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install_source.sh | bash
+```
+
+Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`).
+
+Building from source instead — pipe `install.sh` straight from GitHub:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install.sh | bash
