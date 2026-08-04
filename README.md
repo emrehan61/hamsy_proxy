@@ -96,7 +96,7 @@ This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to 
 ./release.sh -b   # major: X.Y.Z -> (X+1).0.0
 ```
 
-Bumps the `[workspace.package]` version in the root `Cargo.toml`, refreshes `Cargo.lock`, commits (`Release vX.Y.Z`), tags (`vX.Y.Z`), and pushes — from `master` only, on a clean, up-to-date tree. The pushed tag triggers `.github/workflows/release.yml`, which builds the binaries for all platforms and publishes them as a GitHub release; `hamsy update` compares its own version against the latest release and picks up the new binary from there. `./release.sh --dry-run` previews the version bump and every command without changing anything; `--no-push` stops after the local commit/tag; `--yes` skips the confirmation prompt. `./release.sh --help` for the full flag list.
+Bumps the `[workspace.package]` version in the root `Cargo.toml`, refreshes `Cargo.lock`, commits (`Release vX.Y.Z`), tags (`vX.Y.Z`), and pushes — from `master` only, on a clean, up-to-date tree. The pushed tag triggers `.github/workflows/release.yml`, which builds the binaries for all platforms and publishes them as a GitHub release; `hamsy update` compares its own version against the latest release and picks up the new binary from there. Need an exact version instead of a bump (e.g. to match a specific release number)? `./release.sh -v 1.2.3` (or `--set-version v1.2.3`, leading `v` optional) sets it directly — it must be strictly greater than the current version. `./release.sh --dry-run` previews the version change and every command without changing anything; `--no-push` stops after the local commit/tag; `--yes` skips the confirmation prompt. `./release.sh --help` for the full flag list.
 
 ## Quick start
 

@@ -50,24 +50,30 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
   cat <<'EOF'
-Usage: release.sh (-b|-m|-s) [OPTIONS]
+Usage: release.sh (-b|-m|-s|-v VERSION) [OPTIONS]
 
-Cuts a hamsy-proxy release: bumps the version in the workspace Cargo.toml,
-commits, tags, and pushes — a tag push matching `v*` triggers the GitHub
-release workflow, which builds and publishes the binaries.
+Cuts a hamsy-proxy release: bumps (or sets) the version in the workspace
+Cargo.toml, commits, tags, and pushes — a tag push matching `v*` triggers
+the GitHub release workflow, which builds and publishes the binaries.
 
-Exactly one bump flag is required:
-  -b              Bump major: X.Y.Z -> (X+1).0.0
-  -m              Bump minor: X.Y.Z -> X.(Y+1).0
-  -s              Bump patch: X.Y.Z -> X.Y.(Z+1)
+Exactly one of the following is required:
+  -b                       Bump major: X.Y.Z -> (X+1).0.0
+  -m                       Bump minor: X.Y.Z -> X.(Y+1).0
+  -s                       Bump patch: X.Y.Z -> X.Y.(Z+1)
+  -v, --set-version VERSION
+                           Set an exact version instead of bumping, e.g.
+                           `-v 1.2.3` or `-v v1.2.3` — a leading `v` is
+                           optional and stripped. Must be strictly greater
+                           than the current version.
 
 Options:
   --dry-run, -n   Print what would happen (old -> new version, commit
                   message, tag, push command) and change nothing. Precondition
                   failures below (dirty tree, wrong branch, behind origin,
-                  tag already exists) are reported as warnings instead of
-                  aborting, so --dry-run is safe to run from any branch or
-                  repo state to preview a release.
+                  tag already exists, -v given a version that doesn't move
+                  forward) are reported as warnings instead of aborting, so
+                  --dry-run is safe to run from any branch or repo state to
+                  preview a release.
   --no-push       Commit and tag locally but skip the push to origin.
   --yes, -y       Skip the final confirmation prompt.
   --help, -h      Show this help and exit.
@@ -78,6 +84,7 @@ EOF
 }
 
 BUMP=""
+SET_VERSION=""
 DRY_RUN=0
 NO_PUSH=0
 YES=0
@@ -85,19 +92,25 @@ YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -b)
-      [ -z "$BUMP" ] || die "Only one bump flag (-b/-m/-s) may be given."
+      [ -z "$BUMP" ] && [ -z "$SET_VERSION" ] || die "Only one of -b/-m/-s/-v (--set-version) may be given."
       BUMP="major"
       shift
       ;;
     -m)
-      [ -z "$BUMP" ] || die "Only one bump flag (-b/-m/-s) may be given."
+      [ -z "$BUMP" ] && [ -z "$SET_VERSION" ] || die "Only one of -b/-m/-s/-v (--set-version) may be given."
       BUMP="minor"
       shift
       ;;
     -s)
-      [ -z "$BUMP" ] || die "Only one bump flag (-b/-m/-s) may be given."
+      [ -z "$BUMP" ] && [ -z "$SET_VERSION" ] || die "Only one of -b/-m/-s/-v (--set-version) may be given."
       BUMP="patch"
       shift
+      ;;
+    -v | --set-version)
+      [ -z "$BUMP" ] && [ -z "$SET_VERSION" ] || die "Only one of -b/-m/-s/-v (--set-version) may be given."
+      [ $# -ge 2 ] || die "-v/--set-version requires a VERSION argument."
+      SET_VERSION="$2"
+      shift 2
       ;;
     --dry-run | -n)
       DRY_RUN=1
@@ -122,9 +135,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$BUMP" ]; then
+if [ -z "$BUMP" ] && [ -z "$SET_VERSION" ]; then
   usage >&2
-  die "Exactly one bump flag is required: -b (major), -m (minor), or -s (patch)."
+  die "Exactly one of -b (major), -m (minor), -s (patch), or -v/--set-version VERSION is required."
 fi
 
 # ---------------------------------------------------------------------------
@@ -218,25 +231,72 @@ fi
 # New version
 # ---------------------------------------------------------------------------
 
-# 10#$var forces base-10 interpretation so a component with a leading zero
-# (e.g. "08") never gets misread as an invalid octal literal.
-case "$BUMP" in
-  major)
-    NEW_MAJOR=$((10#$CURRENT_MAJOR + 1))
-    NEW_MINOR=0
-    NEW_PATCH=0
-    ;;
-  minor)
-    NEW_MAJOR=$((10#$CURRENT_MAJOR))
-    NEW_MINOR=$((10#$CURRENT_MINOR + 1))
-    NEW_PATCH=0
-    ;;
-  patch)
-    NEW_MAJOR=$((10#$CURRENT_MAJOR))
-    NEW_MINOR=$((10#$CURRENT_MINOR))
-    NEW_PATCH=$((10#$CURRENT_PATCH + 1))
-    ;;
-esac
+# True (0) if MAJOR1.MINOR1.PATCH1 > MAJOR2.MINOR2.PATCH2, compared
+# component by component — never as strings, so e.g. 0.9.0 correctly beats
+# 0.10.0.
+version_gt() {
+  [ "$1" -gt "$4" ] && return 0
+  [ "$1" -lt "$4" ] && return 1
+  [ "$2" -gt "$5" ] && return 0
+  [ "$2" -lt "$5" ] && return 1
+  [ "$3" -gt "$6" ]
+}
+
+if [ -n "$SET_VERSION" ]; then
+  RAW_VERSION="${SET_VERSION#v}" # accept an optional leading "v"
+
+  # Requires two literal dots up front: with fewer, the %%./#*. component
+  # split below is a silent no-op rather than empty, which would let e.g. a
+  # bare "5" parse as 5.5.5 undetected.
+  case "$RAW_VERSION" in
+    *.*.*) ;;
+    *) die "-v/--set-version requires an X.Y.Z version (optionally prefixed with 'v'), got '$SET_VERSION'." ;;
+  esac
+
+  NEW_MAJOR="${RAW_VERSION%%.*}"
+  NEW_REST="${RAW_VERSION#*.}"
+  NEW_MINOR="${NEW_REST%%.*}"
+  NEW_PATCH="${NEW_REST#*.}"
+
+  case "$NEW_MAJOR" in '' | *[!0-9]*) NEW_MAJOR="" ;; esac
+  case "$NEW_MINOR" in '' | *[!0-9]*) NEW_MINOR="" ;; esac
+  case "$NEW_PATCH" in '' | *[!0-9]*) NEW_PATCH="" ;; esac
+
+  if [ -z "$NEW_MAJOR" ] || [ -z "$NEW_MINOR" ] || [ -z "$NEW_PATCH" ]; then
+    die "-v/--set-version requires an X.Y.Z version (optionally prefixed with 'v'), got '$SET_VERSION'."
+  fi
+
+  # 10#$var forces base-10 interpretation, same reason as the bump math below.
+  NEW_MAJOR=$((10#$NEW_MAJOR))
+  NEW_MINOR=$((10#$NEW_MINOR))
+  NEW_PATCH=$((10#$NEW_PATCH))
+
+  # soft_die (not die) so --dry-run can still preview/report a backwards or
+  # sideways version instead of just aborting.
+  if ! version_gt "$NEW_MAJOR" "$NEW_MINOR" "$NEW_PATCH" "$((10#$CURRENT_MAJOR))" "$((10#$CURRENT_MINOR))" "$((10#$CURRENT_PATCH))"; then
+    soft_die "Given version v$NEW_MAJOR.$NEW_MINOR.$NEW_PATCH is not greater than the current version v$CURRENT_VERSION."
+  fi
+else
+  # 10#$var forces base-10 interpretation so a component with a leading zero
+  # (e.g. "08") never gets misread as an invalid octal literal.
+  case "$BUMP" in
+    major)
+      NEW_MAJOR=$((10#$CURRENT_MAJOR + 1))
+      NEW_MINOR=0
+      NEW_PATCH=0
+      ;;
+    minor)
+      NEW_MAJOR=$((10#$CURRENT_MAJOR))
+      NEW_MINOR=$((10#$CURRENT_MINOR + 1))
+      NEW_PATCH=0
+      ;;
+    patch)
+      NEW_MAJOR=$((10#$CURRENT_MAJOR))
+      NEW_MINOR=$((10#$CURRENT_MINOR))
+      NEW_PATCH=$((10#$CURRENT_PATCH + 1))
+      ;;
+  esac
+fi
 NEW_VERSION="$NEW_MAJOR.$NEW_MINOR.$NEW_PATCH"
 NEW_TAG="v$NEW_VERSION"
 
