@@ -1072,6 +1072,7 @@ dependencies = [
  "hamsy-proxy",
  "open",
  "parking_lot",
+ "rustls",
  "self_update",
  "serde_json",
  "tokio",
