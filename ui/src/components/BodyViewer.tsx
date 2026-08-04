@@ -3,9 +3,9 @@
 // fallback, since bodies are untrusted/arbitrary data from the wire.
 
 import type { Component, JSX } from "solid-js";
-import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import { Match, Show, Switch, createEffect, createMemo, createSignal } from "solid-js";
 import type { BodyPayload, HeaderPair } from "../lib/types";
-import { formatBytes } from "../lib/format";
+import { LARGE_TEXT_THRESHOLD_BYTES, formatBytes } from "../lib/format";
 import { triggerDownload } from "../lib/download";
 import { pushToast } from "../stores/ui";
 import JsonTree from "./JsonTree";
@@ -148,6 +148,15 @@ const BodyViewer: Component<BodyViewerProps> = (props) => {
     return computeRenderInfo(props.body, mime());
   });
 
+  // "Show full" opt-in for large text bodies (see the `text` Match below).
+  // Reset whenever a new body comes in so switching flows doesn't leave a
+  // huge body stuck fully rendered from a previous "Show full" click.
+  const [showFullText, setShowFullText] = createSignal(false);
+  createEffect(() => {
+    props.body;
+    setShowFullText(false);
+  });
+
   const copyText = async (text: string, label: string): Promise<void> => {
     try {
       await navigator.clipboard.writeText(text);
@@ -246,7 +255,29 @@ const BodyViewer: Component<BodyViewerProps> = (props) => {
             <HeadersTable headers={(info() as { kind: "urlencoded"; pairs: HeaderPair[] }).pairs} title="Form fields" />
           </Match>
           <Match when={info().kind === "text"}>
-            <pre class="body-viewer__text mono">{(info() as { kind: "text"; text: string }).text}</pre>
+            {(() => {
+              const text = (info() as { kind: "text"; text: string }).text;
+              // Cap wholesale rendering of huge bodies into the DOM — a
+              // multi-MB body in one <pre> is what actually freezes the
+              // page, not the string sitting in memory. Full text is still
+              // one click away via "Show full" (or the Download button
+              // above, which always downloads the complete text).
+              const isLarge = text.length > LARGE_TEXT_THRESHOLD_BYTES;
+              const display = isLarge && !showFullText() ? text.slice(0, LARGE_TEXT_THRESHOLD_BYTES) : text;
+              return (
+                <>
+                  <Show when={isLarge && !showFullText()}>
+                    <div class="body-viewer__truncated-note">
+                      Showing first {formatBytes(LARGE_TEXT_THRESHOLD_BYTES)} of {formatBytes(text.length)}.{" "}
+                      <button type="button" class="body-viewer__show-full" onClick={() => setShowFullText(true)}>
+                        Show full
+                      </button>
+                    </div>
+                  </Show>
+                  <pre class="body-viewer__text mono">{display}</pre>
+                </>
+              );
+            })()}
           </Match>
           <Match when={info().kind === "hex"}>
             <HexViewer base64={(info() as { kind: "hex"; base64: string }).base64} />

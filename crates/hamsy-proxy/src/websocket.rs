@@ -23,6 +23,13 @@ use crate::config::ProxyContext;
 use crate::http::{self, ConnInfo};
 use crate::BoxBody;
 
+/// Maximum [`WsMessage`]s retained per flow. Per-message size is already
+/// capped by `max_bytes` (see `record_message`), but without a count cap a
+/// single long-lived, chatty socket could still grow `Flow::ws_messages`
+/// without bound. Past this, the oldest messages are dropped to make room
+/// for new ones (most-recent-`N`, ring-buffer style).
+const MAX_WS_MESSAGES_PER_FLOW: usize = 1000;
+
 /// Returns true if `req` is an HTTP/1.1 WebSocket upgrade request
 /// (`Connection: upgrade` + `Upgrade: websocket` + a `Sec-WebSocket-Key`).
 pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
@@ -319,13 +326,25 @@ fn record_message(
     let broadcast_msg = ws_msg.clone();
     if ctx
         .flows
-        .update(flow_id, |f| f.ws_messages.push(ws_msg))
+        .update(flow_id, |f| {
+            f.ws_messages.push(ws_msg);
+            cap_ws_messages(&mut f.ws_messages);
+        })
         .is_some()
     {
         let _ = ctx.events.send(ServerEvent::WsMessage {
             flow_id,
             message: broadcast_msg,
         });
+    }
+}
+
+/// Trims `messages` down to the most recent [`MAX_WS_MESSAGES_PER_FLOW`]
+/// entries in place, dropping the oldest ones first.
+fn cap_ws_messages(messages: &mut Vec<WsMessage>) {
+    if messages.len() > MAX_WS_MESSAGES_PER_FLOW {
+        let excess = messages.len() - MAX_WS_MESSAGES_PER_FLOW;
+        messages.drain(0..excess);
     }
 }
 
@@ -370,5 +389,37 @@ mod tests {
         let b: Vec<u8> = b"0123456789".to_vec();
         assert_eq!(cap_bytes(&b, 4), b"0123");
         assert_eq!(cap_bytes(&b, 100), b"0123456789");
+    }
+
+    fn dummy_ws_message(tag: usize) -> WsMessage {
+        WsMessage {
+            direction: WsDirection::Send,
+            opcode: "text".to_string(),
+            timestamp: 0,
+            data: tag.to_string(),
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn cap_ws_messages_keeps_most_recent_n() {
+        let mut messages: Vec<WsMessage> = (0..(MAX_WS_MESSAGES_PER_FLOW + 10))
+            .map(dummy_ws_message)
+            .collect();
+        cap_ws_messages(&mut messages);
+        assert_eq!(messages.len(), MAX_WS_MESSAGES_PER_FLOW);
+        // The oldest 10 (tags 0..10) were dropped; the newest survives.
+        assert_eq!(messages.first().unwrap().data, "10");
+        assert_eq!(
+            messages.last().unwrap().data,
+            (MAX_WS_MESSAGES_PER_FLOW + 9).to_string()
+        );
+    }
+
+    #[test]
+    fn cap_ws_messages_is_a_no_op_under_the_cap() {
+        let mut messages: Vec<WsMessage> = (0..5).map(dummy_ws_message).collect();
+        cap_ws_messages(&mut messages);
+        assert_eq!(messages.len(), 5);
     }
 }

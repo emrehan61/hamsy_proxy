@@ -37,11 +37,18 @@ struct Inner {
     capacity: usize,
     next_seq: u64,
     total_bytes: u64,
+    /// Byte budget enforced alongside `capacity`; see [`FlowStore::set_max_total_bytes`].
+    max_total_bytes: u64,
 }
 
 impl Inner {
+    /// Evicts oldest-first until BOTH the flow count is within `capacity`
+    /// and `total_bytes` is within `max_total_bytes`. A single oversized
+    /// flow can still push `total_bytes` over budget by itself (there's
+    /// nothing smaller left to evict for it), but the ring buffer never
+    /// holds more than it needs to once older flows are gone.
     fn evict_if_needed(&mut self) {
-        while self.order.len() > self.capacity {
+        while self.order.len() > self.capacity || self.total_bytes > self.max_total_bytes {
             if let Some(oldest) = self.order.pop_front() {
                 if let Some(flow) = self.flows.remove(&oldest) {
                     self.total_bytes = self
@@ -75,6 +82,7 @@ impl FlowStore {
                 capacity: capacity.max(1),
                 next_seq: 1,
                 total_bytes: 0,
+                max_total_bytes: u64::MAX,
             }),
         }
     }
@@ -233,6 +241,16 @@ impl FlowStore {
     pub fn set_capacity(&self, cap: usize) {
         let mut inner = self.inner.write();
         inner.capacity = cap.max(1);
+        inner.evict_if_needed();
+    }
+
+    /// Changes the maximum total bytes (`requestSize + responseSize` summed
+    /// across all stored flows) the store may hold, evicting the oldest
+    /// flows immediately if the store is currently over the new budget. See
+    /// [`Settings::max_total_bytes`](crate::Settings::max_total_bytes).
+    pub fn set_max_total_bytes(&self, max: u64) {
+        let mut inner = self.inner.write();
+        inner.max_total_bytes = max;
         inner.evict_if_needed();
     }
 
@@ -473,5 +491,35 @@ mod tests {
         }
         store.set_capacity(2);
         assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn set_max_total_bytes_evicts_immediately() {
+        // Each flow accounts for 30 bytes (request_size 10 + response_size
+        // 20; see `make_flow`), well under the ring-buffer capacity of 10.
+        let store = FlowStore::new(10);
+        for i in 1..=5u64 {
+            store.insert(make_flow(i, "GET", "a.com", Some(200), false));
+        }
+        assert_eq!(store.len(), 5);
+        assert_eq!(store.total_bytes(), 150);
+
+        // A budget of 100 bytes only leaves room for the newest 3 flows
+        // (3 * 30 = 90 <= 100; a 4th would push it to 120).
+        store.set_max_total_bytes(100);
+        assert_eq!(store.len(), 3);
+        assert!(store.total_bytes() <= 100);
+    }
+
+    #[test]
+    fn byte_budget_evicts_oldest_on_insert() {
+        let store = FlowStore::new(10);
+        store.set_max_total_bytes(65);
+        for i in 1..=5u64 {
+            store.insert(make_flow(i, "GET", "a.com", Some(200), false));
+        }
+        // 65 / 30 = 2 flows fit; capacity (10) never binds here.
+        assert_eq!(store.len(), 2);
+        assert!(store.total_bytes() <= 65);
     }
 }

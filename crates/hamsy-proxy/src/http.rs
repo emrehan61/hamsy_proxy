@@ -550,8 +550,11 @@ async fn handle_captured_request(
     let query = query_pairs(&url);
 
     // ----- Step 1: obtain (or defer) the request body -----
+    // `Buffered` holds a `Bytes` (not `Vec<u8>`): it's cloned below both for
+    // rule matching and for capture, and `Bytes::clone` is a cheap refcount
+    // bump rather than a byte-for-byte copy, unlike `Vec<u8>::clone`.
     enum ReqBody {
-        Buffered(Vec<u8>),
+        Buffered(Bytes),
         Streamed(Arc<Mutex<TeeState>>),
     }
     let (req_body_plan, outbound_body_base): (ReqBody, BoxBody) = if need_req_body {
@@ -560,12 +563,11 @@ async fn handle_captured_request(
                 if hit_hard_cap {
                     tracing::debug!(host = %host, "request body exceeded 64MiB hard cap; skipping rule body matching/mutation for this request");
                 }
-                let owned = bytes.to_vec();
-                (ReqBody::Buffered(owned), crate::full_body(bytes))
+                (ReqBody::Buffered(bytes.clone()), crate::full_body(bytes))
             }
             Err(e) => {
                 tracing::debug!(error = %e, "failed to buffer request body; forwarding will likely fail");
-                (ReqBody::Buffered(Vec::new()), crate::empty_body())
+                (ReqBody::Buffered(Bytes::new()), crate::empty_body())
             }
         }
     } else {
@@ -573,7 +575,7 @@ async fn handle_captured_request(
         (ReqBody::Streamed(state), crate::box_body(tee))
     };
 
-    let req_body_for_rules: Option<Vec<u8>> = match &req_body_plan {
+    let req_body_for_rules: Option<Bytes> = match &req_body_plan {
         ReqBody::Buffered(b) => Some(b.clone()),
         ReqBody::Streamed(_) => None,
     };
@@ -887,13 +889,16 @@ async fn handle_captured_request(
             None
         };
         let mut final_headers = resp_outcome.headers.clone();
-        let final_body_bytes: Vec<u8> = match &resp_outcome.body {
+        // `Bytes` rather than `Vec<u8>`: the unmodified path below just
+        // reuses the already-materialized `bytes` via a cheap refcount
+        // clone instead of copying the whole body again.
+        let final_body_bytes: Bytes = match &resp_outcome.body {
             Some(b) => {
                 remove_header(&mut final_headers, "content-encoding");
                 set_header(&mut final_headers, "Content-Length", &b.len().to_string());
-                b.clone()
+                Bytes::from(b.clone())
             }
-            None => bytes.to_vec(),
+            None => bytes.clone(),
         };
         strip_hop_by_hop(&mut final_headers);
 

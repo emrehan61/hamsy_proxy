@@ -33,6 +33,21 @@ export interface HarSession {
   creatorVersion: string;
   pages: HarPageInfo[];
   flows: Flow[];
+  /**
+   * Total flow count. Always accurate, even before `flows` is hydrated —
+   * sourced from IndexedDB's lightweight per-session metadata, so tab/count
+   * UI never has to wait on a full flow-array load just to show a number.
+   */
+  flowCount: number;
+  /**
+   * False for a metadata-only stub added by `restoreSessionsFromDb` at
+   * startup, whose `flows`/`pages` haven't been fetched from IndexedDB yet
+   * (`flows`/`pages` are `[]` until then). `ensureSessionLoaded` flips this
+   * to `true` once hydrated. Always `true` for a freshly-imported session or
+   * one loaded directly by id (`loadSessionFromDb`), which start out fully
+   * loaded. UI that reads `flows`/`pages` must gate on this first.
+   */
+  loaded: boolean;
 }
 
 // ---- ids ----
@@ -97,9 +112,10 @@ const [activeSessionId, setActiveSessionIdSignal] = createSignal<string | null>(
 
 export { activeSessionId };
 
-/** Tolerates ids not present in `sessions()` yet (e.g. a session still loading). */
+/** Tolerates ids not present in `sessions()` yet (e.g. a session still loading). Activating a session ensures its full flows are hydrated (see `ensureSessionLoaded`). */
 export function setActiveSession(id: string | null): void {
   setActiveSessionIdSignal(id);
+  if (id !== null) void ensureSessionLoaded(id);
 }
 
 // ---- per-session flow selection (fine-grained UI state -> createStore) ----
@@ -137,7 +153,7 @@ function toStored(s: HarSession): StoredHarSession {
     id: s.id,
     name: s.name,
     importedAt: s.importedAt,
-    flowCount: s.flows.length,
+    flowCount: s.flowCount,
     flows: s.flows,
     pages: s.pages,
     creatorName: s.creatorName,
@@ -145,6 +161,7 @@ function toStored(s: HarSession): StoredHarSession {
   };
 }
 
+/** Builds a fully-loaded `HarSession` from a complete DB row. */
 function fromStored(s: StoredHarSession): HarSession {
   return {
     id: s.id,
@@ -154,6 +171,23 @@ function fromStored(s: StoredHarSession): HarSession {
     creatorVersion: s.creatorVersion,
     pages: s.pages,
     flows: s.flows,
+    flowCount: s.flowCount,
+    loaded: true,
+  };
+}
+
+/** Builds an unloaded stub from lightweight metadata (no `flows`/`pages` — see `listSessionMetas`). */
+function fromMeta(meta: Omit<StoredHarSession, "flows" | "pages">): HarSession {
+  return {
+    id: meta.id,
+    name: meta.name,
+    importedAt: meta.importedAt,
+    creatorName: meta.creatorName,
+    creatorVersion: meta.creatorVersion,
+    pages: [],
+    flows: [],
+    flowCount: meta.flowCount,
+    loaded: false,
   };
 }
 
@@ -171,6 +205,8 @@ export function importHarText(name: string, text: string): HarSession {
     creatorVersion: parsed.creatorVersion,
     pages: parsed.pages,
     flows: parsed.flows,
+    flowCount: parsed.flows.length,
+    loaded: true,
   };
   addSession(session);
   void putSession(toStored(session));
@@ -224,10 +260,19 @@ export function closeAllSessions(): void {
 }
 
 // ---- restore from IndexedDB ----
+//
+// Startup only hydrates lightweight metadata (id/name/importedAt/flowCount —
+// see listSessionMetas, which deliberately never touches `flows`/`pages`).
+// A HAR session's flows can run tens of MB; loading every persisted
+// session's full flows eagerly, even ones the user never opens, is exactly
+// the unbounded-startup-memory problem this stub approach avoids. Full data
+// is fetched lazily by `ensureSessionLoaded` the first time a session is
+// actually opened (see `setActiveSession`) or deep-linked to
+// (`loadSessionFromDb`).
 
 let harSessionsRestoreInitialized = false;
 
-/** Hydrates persisted sessions into memory. Idempotent — a second call is a no-op. */
+/** Adds a metadata-only stub (`loaded: false`) for every persisted session. Idempotent — a second call is a no-op. */
 export async function restoreSessionsFromDb(): Promise<void> {
   if (harSessionsRestoreInitialized) return;
   harSessionsRestoreInitialized = true;
@@ -235,20 +280,41 @@ export async function restoreSessionsFromDb(): Promise<void> {
   const metas = await listSessionMetas();
   for (const meta of metas) {
     if (sessionById.has(meta.id)) continue;
-    const stored = await getSession(meta.id);
-    if (stored) addSession(fromStored(stored));
+    addSession(fromMeta(meta));
   }
 }
 
-/** For a deep-linked window that only has a session id: returns the in-memory session if present, otherwise loads it from IndexedDB (adding it to memory, without re-persisting). Returns `undefined` if not found anywhere. */
-export async function loadSessionFromDb(id: string): Promise<HarSession | undefined> {
+/**
+ * Ensures `id`'s full `flows`/`pages` are loaded, fetching from IndexedDB
+ * and hydrating in place if the in-memory session is still an unloaded stub
+ * (or missing entirely). A no-op that resolves immediately if already
+ * loaded. Mutates an existing stub's fields directly (rather than replacing
+ * it in `sessionList`) so any reference already held elsewhere observes the
+ * hydration too, then bumps the list signal so `sessions()` subscribers
+ * re-render.
+ */
+async function ensureSessionLoaded(id: string): Promise<HarSession | undefined> {
   const existing = sessionById.get(id);
-  if (existing) return existing;
+  if (existing?.loaded) return existing;
 
   const stored = await getSession(id);
-  if (!stored) return undefined;
+  if (!stored) return existing;
+
+  if (existing) {
+    existing.flows = stored.flows;
+    existing.pages = stored.pages;
+    existing.flowCount = stored.flowCount;
+    existing.loaded = true;
+    setSessionList((list) => list.slice());
+    return existing;
+  }
 
   const session = fromStored(stored);
   addSession(session);
   return session;
+}
+
+/** For a deep-linked window that only has a session id: returns the in-memory session, loading/hydrating it from IndexedDB first if it's missing or still an unloaded stub. Returns `undefined` if not found anywhere. */
+export async function loadSessionFromDb(id: string): Promise<HarSession | undefined> {
+  return ensureSessionLoaded(id);
 }

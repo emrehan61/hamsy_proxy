@@ -36,7 +36,7 @@ export async function importHarFileList(files: FileList | File[]): Promise<void>
     try {
       const session = await importHarFile(file);
       lastSession = session;
-      pushToast({ level: "success", message: `Imported ${session.name} — ${session.flows.length} flows` });
+      pushToast({ level: "success", message: `Imported ${session.name} — ${session.flowCount} flows` });
     } catch (err) {
       pushToast({ level: "error", message: `Failed to import ${file.name}: ${err instanceof Error ? err.message : "unknown error"}` });
     }
@@ -144,7 +144,7 @@ const SessionTabs: Component = () => {
             >
               <Icon name="file" size={14} class="session-tabs__tab-icon" />
               <span class="session-tabs__tab-name">{session.name}</span>
-              <span class="session-tabs__tab-count mono">{session.flows.length}</span>
+              <span class="session-tabs__tab-count mono">{session.flowCount}</span>
               <button
                 type="button"
                 class="session-tabs__tab-close"

@@ -26,6 +26,10 @@ pub async fn export(
     State(state): State<ApiState>,
     Query(params): Query<HarQueryParams>,
 ) -> Result<Response, ApiError> {
+    // `flows().all()`/`.ids()` already take the store's read lock only long
+    // enough to clone the matching flows, releasing it before returning --
+    // so by the time `flows` lands here, the lock is already gone; this is
+    // just the owned snapshot.
     let flows = match params.ids.filter(|s| !s.is_empty()) {
         Some(ids_raw) => {
             let ids: Vec<Uuid> = ids_raw
@@ -37,8 +41,16 @@ pub async fn export(
         None => state.flows().all(),
     };
 
-    let har = export_har(&flows, state.version());
-    let body = serde_json::to_vec(&har)?;
+    // Building the HAR document and serializing it is CPU-bound and can be
+    // sizeable for a large session; run it on the blocking pool so it
+    // doesn't stall this async worker thread.
+    let version = state.version().to_string();
+    let body = tokio::task::spawn_blocking(move || {
+        let har = export_har(&flows, &version);
+        serde_json::to_vec(&har)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("HAR export task panicked: {e}")))??;
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -42,7 +42,7 @@ export function ingestFlows(incoming: FlowSummary[]): void {
   if (incoming.length === 0) return;
 
   const maxFlows = settings()?.maxFlows ?? DEFAULT_MAX_FLOWS;
-  let evictedCount = 0;
+  let evictedIds: string[] = [];
 
   setStore(
     produce((s) => {
@@ -62,8 +62,8 @@ export function ingestFlows(incoming: FlowSummary[]): void {
       }
 
       if (s.order.length > maxFlows) {
-        evictedCount = s.order.length - maxFlows;
-        const evictedIds = s.order.splice(0, evictedCount);
+        const evictedCount = s.order.length - maxFlows;
+        evictedIds = s.order.splice(0, evictedCount);
         for (const id of evictedIds) {
           delete s.byId[id];
           idToIndex.delete(id);
@@ -72,11 +72,20 @@ export function ingestFlows(incoming: FlowSummary[]): void {
     }),
   );
 
-  if (evictedCount > 0) {
+  if (evictedIds.length > 0) {
     // Eviction shifts every remaining index — cheaper to rebuild the map
     // once here than to keep per-row indices correct during the splice.
     idToIndex.clear();
     store.order.forEach((id, i) => idToIndex.set(id, i));
+
+    // Also drop the evicted ids from the full-flow detail cache — without
+    // this, detailStore (which holds full bodies) grows unbounded over a
+    // long session even though `order`/`byId` are capped at maxFlows.
+    setDetailStore(
+      produce((d) => {
+        for (const id of evictedIds) delete d[id];
+      }),
+    );
   }
 }
 
@@ -191,12 +200,23 @@ export function setFlowDetail(id: string, flow: Flow): void {
   setDetailStore(id, flow);
 }
 
+// Cap on the number of WS frames retained per flow. A chatty socket can push
+// frames indefinitely; without a cap `wsMessages` (and FlowDetail's
+// one-JsonTree-per-message rendering of it) would grow unbounded for the
+// lifetime of the flow. Keeps the most recent N — oldest frames are dropped
+// first.
+export const MAX_WS_MESSAGES_PER_FLOW = 500;
+
 function appendWsMessageToDetail(flowId: string, message: WsMessage): void {
   if (!detailStore[flowId]) return;
   setDetailStore(
     produce((d) => {
       const flow = d[flowId];
-      if (flow) flow.wsMessages.push(message);
+      if (!flow) return;
+      flow.wsMessages.push(message);
+      if (flow.wsMessages.length > MAX_WS_MESSAGES_PER_FLOW) {
+        flow.wsMessages.splice(0, flow.wsMessages.length - MAX_WS_MESSAGES_PER_FLOW);
+      }
     }),
   );
 }
