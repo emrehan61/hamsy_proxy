@@ -112,6 +112,16 @@ fn install_panic_restore_hook(data_dir: PathBuf) {
 }
 
 fn main() {
+    // Two rustls crypto backends end up in the dependency tree: `ring` (via
+    // hamsy-proxy, to avoid aws-lc-sys's cmake/nasm build requirement) and
+    // `aws-lc-rs` (transitively, via self_update's reqwest+rustls feature).
+    // With both present, rustls 0.23 can't auto-select a process-level
+    // CryptoProvider and panics on first TLS use. Install `ring` explicitly
+    // before any TLS happens. This only errs if a default was already
+    // installed, which is harmless, so the error is ignored rather than
+    // unwrapped.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 

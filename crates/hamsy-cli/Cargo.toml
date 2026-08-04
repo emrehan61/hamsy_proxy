@@ -36,6 +36,13 @@ self_update = { version = "0.44", default-features = false, features = [
     "archive-tar",
     "compression-flate2",
 ] }
+# self_update's reqwest+rustls feature pulls in rustls with aws-lc-rs, while
+# hamsy-proxy pulls in rustls with ring (see hamsy-proxy/Cargo.toml). With
+# both backends in the tree, rustls 0.23 can't auto-pick a process-level
+# CryptoProvider and panics on first TLS use. Depend on rustls here too,
+# pinned to the same version/feature set as hamsy-proxy (ring only), so we
+# can install ring as the default provider explicitly in main().
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 
 [features]
 embed-ui = ["hamsy-api/embed-ui"]
