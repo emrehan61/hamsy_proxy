@@ -1,12 +1,13 @@
 //! Global proxy settings, persisted as JSON in the hamsy-proxy data directory.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::rule::build_glob;
 
 /// Global, persisted proxy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,12 @@ pub struct Settings {
     pub max_flows: usize,
     /// Maximum body size (bytes) captured before truncation.
     pub max_body_bytes: usize,
+    /// Maximum total bytes (`requestSize + responseSize` summed across all
+    /// stored flows) retained in the in-memory store, enforced alongside
+    /// `max_flows` -- whichever bound is hit first evicts the oldest flow.
+    /// Guards against a small number of huge bodies (well under
+    /// `max_flows`) still ballooning memory use.
+    pub max_total_bytes: u64,
     /// Whether to MITM HTTPS traffic (vs. blind-tunnel it).
     pub intercept_https: bool,
     /// Host globs that are never MITM'd, even if `intercept_https` is true.
@@ -63,6 +70,7 @@ impl Default for Settings {
             bind_addr: "0.0.0.0".to_string(),
             max_flows: 10_000,
             max_body_bytes: 5 * 1024 * 1024,
+            max_total_bytes: 512 * 1024 * 1024,
             intercept_https: true,
             passthrough_hosts: Vec::new(),
             capture_include_hosts: Vec::new(),
@@ -95,24 +103,99 @@ impl Settings {
     /// Returns true if `host` should be captured: not excluded, and either
     /// the include list is empty or `host` matches an entry in it.
     pub fn host_captured(&self, host: &str) -> bool {
-        if glob_list_matches(&self.capture_exclude_hosts, host) {
-            return false;
-        }
-        self.capture_include_hosts.is_empty()
-            || glob_list_matches(&self.capture_include_hosts, host)
+        with_compiled_globs(self, |globs| {
+            if globs.exclude.is_match(host) {
+                return false;
+            }
+            self.capture_include_hosts.is_empty() || globs.include.is_match(host)
+        })
     }
 
     /// Returns true if `host` matches any passthrough glob (i.e. should
     /// never be MITM'd).
     pub fn host_passthrough(&self, host: &str) -> bool {
-        glob_list_matches(&self.passthrough_hosts, host)
+        with_compiled_globs(self, |globs| globs.passthrough.is_match(host))
     }
 }
 
-fn glob_list_matches(patterns: &[String], host: &str) -> bool {
-    patterns.iter().any(|pattern| match build_glob(pattern) {
-        Ok(glob) => glob.is_match(host),
-        Err(_) => false,
+/// Precompiled `GlobSet`s for the three host-glob lists on [`Settings`],
+/// plus the source pattern lists they were built from (so a later call can
+/// detect staleness cheaply -- comparing a couple of short string vectors is
+/// far cheaper than recompiling glob syntax).
+struct CompiledHostGlobs {
+    include_src: Vec<String>,
+    exclude_src: Vec<String>,
+    passthrough_src: Vec<String>,
+    include: GlobSet,
+    exclude: GlobSet,
+    passthrough: GlobSet,
+}
+
+impl CompiledHostGlobs {
+    fn compile(settings: &Settings) -> Self {
+        CompiledHostGlobs {
+            include_src: settings.capture_include_hosts.clone(),
+            exclude_src: settings.capture_exclude_hosts.clone(),
+            passthrough_src: settings.passthrough_hosts.clone(),
+            include: build_glob_set(&settings.capture_include_hosts),
+            exclude: build_glob_set(&settings.capture_exclude_hosts),
+            passthrough: build_glob_set(&settings.passthrough_hosts),
+        }
+    }
+
+    /// True if this compile still matches `settings`' current pattern lists.
+    fn is_fresh(&self, settings: &Settings) -> bool {
+        self.include_src == settings.capture_include_hosts
+            && self.exclude_src == settings.capture_exclude_hosts
+            && self.passthrough_src == settings.passthrough_hosts
+    }
+}
+
+/// Builds a `GlobSet` matching any of `patterns` (empty/all-invalid patterns
+/// yield a `GlobSet` that matches nothing), mirroring `glob_list_matches`'
+/// old per-call semantics: an individual pattern that fails to parse is
+/// silently skipped rather than aborting the whole set.
+fn build_glob_set(patterns: &[String]) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        if let Ok(glob) = Glob::new(pattern) {
+            builder.add(glob);
+        }
+    }
+    // Only fails if the compiled pattern set exceeds an internal regex size
+    // limit; falling back to "matches nothing" is safer than panicking on
+    // the hot path over a pathological (if unlikely) settings value.
+    builder.build().unwrap_or_else(|_| {
+        GlobSetBuilder::new()
+            .build()
+            .expect("an empty GlobSetBuilder always builds successfully")
+    })
+}
+
+thread_local! {
+    /// Per-thread cache of the last compiled [`CompiledHostGlobs`].
+    ///
+    /// Deliberately *not* a field on [`Settings`]: that would need interior
+    /// mutability (these are called from `&self` methods on the hot path)
+    /// behind a lock shared across every request, and `Settings` is a plain
+    /// data struct many tests construct with a full struct literal (`..
+    /// Settings::default()`), which can't reach a private field cross-crate.
+    /// A thread-local sidesteps both: each of Tokio's worker threads ends up
+    /// with its own compiled copy (a handful of small `GlobSet`s -- cheap),
+    /// rebuilt only when `is_fresh` notices the source pattern lists
+    /// changed, with no locking at all on the common case.
+    static HOST_GLOB_CACHE: RefCell<Option<CompiledHostGlobs>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` against the calling thread's cached [`CompiledHostGlobs`] for
+/// `settings`, recompiling first if the cache is empty or stale.
+fn with_compiled_globs<R>(settings: &Settings, f: impl FnOnce(&CompiledHostGlobs) -> R) -> R {
+    HOST_GLOB_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !cache.as_ref().is_some_and(|c| c.is_fresh(settings)) {
+            *cache = Some(CompiledHostGlobs::compile(settings));
+        }
+        f(cache.as_ref().expect("just populated above"))
     })
 }
 
@@ -157,6 +240,7 @@ mod tests {
         assert_eq!(s.bind_addr, "0.0.0.0");
         assert_eq!(s.max_flows, 10_000);
         assert_eq!(s.max_body_bytes, 5 * 1024 * 1024);
+        assert_eq!(s.max_total_bytes, 512 * 1024 * 1024);
         assert!(s.intercept_https);
         assert!(!s.manual_proxy);
         assert!(s.capture_websockets);
@@ -202,6 +286,21 @@ mod tests {
         let loaded = Settings::load(&path);
         assert_eq!(loaded.proxy_port, 12345);
         assert_eq!(loaded.theme, "light");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_settings_missing_max_total_bytes_defaults() {
+        // Simulates a pre-existing `~/.hamsy/settings.json` written before
+        // `maxTotalBytes` existed: the field is absent, and `#[serde(default)]`
+        // must fill it in rather than failing to parse.
+        let path = std::env::temp_dir().join(format!(
+            "hamsy-test-legacy-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, r#"{"proxyPort":9080,"uiPort":9081}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.max_total_bytes, Settings::default().max_total_bytes);
         let _ = fs::remove_file(&path);
     }
 

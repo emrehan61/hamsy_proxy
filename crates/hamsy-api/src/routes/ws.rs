@@ -139,7 +139,7 @@ async fn handle_socket(socket: WebSocket, state: ApiState) {
     if send_event(
         &mut sender,
         &ServerEvent::State {
-            state: state_snapshot(&state),
+            state: state_snapshot(&state).await,
         },
     )
     .await

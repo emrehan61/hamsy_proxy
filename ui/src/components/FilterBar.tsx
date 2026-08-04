@@ -3,11 +3,12 @@
 // toggle, and a host select.
 
 import type { Component } from "solid-js";
-import { For, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { ResourceType } from "../lib/types";
 import TextInput from "./TextInput";
 import Toggle from "./Toggle";
 import Select from "./Select";
+import Icon from "./Icon";
 
 export interface FilterBarProps {
   query: string;
@@ -23,6 +24,9 @@ export interface FilterBarProps {
   host: string;
   onHostChange: (v: string) => void;
   hosts: string[];
+  apps: string[];
+  selectedApps: string[];
+  onSelectedAppsChange: (v: string[]) => void;
   searchInputRef?: (el: HTMLInputElement) => void;
 }
 
@@ -46,6 +50,97 @@ const RESOURCE_TYPE_OPTIONS: ResourceType[] = [
 function toggleValue<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
+
+// `apps` is expected pre-sorted by the caller (FilterBar passes
+// `sortedApps()`) — this component must not re-sort.
+const AppFilterDropdown: Component<{
+  apps: string[];
+  selected: string[];
+  onChange: (v: string[]) => void;
+}> = (props) => {
+  const [open, setOpen] = createSignal(false);
+  let containerRef: HTMLDivElement | undefined;
+
+  const close = () => setOpen(false);
+
+  const onDocClick = (e: MouseEvent) => {
+    if (containerRef && !containerRef.contains(e.target as Node)) close();
+  };
+  const onDocKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") close();
+  };
+
+  onMount(() => {
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onDocKeyDown);
+    onCleanup(() => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onDocKeyDown);
+    });
+  });
+
+  const label = () => {
+    const n = props.selected.length;
+    if (n === 0) return "All apps";
+    if (n === 1) return props.selected[0];
+    return `${n} apps`;
+  };
+
+  return (
+    <div class="filter-bar__app-dropdown" ref={containerRef}>
+      <button
+        type="button"
+        class={`filter-bar__app-trigger${props.selected.length > 0 ? " filter-bar__app-trigger--active" : ""}`}
+        aria-haspopup="listbox"
+        aria-expanded={open()}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span class="filter-bar__app-trigger-label">{label()}</span>
+        <Icon name="chevron-down" size={14} class="filter-bar__app-trigger-icon" />
+      </button>
+      <Show when={open()}>
+        <div class="filter-bar__app-panel" role="listbox" aria-multiselectable="true" aria-label="Filter by app">
+          <button
+            type="button"
+            role="option"
+            aria-selected={props.selected.length === 0}
+            class={`filter-bar__app-option${props.selected.length === 0 ? " filter-bar__app-option--selected" : ""}`}
+            onClick={() => props.onChange([])}
+          >
+            <span class="filter-bar__app-option-check" aria-hidden="true">
+              <Show when={props.selected.length === 0}>
+                <Icon name="check" size={13} />
+              </Show>
+            </span>
+            <span class="filter-bar__app-option-label">All apps</span>
+          </button>
+          <For each={props.apps}>
+            {(app) => {
+              const checked = () => props.selected.includes(app);
+              return (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={checked()}
+                  class={`filter-bar__app-option${checked() ? " filter-bar__app-option--selected" : ""}`}
+                  title={app}
+                  onClick={() => props.onChange(toggleValue(props.selected, app))}
+                >
+                  <span class="filter-bar__app-option-check" aria-hidden="true">
+                    <Show when={checked()}>
+                      <Icon name="check" size={13} />
+                    </Show>
+                  </span>
+                  <span class="filter-bar__app-option-label">{app}</span>
+                </button>
+              );
+            }}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+};
 
 const FilterBar: Component<FilterBarProps> = (props) => {
   // Local echo of `query` so the input reflects every keystroke instantly;
@@ -75,6 +170,11 @@ const FilterBar: Component<FilterBarProps> = (props) => {
   });
 
   const hostOptions = () => [{ value: "", label: "All hosts" }, ...props.hosts.map((h) => ({ value: h, label: h }))];
+
+  // Sorted for stable chip ordering — `props.apps` grows incrementally as
+  // new apps are detected, so without sorting the row would reshuffle
+  // under the user's cursor every time an unseen app shows up.
+  const sortedApps = createMemo(() => [...props.apps].sort((a, b) => a.localeCompare(b)));
 
   return (
     <div class="filter-bar">
@@ -131,6 +231,10 @@ const FilterBar: Component<FilterBarProps> = (props) => {
           )}
         </For>
       </div>
+
+      <Show when={sortedApps().length > 0}>
+        <AppFilterDropdown apps={sortedApps()} selected={props.selectedApps} onChange={props.onSelectedAppsChange} />
+      </Show>
 
       <Toggle checked={props.onlyModified} onChange={props.onOnlyModifiedChange} label="Modified only" />
 

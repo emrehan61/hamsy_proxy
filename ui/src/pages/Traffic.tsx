@@ -19,6 +19,7 @@ import {
   getFlow as getFlowSummary,
   getFlowDetail,
   ingestFlows,
+  seenApps,
   seenHosts,
   selectFlow,
   selectedId,
@@ -111,6 +112,7 @@ const Traffic: Component = () => {
   const [resourceTypes, setResourceTypes] = createSignal<string[]>([]);
   const [onlyModified, setOnlyModified] = createSignal(false);
   const [host, setHost] = createSignal("");
+  const [apps, setApps] = createSignal<string[]>([]);
 
   const onQueryChange = (v: string) => setQuery(v);
 
@@ -137,6 +139,7 @@ const Traffic: Component = () => {
       resourceTypes: resourceTypes(),
       onlyModified: onlyModified(),
       host: host(),
+      apps: apps(),
     }),
   );
 
@@ -447,6 +450,9 @@ const Traffic: Component = () => {
                     host={host()}
                     onHostChange={setHost}
                     hosts={seenHosts()}
+                    apps={seenApps()}
+                    selectedApps={apps()}
+                    onSelectedAppsChange={setApps}
                     searchInputRef={handleSearchInputRef}
                   />
                 </Show>

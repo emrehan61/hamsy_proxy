@@ -2,8 +2,8 @@
 // simple substring search that auto-expands matching branches.
 
 import type { Component, JSX } from "solid-js";
-import { For, Show, createMemo, createSignal } from "solid-js";
-import { highlightJson } from "../lib/format";
+import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import { LARGE_TEXT_THRESHOLD_BYTES, highlightJson } from "../lib/format";
 import { pushToast } from "../stores/ui";
 import Icon from "./Icon";
 import TextInput from "./TextInput";
@@ -35,6 +35,12 @@ function kindOf(value: unknown): JsonValueKind {
 // that a poor fit here, and a few hundred eagerly-rendered DOM nodes per
 // level is cheap in practice.
 const MAX_VISIBLE_ENTRIES = 200;
+
+// Search debounce: JsonNode re-`JSON.stringify`s each node's subtree to test
+// for a match (O(size × depth)) — running that on every keystroke is what
+// makes typing feel laggy on large payloads. Mirrors FilterBar.tsx's
+// local-echo-plus-debounce approach.
+const SEARCH_DEBOUNCE_MS = 150;
 
 function matchesSearch(text: string, query: string): boolean {
   return text.toLowerCase().includes(query.toLowerCase());
@@ -183,7 +189,26 @@ const JsonNode: Component<JsonNodeProps> = (props) => {
 export const JsonTree: Component<JsonTreeProps> = (props) => {
   const defaultDepth = () => props.defaultDepth ?? 2;
   const [mode, setMode] = createSignal<"pretty" | "raw">("pretty");
+
+  // `search` (debounced) is what actually drives JsonNode's per-subtree
+  // matching/auto-expand; `searchInput` is a local echo so the box itself
+  // still updates every keystroke instantly. Same split as FilterBar.tsx's
+  // localQuery/query.
+  const [searchInput, setSearchInput] = createSignal("");
   const [search, setSearch] = createSignal("");
+
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  const handleSearchInput = (v: string) => {
+    setSearchInput(v);
+    if (searchDebounceTimer !== undefined) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      searchDebounceTimer = undefined;
+      setSearch(v);
+    }, SEARCH_DEBOUNCE_MS);
+  };
+  onCleanup(() => {
+    if (searchDebounceTimer !== undefined) clearTimeout(searchDebounceTimer);
+  });
 
   const rawText = createMemo(() => {
     try {
@@ -193,7 +218,12 @@ export const JsonTree: Component<JsonTreeProps> = (props) => {
     }
   });
 
-  const highlighted = createMemo(() => highlightJson(rawText()));
+  // Above the size threshold, skip the highlighter (escapeHtml + a regex
+  // pass over the whole string, then an innerHTML parse of the result) —
+  // that's what freezes the tab for multi-MB JSON. Raw mode falls back to
+  // plain, still-escaped text (JSX text children escape by default).
+  const isLargeRaw = createMemo(() => rawText().length > LARGE_TEXT_THRESHOLD_BYTES);
+  const highlighted = createMemo(() => (isLargeRaw() ? "" : highlightJson(rawText())));
 
   const copyAll = async () => {
     try {
@@ -223,14 +253,24 @@ export const JsonTree: Component<JsonTreeProps> = (props) => {
             Raw
           </button>
         </div>
-        <TextInput value={search()} onInput={setSearch} placeholder="Search…" icon="search" class="jsontree__search" />
+        <TextInput
+          value={searchInput()}
+          onInput={handleSearchInput}
+          placeholder="Search…"
+          icon="search"
+          class="jsontree__search"
+        />
         <Button variant="ghost" size="sm" icon="copy" onClick={copyAll}>
           Copy
         </Button>
       </div>
       <Show
         when={mode() === "pretty"}
-        fallback={<pre class="jsontree__raw mono" innerHTML={highlighted()} />}
+        fallback={
+          <Show when={!isLargeRaw()} fallback={<pre class="jsontree__raw mono">{rawText()}</pre>}>
+            <pre class="jsontree__raw mono" innerHTML={highlighted()} />
+          </Show>
+        }
       >
         <div class="jsontree__root">
           <JsonNode value={props.data} depth={0} defaultDepth={defaultDepth()} search={search} />

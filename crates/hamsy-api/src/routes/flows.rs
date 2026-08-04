@@ -32,6 +32,7 @@ pub struct FlowsQueryParams {
     #[serde(rename = "resourceTypes")]
     resource_types: Option<String>,
     host: Option<String>,
+    app: Option<String>,
     #[serde(rename = "onlyModified")]
     only_modified: Option<String>,
 }
@@ -89,6 +90,7 @@ fn build_query(params: FlowsQueryParams) -> FlowQuery {
         status_class: params.status_class,
         resource_types,
         host: params.host.filter(|s| !s.is_empty()),
+        app: params.app.filter(|s| !s.is_empty()),
         only_modified: params
             .only_modified
             .as_deref()

@@ -233,6 +233,11 @@ fn export_entry(flow: &Flow) -> Value {
         },
         "serverIPAddress": server_ip,
         "connection": connection,
+        // Custom (non-HAR-spec) extension: the resolved originating app, if
+        // any. Kept as a top-level `_app` field (rather than nested inside
+        // `_hamsy`) per the leading-underscore convention HAR tools use for
+        // their own extension fields.
+        "_app": flow.summary.app,
         "_hamsy": {
             "matchedRules": flow.summary.matched_rules,
             "modified": flow.summary.modified,
@@ -433,6 +438,10 @@ fn parse_entry(entry: &Value, seq: u64) -> Option<Flow> {
     if let Some(rt) = resource_type {
         flow.summary.resource_type = rt;
     }
+    flow.summary.app = entry
+        .get("_app")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     Some(flow)
 }
 
@@ -503,6 +512,7 @@ mod tests {
         flow.mark_complete(response, 1_700_000_000_500);
         flow.summary.matched_rules = vec!["rule-1".to_string()];
         flow.summary.modified = true;
+        flow.summary.app = Some("curl".to_string());
         flow
     }
 
@@ -535,11 +545,22 @@ mod tests {
             round_tripped.summary.matched_rules,
             vec!["rule-1".to_string()]
         );
+        assert_eq!(round_tripped.summary.app.as_deref(), Some("curl"));
 
         let req = round_tripped.request.as_ref().unwrap();
         assert_eq!(req.body.data, "hello");
         let resp = round_tripped.response.as_ref().unwrap();
         assert_eq!(resp.body.data, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn round_trip_with_no_resolved_app_stays_none() {
+        let mut flow = sample_flow();
+        flow.summary.app = None;
+        let har = export_har(std::slice::from_ref(&flow), "0.1.0");
+        assert!(har["log"]["entries"][0]["_app"].is_null());
+        let imported = import_har(&har).unwrap();
+        assert_eq!(imported[0].summary.app, None);
     }
 
     #[test]

@@ -96,6 +96,16 @@ export function methodColor(method: string): string {
   }
 }
 
+/**
+ * Size guard shared by BodyViewer/FlowDetail (raw text bodies) and JsonTree
+ * (stringified JSON). Above this many characters, callers should skip
+ * expensive O(size) work — full-string highlighting, dumping the whole
+ * string into the DOM — since either can freeze the main thread for
+ * multi-MB payloads. Measured in JS string length, not exact UTF-8 bytes;
+ * fine for a rendering guard.
+ */
+export const LARGE_TEXT_THRESHOLD_BYTES = 256 * 1024; // 256 KB
+
 export function prettyJson(text: string): string {
   try {
     return JSON.stringify(JSON.parse(text), null, 2);

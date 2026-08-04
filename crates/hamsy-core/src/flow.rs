@@ -315,6 +315,11 @@ pub struct FlowSummary {
     pub response_size: u64,
     /// Address of the client that issued the request.
     pub client_addr: String,
+    /// Display name of the local application that issued the request
+    /// (e.g. `"Google Chrome"`, `"Safari"`, `"curl"`), when it could be
+    /// resolved. `None` for remote/LAN clients, replayed flows, or when
+    /// resolution otherwise failed.
+    pub app: Option<String>,
     /// IDs of rules that matched this flow.
     pub matched_rules: Vec<String>,
     /// Whether any rule modified this flow's request or response.
@@ -397,6 +402,7 @@ impl Flow {
             request_size,
             response_size: 0,
             client_addr: client_addr.into(),
+            app: None,
             matched_rules: Vec::new(),
             modified: false,
             error: None,
