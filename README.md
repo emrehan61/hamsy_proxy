@@ -21,6 +21,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 - [What it does](#what-it-does)
 - [Install / build](#install--build)
+- [Cutting a release](#cutting-a-release)
 - [Quick start](#quick-start)
 - [CLI reference](#cli-reference)
 - [Web UI tour](#web-ui-tour)
@@ -78,6 +79,16 @@ cd ui && pnpm dev
 ```
 
 This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to `http://127.0.0.1:9081` (hamsy-proxy's default UI/API port), per `ui/vite.config.ts`.
+
+## Cutting a release
+
+```
+./release.sh -s   # patch: X.Y.Z -> X.Y.(Z+1)
+./release.sh -m   # minor: X.Y.Z -> X.(Y+1).0
+./release.sh -b   # major: X.Y.Z -> (X+1).0.0
+```
+
+Bumps the `[workspace.package]` version in the root `Cargo.toml`, refreshes `Cargo.lock`, commits (`Release vX.Y.Z`), tags (`vX.Y.Z`), and pushes — from `master` only, on a clean, up-to-date tree. The pushed tag triggers `.github/workflows/release.yml`, which builds the binaries for all platforms and publishes them as a GitHub release; `hamsy update` compares its own version against the latest release and picks up the new binary from there. `./release.sh --dry-run` previews the version bump and every command without changing anything; `--no-push` stops after the local commit/tag; `--yes` skips the confirmation prompt. `./release.sh --help` for the full flag list.
 
 ## Quick start
 
