@@ -604,7 +604,8 @@ mod imp {
         .map_err(|_| {
             "gsettings not found; set http_proxy/https_proxy environment variables manually"
                 .to_string()
-        })
+        })?;
+        Ok(())
     }
 
     /// Reads a single `gsettings` value, returning `None` on any failure
