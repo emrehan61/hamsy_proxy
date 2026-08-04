@@ -27,6 +27,15 @@ async-trait = "0.1"
 # Pinned to match hamsy-api's axum version, since we call `axum::serve`
 # directly on the `Router` it builds.
 axum = { version = "0.8" }
+# `hamsy update`. Default features pull in reqwest+native-tls; swap to
+# rustls (portable, no system OpenSSL/native-tls dependency) and only the
+# archive/compression support the release workflow's `.tar.gz` assets need.
+self_update = { version = "0.44", default-features = false, features = [
+    "reqwest",
+    "rustls",
+    "archive-tar",
+    "compression-flate2",
+] }
 
 [features]
 embed-ui = ["hamsy-api/embed-ui"]
