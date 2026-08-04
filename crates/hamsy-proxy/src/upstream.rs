@@ -53,6 +53,10 @@ const OVERALL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long an idle pooled connection is kept before it's discarded instead
 /// of being reused.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Maximum idle connections retained per pool key (destination + protocol).
+/// Bounds one very chatty host's bucket from growing without limit between
+/// sweeps; excess connections are dropped oldest-first.
+const MAX_IDLE_PER_KEY: usize = 8;
 
 /// Which HTTP version a [`Sender`] (and thus a pooled connection) speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -144,15 +148,44 @@ impl Pool {
     }
 
     /// Returns `sender` to the pool under `key`, unless it's already closed.
+    ///
+    /// Before inserting, sweeps *every* bucket in the pool (not just `key`'s)
+    /// for connections idle past `IDLE_TIMEOUT`, dropping them. This is what
+    /// reclaims connections to a host that's stopped being revisited: without
+    /// it, `checkout`'s lazy expiry (which only ever looks at the bucket it's
+    /// asked for) never runs for a key nothing checks out again, leaking that
+    /// socket, its background driver task (see `handshake`), and the memory
+    /// both hold for as long as the process lives. Dropping a `PooledConn`
+    /// drops its `Sender`, which is what lets the driver task see the
+    /// connection is done and exit -- no separate shutdown call needed.
+    /// Also caps each bucket at `MAX_IDLE_PER_KEY`, oldest-first, so one
+    /// frequently-revisited host can't grow its bucket without bound between
+    /// sweeps.
     fn checkin(&self, key: PoolKey, sender: Sender) {
         if sender.is_closed() {
             return;
         }
         let mut conns = self.conns.lock();
-        conns.entry(key).or_default().push(PooledConn {
-            sender,
-            idle_since: Instant::now(),
+        let now = Instant::now();
+        conns.retain(|_, bucket| {
+            bucket.retain(|pooled| {
+                !pooled.sender.is_closed()
+                    && now.saturating_duration_since(pooled.idle_since) <= IDLE_TIMEOUT
+            });
+            !bucket.is_empty()
         });
+
+        let bucket = conns.entry(key).or_default();
+        bucket.push(PooledConn {
+            sender,
+            idle_since: now,
+        });
+        if bucket.len() > MAX_IDLE_PER_KEY {
+            let excess = bucket.len() - MAX_IDLE_PER_KEY;
+            // `checkout` pops from the back (most recently returned first),
+            // so the front of the vec is the oldest-inserted; drop those.
+            bucket.drain(0..excess);
+        }
     }
 }
 

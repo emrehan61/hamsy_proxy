@@ -4,6 +4,12 @@
 // below is fresh per HAR tab; only flow selection persists across a remount
 // between two HAR tabs, because it lives in the harSessions store's
 // `harSelectedFlowId`/`selectHarFlow`, not local component state.
+//
+// A session's flows are lazy-loaded (see stores/harSessions.ts's
+// `ensureSessionLoaded`), so `session()` can resolve to an unloaded stub
+// (`loaded: false`, empty `flows`) briefly after this view mounts, before
+// the real data arrives from IndexedDB — `loadedSession` below gates on
+// that so the flows-dependent memos never run against an empty stub.
 
 import type { Component } from "solid-js";
 import { Show, createMemo, createSignal } from "solid-js";
@@ -29,6 +35,10 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
   // mount — the deep-linked-window case where Traffic.tsx calls
   // setActiveSession(id) optimistically before loadSessionFromDb() resolves.
   const session = createMemo(() => sessions().find((s) => s.id === props.sessionId));
+  const loadedSession = createMemo(() => {
+    const s = session();
+    return s && s.loaded ? s : undefined;
+  });
 
   // ---- local filter state (same shape as Traffic.tsx's) ----
   const [query, setQuery] = createSignal("");
@@ -37,9 +47,10 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
   const [resourceTypes, setResourceTypes] = createSignal<string[]>([]);
   const [onlyModified, setOnlyModified] = createSignal(false);
   const [host, setHost] = createSignal("");
+  const [apps, setApps] = createSignal<string[]>([]);
 
   const filteredFlows = createMemo<Flow[]>(() => {
-    const s = session();
+    const s = loadedSession();
     if (!s) return [];
     return filterFlows(s.flows, {
       query: query(),
@@ -48,6 +59,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
       resourceTypes: resourceTypes(),
       onlyModified: onlyModified(),
       host: host(),
+      apps: apps(),
     });
   });
 
@@ -57,21 +69,34 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
     statusClasses().length > 0 ||
     resourceTypes().length > 0 ||
     onlyModified() ||
-    host() !== "";
+    host() !== "" ||
+    apps().length > 0;
 
   // Unique hosts across the session's flows, for the FilterBar host <Select>.
   const hosts = createMemo<string[]>(() => {
-    const s = session();
+    const s = loadedSession();
     if (!s) return [];
     const seen = new Set<string>();
     for (const flow of s.flows) seen.add(flow.host);
     return Array.from(seen).sort();
   });
 
+  // Unique apps across the session's flows, for the FilterBar app chips.
+  // Imported HAR flows have no live-ingest "seen apps" set (that's the live
+  // Traffic view's stores/flows.ts pattern), so this view derives its own
+  // list straight from the already-loaded, static Flow[] instead.
+  const sessionApps = createMemo<string[]>(() => {
+    const s = loadedSession();
+    if (!s) return [];
+    const seen = new Set<string>();
+    for (const flow of s.flows) seen.add(flow.app ?? "Unknown");
+    return Array.from(seen).sort();
+  });
+
   // O(1) selected-flow lookup, mirroring harSessions.ts's own
   // plain-map-beside-reactive-list pattern.
   const flowById = createMemo(() => {
-    const s = session();
+    const s = loadedSession();
     const map = new Map<string, Flow>();
     if (s) for (const f of s.flows) map.set(f.id, f);
     return map;
@@ -86,7 +111,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
   // requires flow ids the backend knows about, which imported HAR flows
   // never have).
   const onExportHar = () => {
-    const s = session();
+    const s = loadedSession();
     if (!s) return;
     const filtered = filtersActive();
     const flows = filtered ? filteredFlows() : s.flows;
@@ -104,7 +129,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
   const onCloseSession = () => closeSession(props.sessionId);
 
   return (
-    <Show when={session()} fallback={<div class="har-session-view__loading">Loading session…</div>}>
+    <Show when={loadedSession()} fallback={<div class="har-session-view__loading">Loading session…</div>}>
       {(s) => (
         <div class="har-session-view">
           <div class="har-session-view__toolbar">
@@ -150,6 +175,9 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
                       host={host()}
                       onHostChange={setHost}
                       hosts={hosts()}
+                      apps={sessionApps()}
+                      selectedApps={apps()}
+                      onSelectedAppsChange={setApps}
                     />
                     <div class="har-session-view__table">
                       <Show

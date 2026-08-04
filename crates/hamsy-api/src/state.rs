@@ -57,7 +57,11 @@ impl ApiState {
         cert_hook: Arc<dyn CertHook>,
         version: impl Into<String>,
     ) -> Self {
-        flows.set_capacity(settings.read().max_flows.max(1));
+        {
+            let settings = settings.read();
+            flows.set_capacity(settings.max_flows.max(1));
+            flows.set_max_total_bytes(settings.max_total_bytes);
+        }
         ApiState {
             inner: Arc::new(Inner {
                 flows,
@@ -136,6 +140,9 @@ impl ApiState {
     pub fn save_settings(&self, settings: Settings) -> hamsy_core::Result<()> {
         settings.save(&self.inner.settings_path)?;
         self.inner.flows.set_capacity(settings.max_flows.max(1));
+        self.inner
+            .flows
+            .set_max_total_bytes(settings.max_total_bytes);
         *self.inner.settings.write() = settings;
         Ok(())
     }

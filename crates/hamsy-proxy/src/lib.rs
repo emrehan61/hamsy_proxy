@@ -18,8 +18,10 @@
 //! - [`tee`]: capped body-capture body wrappers and a token-bucket throttle.
 //! - [`websocket`]: WebSocket interception and message recording.
 //! - [`replay`]: replaying a captured/edited request through the pipeline.
+//! - [`appid`]: resolving a client connection to its originating macOS app.
 //! - [`error`]: [`ProxyError`], this crate's error type.
 
+pub mod appid;
 pub mod ca;
 pub mod config;
 pub mod connect;

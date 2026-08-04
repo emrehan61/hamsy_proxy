@@ -551,6 +551,7 @@ function parseEntry(entryValue: unknown, index: number): Flow | { skippedReason:
     error,
     websocket,
     fromCache: deriveFromCache(entry),
+    app: null,
     request: { method, url: urlStr, httpVersion, headers: reqHeaders, body: reqBody, query },
     response: hasResponse ? { status, statusText, httpVersion: respHttpVersion, headers: respHeaders, body: respBody } : null,
     originalRequest: null,

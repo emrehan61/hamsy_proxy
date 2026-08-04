@@ -31,3 +31,6 @@ mime = "0.3"
 percent-encoding = "2"
 url = "2"
 tokio-stream = "0.1"
+
+# Additional dependencies required by hamsy-proxy.
+libproc = "0.14.11"

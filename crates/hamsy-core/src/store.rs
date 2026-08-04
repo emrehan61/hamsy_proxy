@@ -24,6 +24,9 @@ pub struct FlowQuery {
     pub resource_types: Vec<ResourceType>,
     /// Restrict to flows whose host equals this value (case-insensitive).
     pub host: Option<String>,
+    /// Restrict to flows whose originating app equals this value
+    /// (case-insensitive). Flows with no resolved app never match.
+    pub app: Option<String>,
     /// Restrict to flows that were modified by a rule.
     pub only_modified: bool,
 }
@@ -34,11 +37,18 @@ struct Inner {
     capacity: usize,
     next_seq: u64,
     total_bytes: u64,
+    /// Byte budget enforced alongside `capacity`; see [`FlowStore::set_max_total_bytes`].
+    max_total_bytes: u64,
 }
 
 impl Inner {
+    /// Evicts oldest-first until BOTH the flow count is within `capacity`
+    /// and `total_bytes` is within `max_total_bytes`. A single oversized
+    /// flow can still push `total_bytes` over budget by itself (there's
+    /// nothing smaller left to evict for it), but the ring buffer never
+    /// holds more than it needs to once older flows are gone.
     fn evict_if_needed(&mut self) {
-        while self.order.len() > self.capacity {
+        while self.order.len() > self.capacity || self.total_bytes > self.max_total_bytes {
             if let Some(oldest) = self.order.pop_front() {
                 if let Some(flow) = self.flows.remove(&oldest) {
                     self.total_bytes = self
@@ -72,6 +82,7 @@ impl FlowStore {
                 capacity: capacity.max(1),
                 next_seq: 1,
                 total_bytes: 0,
+                max_total_bytes: u64::MAX,
             }),
         }
     }
@@ -129,6 +140,7 @@ impl FlowStore {
         let inner = self.inner.read();
         let search = query.search.as_ref().map(|s| s.to_ascii_lowercase());
         let host_filter = query.host.as_ref().map(|h| h.to_ascii_lowercase());
+        let app_filter = query.app.as_ref().map(|a| a.to_ascii_lowercase());
 
         let mut results: Vec<FlowSummary> = inner
             .order
@@ -158,6 +170,14 @@ impl FlowStore {
                 host_filter
                     .as_ref()
                     .is_none_or(|h| flow.summary.host.to_ascii_lowercase() == *h)
+            })
+            .filter(|flow| {
+                app_filter.as_ref().is_none_or(|a| {
+                    flow.summary
+                        .app
+                        .as_ref()
+                        .is_some_and(|flow_app| flow_app.to_ascii_lowercase() == *a)
+                })
             })
             .filter(|flow| !query.only_modified || flow.summary.modified)
             .filter(|flow| {
@@ -221,6 +241,16 @@ impl FlowStore {
     pub fn set_capacity(&self, cap: usize) {
         let mut inner = self.inner.write();
         inner.capacity = cap.max(1);
+        inner.evict_if_needed();
+    }
+
+    /// Changes the maximum total bytes (`requestSize + responseSize` summed
+    /// across all stored flows) the store may hold, evicting the oldest
+    /// flows immediately if the store is currently over the new budget. See
+    /// [`Settings::max_total_bytes`](crate::Settings::max_total_bytes).
+    pub fn set_max_total_bytes(&self, max: u64) {
+        let mut inner = self.inner.write();
+        inner.max_total_bytes = max;
         inner.evict_if_needed();
     }
 
@@ -361,6 +391,38 @@ mod tests {
     }
 
     #[test]
+    fn list_filters_by_app_case_insensitively() {
+        let store = FlowStore::new(10);
+        let mut curl_flow = make_flow(1, "GET", "a.com", Some(200), false);
+        curl_flow.summary.app = Some("curl".to_string());
+        let mut chrome_flow = make_flow(2, "GET", "b.com", Some(200), false);
+        chrome_flow.summary.app = Some("Google Chrome".to_string());
+        // Simulates an unresolved app (e.g. a remote client, or a replay).
+        let unresolved_flow = make_flow(3, "GET", "c.com", Some(200), false);
+        store.insert(curl_flow);
+        store.insert(chrome_flow);
+        store.insert(unresolved_flow);
+
+        let by_app = store.list(&FlowQuery {
+            app: Some("google chrome".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(by_app.len(), 1);
+        assert_eq!(by_app[0].host, "b.com");
+
+        // A flow with no resolved app never matches an app filter, even one
+        // that (oddly) filters for an empty string.
+        let empty_filter = store.list(&FlowQuery {
+            app: Some(String::new()),
+            ..Default::default()
+        });
+        assert!(empty_filter.iter().all(|f| f.host != "c.com"));
+
+        let no_filter = store.list(&FlowQuery::default());
+        assert_eq!(no_filter.len(), 3);
+    }
+
+    #[test]
     fn list_search_matches_header_and_url() {
         let store = FlowStore::new(10);
         store.insert(make_flow(1, "GET", "example.com", Some(200), false));
@@ -429,5 +491,35 @@ mod tests {
         }
         store.set_capacity(2);
         assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn set_max_total_bytes_evicts_immediately() {
+        // Each flow accounts for 30 bytes (request_size 10 + response_size
+        // 20; see `make_flow`), well under the ring-buffer capacity of 10.
+        let store = FlowStore::new(10);
+        for i in 1..=5u64 {
+            store.insert(make_flow(i, "GET", "a.com", Some(200), false));
+        }
+        assert_eq!(store.len(), 5);
+        assert_eq!(store.total_bytes(), 150);
+
+        // A budget of 100 bytes only leaves room for the newest 3 flows
+        // (3 * 30 = 90 <= 100; a 4th would push it to 120).
+        store.set_max_total_bytes(100);
+        assert_eq!(store.len(), 3);
+        assert!(store.total_bytes() <= 100);
+    }
+
+    #[test]
+    fn byte_budget_evicts_oldest_on_insert() {
+        let store = FlowStore::new(10);
+        store.set_max_total_bytes(65);
+        for i in 1..=5u64 {
+            store.insert(make_flow(i, "GET", "a.com", Some(200), false));
+        }
+        // 65 / 30 = 2 flows fit; capacity (10) never binds here.
+        assert_eq!(store.len(), 2);
+        assert!(store.total_bytes() <= 65);
     }
 }

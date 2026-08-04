@@ -38,6 +38,9 @@ pub async fn replay(ctx: &ProxyContext, req: hamsy_core::RequestRecord) -> Resul
         authority: None,
         tls: None,
         mirror_h2: false,
+        // Replays have no real client connection to resolve an app from;
+        // the resulting flow's `app` stays `None`.
+        app: None,
     };
 
     let flow_id = Uuid::new_v4();

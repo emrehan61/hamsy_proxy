@@ -7,66 +7,110 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use crate::error::{CoreError, Result};
 use crate::flow::{BodyKind, BodyPayload};
 
+/// Ceiling on decompressed output size, applied per decode step, independent
+/// of any caller-supplied display truncation limit. Without this, a tiny,
+/// highly-compressible body (a "decompression bomb") would make every codec
+/// below `read_to_end`/`decode_all` its way to gigabytes of allocated memory
+/// before `to_payload`'s own (much smaller) `max_bytes` truncation ever gets
+/// a chance to run. 128 MiB is comfortably above any legitimate captured
+/// body while still bounding worst-case memory use per decode.
+const MAX_DECODE_OUTPUT: usize = 128 * 1024 * 1024;
+
 /// Decodes an HTTP body according to its `Content-Encoding` header value.
 ///
 /// `content_encoding` may be a comma-separated list (e.g. `"gzip, br"`), in
 /// which case each token is applied in order. An unrecognized token is
 /// treated as a no-op rather than an error, since we would rather show the
 /// (possibly still-encoded) bytes than fail the whole capture.
-pub fn decode_body(bytes: &[u8], content_encoding: Option<&str>) -> Result<Vec<u8>> {
+///
+/// Output is capped at `max_output` bytes (see [`MAX_DECODE_OUTPUT`] for the
+/// cap `to_payload` uses); the second return value is `true` if decoding hit
+/// that cap, meaning the returned bytes are a truncated prefix rather than
+/// the complete decoded body.
+pub fn decode_body(
+    bytes: &[u8],
+    content_encoding: Option<&str>,
+    max_output: usize,
+) -> Result<(Vec<u8>, bool)> {
     let Some(encoding) = content_encoding else {
-        return Ok(bytes.to_vec());
+        return Ok((bytes.to_vec(), false));
     };
     let mut data = bytes.to_vec();
+    let mut truncated = false;
     for token in encoding.split(',') {
         let token = token.trim().to_ascii_lowercase();
         if token.is_empty() {
             continue;
         }
-        data = decode_single(&data, &token)?;
+        let (decoded, hit_cap) = decode_single(&data, &token, max_output)?;
+        data = decoded;
+        // A later stage would just be decoding a truncated (and thus almost
+        // certainly invalid) compressed stream; stop rather than compound
+        // that into a confusing codec error.
+        if hit_cap {
+            truncated = true;
+            break;
+        }
     }
-    Ok(data)
+    Ok((data, truncated))
 }
 
-/// Decodes a single content-coding token against `bytes`.
-fn decode_single(bytes: &[u8], encoding: &str) -> Result<Vec<u8>> {
+/// Decodes a single content-coding token against `bytes`, stopping at
+/// `max_output` bytes of decompressed output.
+fn decode_single(bytes: &[u8], encoding: &str, max_output: usize) -> Result<(Vec<u8>, bool)> {
     match encoding {
         "gzip" | "x-gzip" => {
-            let mut decoder = flate2::read::GzDecoder::new(bytes);
-            let mut out = Vec::new();
-            decoder
-                .read_to_end(&mut out)
-                .map_err(|e| CoreError::Codec(format!("gzip decode failed: {e}")))?;
-            Ok(out)
+            let decoder = flate2::read::GzDecoder::new(bytes);
+            read_capped(decoder, max_output, "gzip")
         }
         "deflate" => {
             // The `deflate` content-coding is ambiguous in the wild: most
             // servers send a zlib-wrapped stream, some send raw DEFLATE.
             // Try zlib first and fall back to raw DEFLATE.
-            let mut out = Vec::new();
-            let mut zlib = flate2::read::ZlibDecoder::new(bytes);
-            if zlib.read_to_end(&mut out).is_ok() && !out.is_empty() {
-                return Ok(out);
+            let zlib = flate2::read::ZlibDecoder::new(bytes);
+            if let Ok((out, hit_cap)) = read_capped(zlib, max_output, "deflate") {
+                if !out.is_empty() {
+                    return Ok((out, hit_cap));
+                }
             }
-            out.clear();
-            let mut raw = flate2::read::DeflateDecoder::new(bytes);
-            raw.read_to_end(&mut out)
-                .map_err(|e| CoreError::Codec(format!("deflate decode failed: {e}")))?;
-            Ok(out)
+            let raw = flate2::read::DeflateDecoder::new(bytes);
+            read_capped(raw, max_output, "deflate")
         }
         "br" => {
-            let mut out = Vec::new();
-            let mut decompressor = brotli::Decompressor::new(bytes, 4096);
-            decompressor
-                .read_to_end(&mut out)
-                .map_err(|e| CoreError::Codec(format!("brotli decode failed: {e}")))?;
-            Ok(out)
+            let decompressor = brotli::Decompressor::new(bytes, 4096);
+            read_capped(decompressor, max_output, "brotli")
         }
-        "zstd" => zstd::decode_all(bytes)
-            .map_err(|e| CoreError::Codec(format!("zstd decode failed: {e}"))),
-        "identity" => Ok(bytes.to_vec()),
+        "zstd" => {
+            let decoder = zstd::stream::read::Decoder::new(bytes)
+                .map_err(|e| CoreError::Codec(format!("zstd decode failed: {e}")))?;
+            read_capped(decoder, max_output, "zstd")
+        }
+        "identity" => Ok((bytes.to_vec(), false)),
         // Unknown coding: pass through unchanged rather than erroring.
-        _ => Ok(bytes.to_vec()),
+        _ => Ok((bytes.to_vec(), false)),
+    }
+}
+
+/// Reads `reader` to end, but stops after `max_output` bytes instead of
+/// growing the output buffer without bound -- this is what actually bounds
+/// decompression-bomb memory use, using [`Read::take`] so the decoder itself
+/// never produces more than `max_output + 1` bytes into memory. The `bool`
+/// is `true` if the cap was hit (there may be more undecoded data left in
+/// `reader` that was never read).
+fn read_capped<R: Read>(reader: R, max_output: usize, codec: &str) -> Result<(Vec<u8>, bool)> {
+    // Ask for one byte past the cap so hitting it exactly can be told apart
+    // from output that's genuinely exactly `max_output` bytes long.
+    let limit = (max_output as u64).saturating_add(1);
+    let mut out = Vec::new();
+    reader
+        .take(limit)
+        .read_to_end(&mut out)
+        .map_err(|e| CoreError::Codec(format!("{codec} decode failed: {e}")))?;
+    if out.len() > max_output {
+        out.truncate(max_output);
+        Ok((out, true))
+    } else {
+        Ok((out, false))
     }
 }
 
@@ -165,15 +209,18 @@ pub fn is_textual_mime(mime: &str) -> bool {
 /// The decoded content is classified as text when it is valid UTF-8 *and*
 /// either the MIME type is textual or the bytes contain no binary control
 /// characters; otherwise it is stored as base64. Content longer than
-/// `max_bytes` (post-decode) is truncated, with `size` always reporting the
-/// full decoded length.
+/// `max_bytes` (post-decode) is truncated, with `size` reporting the decoded
+/// length -- capped at [`MAX_DECODE_OUTPUT`] for a decompression bomb, since
+/// decoding itself refuses to materialize more than that regardless of
+/// `max_bytes`.
 pub fn to_payload(
     bytes: &[u8],
     content_type: Option<&str>,
     content_encoding: Option<&str>,
     max_bytes: usize,
 ) -> BodyPayload {
-    let decoded = decode_body(bytes, content_encoding).unwrap_or_else(|_| bytes.to_vec());
+    let (decoded, decode_truncated) = decode_body(bytes, content_encoding, MAX_DECODE_OUTPUT)
+        .unwrap_or_else(|_| (bytes.to_vec(), false));
     let encoding = content_encoding.map(str::to_string);
 
     if decoded.is_empty() {
@@ -190,7 +237,7 @@ pub fn to_payload(
     let is_text = std::str::from_utf8(&decoded).is_ok()
         && (content_type.map(is_textual_mime).unwrap_or(false) || !has_control_bytes(&decoded));
 
-    if decoded.len() <= max_bytes {
+    if decoded.len() <= max_bytes && !decode_truncated {
         let (kind, data) = if is_text {
             (
                 BodyKind::Text,
@@ -210,7 +257,10 @@ pub fn to_payload(
 
     // Truncate. For text, cut at the nearest valid UTF-8 char boundary at or
     // before `max_bytes`; for binary, base64-encode the raw byte prefix.
-    let prefix = &decoded[..max_bytes];
+    // `decoded` may already be shorter than `max_bytes` here (capped by
+    // `MAX_DECODE_OUTPUT` instead), hence the `min`.
+    let cutoff = decoded.len().min(max_bytes);
+    let prefix = &decoded[..cutoff];
     let data = if is_text {
         let mut end = prefix.len();
         while end > 0 && std::str::from_utf8(&prefix[..end]).is_err() {
@@ -252,44 +302,55 @@ pub fn pretty_json(s: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A generous cap for roundtrip tests that aren't exercising the cap
+    /// itself -- large enough that none of these small fixtures ever hit it.
+    const NO_PRACTICAL_LIMIT: usize = 1024 * 1024;
+
     #[test]
     fn gzip_roundtrip() {
         let original = b"hello world, this is a test payload".to_vec();
         let encoded = encode_body(&original, "gzip").unwrap();
         assert_ne!(encoded, original);
-        let decoded = decode_body(&encoded, Some("gzip")).unwrap();
+        let (decoded, truncated) = decode_body(&encoded, Some("gzip"), NO_PRACTICAL_LIMIT).unwrap();
         assert_eq!(decoded, original);
+        assert!(!truncated);
     }
 
     #[test]
     fn deflate_roundtrip() {
         let original = b"another test payload for deflate".to_vec();
         let encoded = encode_body(&original, "deflate").unwrap();
-        let decoded = decode_body(&encoded, Some("deflate")).unwrap();
+        let (decoded, truncated) =
+            decode_body(&encoded, Some("deflate"), NO_PRACTICAL_LIMIT).unwrap();
         assert_eq!(decoded, original);
+        assert!(!truncated);
     }
 
     #[test]
     fn brotli_roundtrip() {
         let original = b"brotli test payload with some repeated repeated text text".to_vec();
         let encoded = encode_body(&original, "br").unwrap();
-        let decoded = decode_body(&encoded, Some("br")).unwrap();
+        let (decoded, truncated) = decode_body(&encoded, Some("br"), NO_PRACTICAL_LIMIT).unwrap();
         assert_eq!(decoded, original);
+        assert!(!truncated);
     }
 
     #[test]
     fn zstd_roundtrip() {
         let original = b"zstd test payload".to_vec();
         let encoded = encode_body(&original, "zstd").unwrap();
-        let decoded = decode_body(&encoded, Some("zstd")).unwrap();
+        let (decoded, truncated) = decode_body(&encoded, Some("zstd"), NO_PRACTICAL_LIMIT).unwrap();
         assert_eq!(decoded, original);
+        assert!(!truncated);
     }
 
     #[test]
     fn unknown_encoding_passes_through() {
         let original = b"unchanged".to_vec();
-        let decoded = decode_body(&original, Some("unknown-coding")).unwrap();
+        let (decoded, truncated) =
+            decode_body(&original, Some("unknown-coding"), NO_PRACTICAL_LIMIT).unwrap();
         assert_eq!(decoded, original);
+        assert!(!truncated);
     }
 
     #[test]
@@ -299,7 +360,32 @@ mod tests {
         let brotli_then_gzip = encode_body(&gzipped, "br").unwrap();
         // Content-Encoding: br, gzip means br was applied last on the wire;
         // decoding in the listed order (br, then gzip) reverses that.
-        let decoded = decode_body(&brotli_then_gzip, Some("br, gzip")).unwrap();
+        let (decoded, truncated) =
+            decode_body(&brotli_then_gzip, Some("br, gzip"), NO_PRACTICAL_LIMIT).unwrap();
+        assert_eq!(decoded, original);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn decode_body_caps_decompression_bomb_output() {
+        // A highly-compressible payload: decompresses to far more than the
+        // tiny cap passed below, so this must come back truncated instead
+        // of allocating the full decoded size.
+        let original = vec![b'a'; 200_000];
+        let encoded = encode_body(&original, "gzip").unwrap();
+        assert!(encoded.len() < 1000, "fixture should compress tiny");
+
+        let (decoded, truncated) = decode_body(&encoded, Some("gzip"), 1024).unwrap();
+        assert!(truncated);
+        assert_eq!(decoded.len(), 1024);
+    }
+
+    #[test]
+    fn decode_body_exact_cap_is_not_marked_truncated() {
+        let original = vec![b'a'; 1024];
+        let encoded = encode_body(&original, "gzip").unwrap();
+        let (decoded, truncated) = decode_body(&encoded, Some("gzip"), 1024).unwrap();
+        assert!(!truncated);
         assert_eq!(decoded, original);
     }
 
