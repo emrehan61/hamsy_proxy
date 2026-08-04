@@ -10,6 +10,7 @@ mod rules;
 mod run;
 mod shutdown;
 mod sysproxy_cmd;
+mod update;
 
 use std::path::{Path, PathBuf};
 
@@ -57,6 +58,8 @@ enum Command {
         #[command(subcommand)]
         command: ProxyCommand,
     },
+    /// Self-update the `hamsy` binary from GitHub Releases.
+    Update(update::UpdateArgs),
 }
 
 /// Resolves the hamsy-proxy data directory: `explicit` if given, otherwise
@@ -130,6 +133,7 @@ fn main() {
         Command::Cert { command } => cert::dispatch(command),
         Command::Rules { command } => rules::dispatch(command),
         Command::Proxy { command } => sysproxy_cmd::dispatch(command),
+        Command::Update(args) => update::dispatch(args),
     };
 
     if let Err(e) = result {

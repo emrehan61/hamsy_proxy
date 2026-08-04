@@ -49,11 +49,62 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # ---------------------------------------------------------------------------
 # Script location — resolve once so every path below is relative to the repo
 # checkout, not to wherever the caller happened to be sitting.
+#
+# Piped/`-c`/process-substitution invocations (curl | bash, bash -c "$(curl
+# ...)", bash <(curl ...)) leave BASH_SOURCE[0] unset — under set -u a bare
+# ${BASH_SOURCE[0]} is an unbound-variable error, so it's read via the safe
+# default expansion below, then checked against the sentinel values those
+# invocation styles are known to produce.
 # ---------------------------------------------------------------------------
 
-# shellcheck disable=SC2164 # set -e already aborts here if cd fails; the
-# fallback error message would just be less friendly.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOOTSTRAP_SRC="${BASH_SOURCE[0]:-}"
+case "$BOOTSTRAP_SRC" in
+  '' | bash | - | /dev/stdin | /dev/fd/*) BOOTSTRAP_SRC="" ;;
+esac
+
+if [ -n "$BOOTSTRAP_SRC" ]; then
+  # shellcheck disable=SC2164 # set -e already aborts here if cd fails; the
+  # fallback error message would just be less friendly.
+  SCRIPT_DIR="$(cd "$(dirname "$BOOTSTRAP_SRC")" && pwd)"
+fi
+
+# Bootstrap mode: either BASH_SOURCE told us nothing usable, or it pointed
+# somewhere that isn't actually a hamsy-proxy checkout (e.g. a lone install.sh
+# copied out standalone). Either way, clone the real repo and re-run from
+# there instead of guessing at paths that don't exist.
+if [ -z "$BOOTSTRAP_SRC" ] || [ ! -f "$SCRIPT_DIR/Cargo.toml" ]; then
+  have git || die "git not found. Install git, then re-run — it's needed to fetch the hamsy-proxy source for this piped/standalone install."
+
+  repo_url="${HAMSY_REPO_URL:-https://github.com/emrehan61/hamsy_proxy.git}"
+  clone_dir="$(mktemp -d)"
+  info "Fetching hamsy-proxy source into $clone_dir..."
+
+  if ! git clone --depth 1 "$repo_url" "$clone_dir"; then
+    rm -rf "$clone_dir"
+    die "Failed to clone $repo_url. Check the URL/network, or override it with HAMSY_REPO_URL."
+  fi
+
+  if [ -n "${HAMSY_REPO_REF:-}" ]; then
+    # Subshell so this doesn't change the running script's own cwd. A
+    # --depth 1 fetch of the explicit ref, then checking out FETCH_HEAD,
+    # works for branches, tags, and commit SHAs alike — unlike `git clone
+    # --branch`, which only resolves refs known at clone time.
+    if ! (cd "$clone_dir" && git fetch --depth 1 origin "$HAMSY_REPO_REF" && git checkout FETCH_HEAD); then
+      rm -rf "$clone_dir"
+      die "Failed to check out ref '$HAMSY_REPO_REF' from $repo_url."
+    fi
+  fi
+
+  if [ ! -f "$clone_dir/install.sh" ]; then
+    rm -rf "$clone_dir"
+    die "Cloned $repo_url but install.sh is missing from it."
+  fi
+
+  status=0
+  bash "$clone_dir/install.sh" "$@" || status=$?
+  rm -rf "$clone_dir"
+  exit "$status"
+fi
 
 # ---------------------------------------------------------------------------
 # Usage / flags
@@ -72,8 +123,16 @@ Options:
   --yes, -y       Assume yes to prompts (e.g. installing Rust via rustup)
   --skip-deps     Only check dependencies; never install anything
   --no-ui         Skip the UI build; build hamsy-proxy without --features embed-ui
+  --no-cert       Skip trusting the CA in the OS trust store
+  --no-path       Skip offering to add the install dir to your PATH
   --uninstall     Remove the installed binary (optionally ~/.hamsy too)
   --help, -h      Show this help and exit
+
+Run this script outside a hamsy-proxy checkout (e.g. piped via curl | bash)
+and it clones the repo into a temp dir and re-runs itself there, forwarding
+every flag above verbatim. Override the source with HAMSY_REPO_URL (default:
+https://github.com/emrehan61/hamsy_proxy.git) and HAMSY_REPO_REF (branch,
+tag, or commit — checked out after cloning).
 EOF
 }
 
@@ -81,6 +140,8 @@ PREFIX="$HOME/.local/bin"
 YES=0
 SKIP_DEPS=0
 NO_UI=0
+NO_CERT=0
+NO_PATH=0
 UNINSTALL=0
 
 while [ $# -gt 0 ]; do
@@ -100,6 +161,14 @@ while [ $# -gt 0 ]; do
       ;;
     --no-ui)
       NO_UI=1
+      shift
+      ;;
+    --no-cert)
+      NO_CERT=1
+      shift
+      ;;
+    --no-path)
+      NO_PATH=1
       shift
       ;;
     --uninstall)
@@ -141,6 +210,25 @@ esac
 
 do_uninstall() {
   bin_path="$PREFIX/hamsy"
+
+  # Offer to remove the CA from the OS trust store while the binary that
+  # knows how to do that is still here. $YES -eq 0 gates even asking, so a
+  # bare --yes uninstall never touches the trust store.
+  if [ -x "$bin_path" ] && [ "$YES" -eq 0 ] && [ -t 0 ]; then
+    printf 'Remove the hamsy CA from your OS trust store too (%s cert uninstall)? [y/N] ' "$bin_path"
+    reply=""
+    read -r reply || true
+    case "$reply" in
+      y | Y | yes | YES)
+        if "$bin_path" cert uninstall; then
+          info "Removed the hamsy CA from the OS trust store."
+        else
+          warn "'$bin_path cert uninstall' failed — remove it manually if needed."
+        fi
+        ;;
+    esac
+  fi
+
   if [ -e "$bin_path" ]; then
     rm -f "$bin_path"
     info "Removed $bin_path"
@@ -375,6 +463,42 @@ fi
 chmod +x "$DEST"
 info "Installed $DEST"
 
+# ---------------------------------------------------------------------------
+# Cert setup — best-effort; hamsy itself prints manual per-OS steps on
+# failure, so a decline or a failure here is never fatal to the install.
+# ---------------------------------------------------------------------------
+
+CERT_OK=0
+if [ "$NO_CERT" -eq 1 ]; then
+  info "Skipping CA trust setup (--no-cert)."
+else
+  cert_consent=0
+  if [ "$YES" -eq 1 ]; then
+    cert_consent=1
+  elif [ -t 0 ]; then
+    # Default YES here, unlike the other prompts in this file: trusting the
+    # CA is what makes HTTPS capture work at all, so opting in is the
+    # expected path and a blank/garbage reply should mean "yes".
+    printf 'Trust the hamsy CA in your OS trust store now? [Y/n] '
+    reply=""
+    read -r reply || true
+    case "$reply" in
+      n | N | no | NO) cert_consent=0 ;;
+      *) cert_consent=1 ;;
+    esac
+  else
+    warn "Non-interactive, no tty — skipping CA trust setup. Run 'hamsy cert install' later."
+  fi
+
+  if [ "$cert_consent" -eq 1 ]; then
+    if "$DEST" cert install; then
+      CERT_OK=1
+    else
+      warn "'hamsy cert install' failed — see its output above for manual per-OS steps, or re-run it later."
+    fi
+  fi
+fi
+
 path_has_prefix() {
   case ":$PATH:" in
     *":$PREFIX:"*) return 0 ;;
@@ -396,6 +520,48 @@ guess_rc_file() {
 }
 
 # ---------------------------------------------------------------------------
+# PATH setup — best-effort; the end-of-script PATH warning in the Summary
+# below still fires unchanged if this is skipped, declined, or the rc file
+# can't be determined.
+# ---------------------------------------------------------------------------
+
+PATH_APPENDED=0
+if [ "$NO_PATH" -eq 0 ] && ! path_has_prefix; then
+  rc_file="$(guess_rc_file)"
+  case "$rc_file" in
+    "$HOME"/*)
+      # Only offer to auto-append when guess_rc_file() returned a real path
+      # — it falls back to the literal string "your shell's rc file" when it
+      # can't tell, and that's not something we can safely edit.
+      path_consent=0
+      if [ "$YES" -eq 1 ]; then
+        path_consent=1
+      elif [ -t 0 ]; then
+        # Default YES, same inverted style as the cert prompt above.
+        printf 'Add %s to your PATH by editing %s now? [Y/n] ' "$PREFIX" "$rc_file"
+        reply=""
+        read -r reply || true
+        case "$reply" in
+          n | N | no | NO) path_consent=0 ;;
+          *) path_consent=1 ;;
+        esac
+      fi
+
+      if [ "$path_consent" -eq 1 ]; then
+        path_line="export PATH=\"$PREFIX:\$PATH\""
+        if grep -qF "$path_line" "$rc_file" 2>/dev/null; then
+          info "$rc_file already adds $PREFIX to your PATH."
+        else
+          printf '\n%s\n' "$path_line" >> "$rc_file"
+          info "Added $PREFIX to your PATH in $rc_file. Restart your shell or run: source $rc_file"
+        fi
+        PATH_APPENDED=1
+      fi
+      ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
@@ -412,18 +578,23 @@ echo
 echo "Next steps:"
 echo
 echo "  hamsy"
-echo "  hamsy cert install"
+if [ "$CERT_OK" -eq 0 ]; then
+  echo "  hamsy cert install"
+fi
 echo
 echo "Plain 'hamsy' captures traffic system-wide out of the box: it points"
 echo "your OS proxy settings at 127.0.0.1:9080 and restores your previous"
 echo "settings on shutdown. Prefer to configure clients yourself instead?"
 echo "Run 'hamsy --manual' to leave your OS proxy settings untouched and"
 echo "point individual apps/browsers at 127.0.0.1:9080 by hand."
-echo
-echo "HTTPS capture will not work until the CA is trusted. 'cert install' is"
-echo "best-effort and prints manual per-OS steps if it can't do it automatically."
 
-if ! path_has_prefix; then
+if [ "$CERT_OK" -eq 0 ]; then
+  echo
+  echo "HTTPS capture will not work until the CA is trusted. 'cert install' is"
+  echo "best-effort and prints manual per-OS steps if it can't do it automatically."
+fi
+
+if [ "$PATH_APPENDED" -eq 0 ] && ! path_has_prefix; then
   echo
   warn "$PREFIX is not on your PATH. Add this to $(guess_rc_file):"
   echo

@@ -21,6 +21,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 - [What it does](#what-it-does)
 - [Install / build](#install--build)
+- [Cutting a release](#cutting-a-release)
 - [Quick start](#quick-start)
 - [CLI reference](#cli-reference)
 - [Web UI tour](#web-ui-tour)
@@ -37,19 +38,27 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## Install / build
 
-Clone and run `install.sh` — it runs the same build below and installs the resulting `hamsy` binary onto your PATH:
+Fastest path — pipe the installer straight from GitHub:
 
 ```
-git clone https://github.com/emrehan61/fl_proxy.git
-cd fl_proxy
+curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install.sh | bash
+```
+
+Equivalent to cloning and running `install.sh` below — same script, same result — it just clones the repo into a temp dir for you first.
+
+Or clone and run `install.sh` yourself:
+
+```
+git clone https://github.com/emrehan61/hamsy_proxy.git
+cd hamsy_proxy
 ./install.sh
 ```
 
-(SSH instead: `git@github.com:emrehan61/fl_proxy.git`.) The repo is named `fl_proxy` — that's the directory `git clone` creates — but the binary the build produces (and that `install.sh` installs) is `hamsy`, so don't be thrown when the script finishes and prints `Installed .../hamsy`.
+(SSH instead: `git@github.com:emrehan61/hamsy_proxy.git`.) The binary the build produces (and that `install.sh` installs) is `hamsy`.
 
 Prerequisites, up front: Rust (stable), Node 22, and pnpm. `install.sh` checks for all three and helps with what it can — missing Rust gets an offer to install it via rustup (prompted, or auto-confirmed under `-y`/`--yes`); pnpm is activated automatically via `corepack enable` + `corepack prepare` (version pinned in `ui/package.json`), no prompt needed. Node is the exception: if it's missing or older than 22, `install.sh` does not install it for you — it fails with a message telling you to install Node >=22 yourself (nvm, brew, or your distro's package manager). Supported platforms are macOS and Linux — `install.sh` is a bash script that checks OS/arch and refuses anything else; on Windows, use the manual `cargo build` steps documented later in this section instead.
 
-Default install location is `$HOME/.local/bin`; it prints an `export PATH=...` line if that's not already on yours. Flags (`./install.sh --help` for the full list): `--prefix DIR` (install somewhere else), `--yes`/`-y` (skip confirmation prompts — e.g. before installing Rust via rustup), `--skip-deps` (only check dependencies, install nothing), `--no-ui` (skip the UI build, build `hamsy` without `--features embed-ui`), `--uninstall` (remove the installed binary — asks before touching `~/.hamsy`, and a bare `--yes` won't answer that question for you).
+Default install location is `$HOME/.local/bin`; it prints an `export PATH=...` line if that's not already on yours. Flags (`./install.sh --help` for the full list): `--prefix DIR` (install somewhere else), `--yes`/`-y` (skip confirmation prompts — e.g. before installing Rust via rustup), `--skip-deps` (only check dependencies, install nothing), `--no-ui` (skip the UI build, build `hamsy` without `--features embed-ui`), `--no-cert` (skip trusting the CA in the OS trust store), `--no-path` (skip offering to add the install dir to your PATH), `--uninstall` (remove the installed binary — asks before touching `~/.hamsy`, and a bare `--yes` won't answer that question for you). `install.sh` also runs `hamsy cert install` and offers to add `$PREFIX` to your PATH automatically (prompted, or automatic under `--yes`), so a fresh install needs no manual follow-up unless those steps are skipped or declined.
 
 The rest of this section is the manual build `install.sh` itself runs — useful if you're iterating on the UI or don't want the script deciding anything for you.
 
@@ -71,10 +80,25 @@ cd ui && pnpm dev
 
 This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to `http://127.0.0.1:9081` (hamsy-proxy's default UI/API port), per `ui/vite.config.ts`.
 
+## Cutting a release
+
+```
+./release.sh -s   # patch: X.Y.Z -> X.Y.(Z+1)
+./release.sh -m   # minor: X.Y.Z -> X.(Y+1).0
+./release.sh -b   # major: X.Y.Z -> (X+1).0.0
+```
+
+Bumps the `[workspace.package]` version in the root `Cargo.toml`, refreshes `Cargo.lock`, commits (`Release vX.Y.Z`), tags (`vX.Y.Z`), and pushes — from `master` only, on a clean, up-to-date tree. The pushed tag triggers `.github/workflows/release.yml`, which builds the binaries for all platforms and publishes them as a GitHub release; `hamsy update` compares its own version against the latest release and picks up the new binary from there. `./release.sh --dry-run` previews the version bump and every command without changing anything; `--no-push` stops after the local commit/tag; `--yes` skips the confirmation prompt. `./release.sh --help` for the full flag list.
+
 ## Quick start
 
 ```
 hamsy                 # same as `hamsy run` — captures system-wide out of the box
+```
+
+`install.sh` already runs `hamsy cert install` for you unless you passed `--no-cert` or declined the prompt — only in that case do you need to run it yourself before HTTPS capture works:
+
+```
 hamsy cert install     # trust the CA in the OS keychain (best-effort; prints manual steps on failure)
 ```
 

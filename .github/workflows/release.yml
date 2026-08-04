@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to publish a draft release for (leave empty to only build/package, no release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          # macos-13 (Intel) was retired Dec 2025; macos-15-intel is its
+          # replacement standard-tier x86_64 runner.
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # `corepack prepare` with no args reads the "packageManager" pin from
+      # the nearest package.json — run from ui/ so it finds ui/package.json,
+      # not a (nonexistent) one at the repo root.
+      - name: Enable corepack / activate pinned pnpm
+        working-directory: ui
+        run: |
+          corepack enable
+          corepack prepare --activate
+
+      - name: Install UI deps
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Build UI
+        working-directory: ui
+        run: pnpm build
+
+      # @stable resolves the same channel as rust-toolchain.toml (channel =
+      # "stable"); passed explicitly since these are native builds only.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+
+      - name: Build hamsy-cli
+        run: cargo build --release --features embed-ui -p hamsy-cli --target ${{ matrix.target }}
+
+      - name: Package tarball
+        run: tar czf "hamsy-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" hamsy
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hamsy-${{ matrix.target }}
+          path: hamsy-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum ./*.tar.gz > sha256sums.txt
+
+      # Tag push -> real (non-draft) release for that tag. workflow_dispatch
+      # -> draft release, and only if a tag_name was given; otherwise this
+      # run just builds/packages artifacts without publishing anything.
+      - name: Create GitHub Release
+        if: github.event_name == 'push' || inputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/sha256sums.txt
