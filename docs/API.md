@@ -280,6 +280,7 @@ Only `urlOp`/`urlValue`, `methods`, `hostPorts`, `resourceTypes`, `requestHeader
   "maxBodyBytes": 5242880,
   "interceptHttps": true,
   "passthroughHosts": ["*.bank.com"],
+  "passthroughPresets": ["core", "cloud-cli", "meta", "mobile-os"],
   "captureIncludeHosts": [],
   "captureExcludeHosts": ["*.ads.example.com"],
   "autoSystemProxy": false,
@@ -449,6 +450,18 @@ PUT    /api/settings
                      or `bindAddr` changed. The merged settings are always
                      persisted to `settings.json` and broadcast as
                      `settingsChanged`, regardless of `restartRequired`.
+
+GET    /api/presets/passthrough
+                     -> 200 [
+                          { "name": "core", "label": "Metadata & cluster",
+                            "description": "...", "hosts": ["169.254.169.254", ...] },
+                          ...
+                        ]
+                     The built-in `passthroughPresets` catalog (currently 4
+                     entries: `core`, `cloud-cli`, `meta`, `mobile-os`), for
+                     the web UI's Settings page to render as a toggle group.
+                     Static data compiled into the binary -- not affected by
+                     `settings.json`.
 
 POST   /api/system-proxy
         body: {"enabled": true}

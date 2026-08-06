@@ -8,6 +8,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::passthrough_presets;
 
 /// Global, persisted proxy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,7 +34,27 @@ pub struct Settings {
     /// Whether to MITM HTTPS traffic (vs. blind-tunnel it).
     pub intercept_https: bool,
     /// Host globs that are never MITM'd, even if `intercept_https` is true.
+    /// User-added entries only -- see `passthrough_presets` below for the
+    /// built-in defaults, which are unioned with this list rather than
+    /// seeded into it.
     pub passthrough_hosts: Vec<String>,
+    /// Names of preset groups (from [`crate::passthrough_presets`]) whose
+    /// hosts are unioned with `passthrough_hosts` for the purposes of
+    /// [`Settings::host_passthrough`]. Unrecognized names are ignored, so a
+    /// settings file written by a newer build with a preset this version
+    /// doesn't know about degrades gracefully rather than failing to parse.
+    ///
+    /// Defaults to every preset ([`passthrough_presets::default_enabled`]).
+    /// Because this struct is `#[serde(default)]`, an existing
+    /// `~/.hamsy/settings.json` written before this field existed has no
+    /// `passthroughPresets` key at all and therefore picks up the new
+    /// defaults automatically on next load; a user who deliberately turns
+    /// every preset off ends up with an explicit `[]` persisted, which is
+    /// distinguishable from "never set". This is the same `#[serde(default)]`
+    /// trick the `manual_proxy` rename (see its doc comment below) relies on
+    /// -- "field absent" means "not yet decided, use the current default"
+    /// rather than "off".
+    pub passthrough_presets: Vec<String>,
     /// If non-empty, only these host globs are captured.
     pub capture_include_hosts: Vec<String>,
     /// Host globs that are never captured.
@@ -73,6 +94,7 @@ impl Default for Settings {
             max_total_bytes: 512 * 1024 * 1024,
             intercept_https: true,
             passthrough_hosts: Vec::new(),
+            passthrough_presets: passthrough_presets::default_enabled(),
             capture_include_hosts: Vec::new(),
             capture_exclude_hosts: Vec::new(),
             manual_proxy: false,
@@ -111,8 +133,9 @@ impl Settings {
         })
     }
 
-    /// Returns true if `host` matches any passthrough glob (i.e. should
-    /// never be MITM'd).
+    /// Returns true if `host` matches any passthrough glob -- the union of
+    /// `passthrough_hosts` and every host in an enabled `passthrough_presets`
+    /// group -- meaning it should never be MITM'd.
     pub fn host_passthrough(&self, host: &str) -> bool {
         with_compiled_globs(self, |globs| globs.passthrough.is_match(host))
     }
@@ -126,6 +149,7 @@ struct CompiledHostGlobs {
     include_src: Vec<String>,
     exclude_src: Vec<String>,
     passthrough_src: Vec<String>,
+    passthrough_presets_src: Vec<String>,
     include: GlobSet,
     exclude: GlobSet,
     passthrough: GlobSet,
@@ -133,13 +157,16 @@ struct CompiledHostGlobs {
 
 impl CompiledHostGlobs {
     fn compile(settings: &Settings) -> Self {
+        let mut passthrough_patterns = settings.passthrough_hosts.clone();
+        passthrough_patterns.extend(passthrough_presets::expand(&settings.passthrough_presets));
         CompiledHostGlobs {
             include_src: settings.capture_include_hosts.clone(),
             exclude_src: settings.capture_exclude_hosts.clone(),
             passthrough_src: settings.passthrough_hosts.clone(),
+            passthrough_presets_src: settings.passthrough_presets.clone(),
             include: build_glob_set(&settings.capture_include_hosts),
             exclude: build_glob_set(&settings.capture_exclude_hosts),
-            passthrough: build_glob_set(&settings.passthrough_hosts),
+            passthrough: build_glob_set(&passthrough_patterns),
         }
     }
 
@@ -148,6 +175,7 @@ impl CompiledHostGlobs {
         self.include_src == settings.capture_include_hosts
             && self.exclude_src == settings.capture_exclude_hosts
             && self.passthrough_src == settings.passthrough_hosts
+            && self.passthrough_presets_src == settings.passthrough_presets
     }
 }
 
@@ -247,24 +275,24 @@ mod tests {
         assert_eq!(s.theme, "dark");
         assert!(s.upstream_proxy.is_none());
         assert!(!s.paused);
+        assert_eq!(
+            s.passthrough_presets,
+            passthrough_presets::default_enabled()
+        );
     }
 
     #[test]
     fn load_missing_file_returns_default() {
-        let path = std::env::temp_dir().join(format!(
-            "hamsy-test-missing-{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("hamsy-test-missing-{}.json", uuid::Uuid::new_v4()));
         let s = Settings::load(&path);
         assert_eq!(s.proxy_port, Settings::default().proxy_port);
     }
 
     #[test]
     fn load_corrupt_file_returns_default() {
-        let path = std::env::temp_dir().join(format!(
-            "hamsy-test-corrupt-{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("hamsy-test-corrupt-{}.json", uuid::Uuid::new_v4()));
         fs::write(&path, "not json").unwrap();
         let s = Settings::load(&path);
         assert_eq!(s.proxy_port, Settings::default().proxy_port);
@@ -294,10 +322,8 @@ mod tests {
         // Simulates a pre-existing `~/.hamsy/settings.json` written before
         // `maxTotalBytes` existed: the field is absent, and `#[serde(default)]`
         // must fill it in rather than failing to parse.
-        let path = std::env::temp_dir().join(format!(
-            "hamsy-test-legacy-{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("hamsy-test-legacy-{}.json", uuid::Uuid::new_v4()));
         fs::write(&path, r#"{"proxyPort":9080,"uiPort":9081}"#).unwrap();
         let s = Settings::load(&path);
         assert_eq!(s.max_total_bytes, Settings::default().max_total_bytes);
@@ -331,5 +357,62 @@ mod tests {
         };
         assert!(s.host_passthrough("secure.bank.com"));
         assert!(!s.host_passthrough("example.com"));
+    }
+
+    #[test]
+    fn default_settings_passthrough_presets_cover_expected_hosts() {
+        let s = Settings::default();
+        assert!(s.host_passthrough("oauth2.googleapis.com"));
+        assert!(s.host_passthrough("edge-mqtt.facebook.com"));
+        assert!(s.host_passthrough("push.apple.com"));
+        assert!(s.host_passthrough("169.254.169.254"));
+        assert!(s.host_passthrough("kubernetes.default.svc"));
+        assert!(!s.host_passthrough("example.com"));
+    }
+
+    #[test]
+    fn default_settings_do_not_passthrough_loopback() {
+        // Loopback is deliberately excluded from `passthroughHosts`
+        // presets -- intercepting a developer's own local server is a
+        // primary use case for hamsy. See the doc comment on the `core`
+        // preset in `passthrough_presets.rs`.
+        let s = Settings::default();
+        assert!(!s.host_passthrough("localhost"));
+        assert!(!s.host_passthrough("127.0.0.1"));
+    }
+
+    #[test]
+    fn clearing_passthrough_presets_disables_them() {
+        let s = Settings {
+            passthrough_presets: Vec::new(),
+            ..Settings::default()
+        };
+        assert!(!s.host_passthrough("oauth2.googleapis.com"));
+    }
+
+    #[test]
+    fn user_passthrough_host_works_alongside_presets() {
+        let s = Settings {
+            passthrough_hosts: vec!["*.bank.com".to_string()],
+            ..Settings::default()
+        };
+        assert!(s.host_passthrough("secure.bank.com"));
+        assert!(s.host_passthrough("oauth2.googleapis.com"));
+    }
+
+    #[test]
+    fn changing_passthrough_presets_invalidates_glob_cache() {
+        // Regression test for the thread-local `HOST_GLOB_CACHE`: it must key
+        // its staleness check off `passthrough_presets` too, not just
+        // `passthrough_hosts`, or a settings change that only touches presets
+        // would keep serving a stale compiled `GlobSet` on this thread.
+        let with_presets = Settings::default();
+        assert!(with_presets.host_passthrough("oauth2.googleapis.com"));
+
+        let without_presets = Settings {
+            passthrough_presets: Vec::new(),
+            ..Settings::default()
+        };
+        assert!(!without_presets.host_passthrough("oauth2.googleapis.com"));
     }
 }

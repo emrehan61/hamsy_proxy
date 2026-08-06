@@ -96,6 +96,21 @@
   gap: var(--s2);
 }
 
+.settings-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.settings-preset-list__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 .settings-field__mono-value {
   font-family: var(--font-mono);
   font-size: 15px;

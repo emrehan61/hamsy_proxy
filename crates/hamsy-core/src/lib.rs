@@ -11,6 +11,7 @@ pub mod error;
 pub mod event;
 pub mod flow;
 pub mod har;
+pub mod passthrough_presets;
 pub mod rule;
 pub mod rules_store;
 pub mod settings;
@@ -24,6 +25,7 @@ pub use flow::{
     ResourceType, ResponseRecord, Timings, TlsInfo, WsDirection, WsMessage,
 };
 pub use har::{export_har, import_har};
+pub use passthrough_presets::Preset;
 pub use rule::{
     Action, BodyCond, BodyCondOp, HeaderCond, HeaderOp, JsonOp, JsonOpKind, Matcher,
     MockedResponse, PayloadEncoding, RequestCtx, RequestOutcome, ResponseCtx, ResponseOutcome,

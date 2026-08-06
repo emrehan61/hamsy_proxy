@@ -192,6 +192,8 @@ export interface Settings {
   maxBodyBytes: number;
   interceptHttps: boolean;
   passthroughHosts: string[];
+  /** Names of built-in preset groups (see `PassthroughPreset`) whose hosts are unioned with `passthroughHosts`. */
+  passthroughPresets: string[];
   captureIncludeHosts: string[];
   captureExcludeHosts: string[];
   manualProxy: boolean;
@@ -199,6 +201,14 @@ export interface Settings {
   theme: string;
   upstreamProxy: string | null;
   paused: boolean;
+}
+
+/** One entry of `GET /api/presets/passthrough`. */
+export interface PassthroughPreset {
+  name: string;
+  label: string;
+  description: string;
+  hosts: string[];
 }
 
 export interface ApiState {

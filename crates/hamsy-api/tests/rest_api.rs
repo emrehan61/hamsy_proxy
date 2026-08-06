@@ -508,6 +508,24 @@ async fn settings_partial_merge_and_restart_required() {
 }
 
 #[tokio::test]
+async fn passthrough_presets_lists_four_presets_including_cloud_cli() {
+    let state = common::make_state();
+    let app = router(state);
+
+    let resp = app.oneshot(get("/api/presets/passthrough")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let presets = body.as_array().expect("must be a JSON array");
+    assert_eq!(presets.len(), 4);
+    assert!(presets.iter().any(|p| p["name"] == "cloud-cli"));
+    for preset in presets {
+        assert!(preset.get("label").is_some());
+        assert!(preset.get("description").is_some());
+        assert!(preset["hosts"].as_array().is_some_and(|h| !h.is_empty()));
+    }
+}
+
+#[tokio::test]
 async fn har_export_has_correct_headers_and_shape() {
     let state = common::make_state();
     state

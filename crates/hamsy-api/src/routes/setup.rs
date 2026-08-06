@@ -54,10 +54,7 @@ pub async fn setup(State(state): State<ApiState>) -> Json<Value> {
         .first()
         .cloned()
         .unwrap_or_else(|| "127.0.0.1".to_string());
-    let cert_url = format!(
-        "http://{proxy_host}:{}/cert/hamsy-ca.crt",
-        settings.ui_port
-    );
+    let cert_url = format!("http://{proxy_host}:{}/cert/hamsy-ca.crt", settings.ui_port);
     let qr_svg = qr::svg(&cert_url);
 
     Json(json!({

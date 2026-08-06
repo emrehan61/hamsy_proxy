@@ -2,6 +2,7 @@
 
 pub mod flows;
 pub mod har;
+pub mod presets;
 pub mod rules;
 pub mod settings;
 pub mod setup;

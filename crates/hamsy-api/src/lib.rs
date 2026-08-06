@@ -65,6 +65,10 @@ pub fn router(state: ApiState) -> Router {
             get(routes::settings::get_settings).put(routes::settings::put_settings),
         )
         .route("/system-proxy", post(routes::settings::system_proxy))
+        .route(
+            "/presets/passthrough",
+            get(routes::presets::list_passthrough),
+        )
         .route("/setup", get(routes::setup::setup))
         .route("/har", get(routes::har::export))
         .route("/har/import", post(routes::har::import))

@@ -5,12 +5,12 @@
 // clobbers what I'm mid-typing" controlled-input fight.
 
 import type { Component } from "solid-js";
-import { Show, createEffect, createResource, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createResource, createSignal, onCleanup } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import "../styles/settings.css";
-import type { Rule, Settings as SettingsType } from "../lib/types";
+import type { PassthroughPreset, Rule, Settings as SettingsType } from "../lib/types";
 import * as api from "../lib/api";
-import { getHar, getState, importHar as importHarApi } from "../lib/api";
+import { getHar, getPassthroughPresets, getState, importHar as importHarApi } from "../lib/api";
 import { triggerDownload } from "../lib/download";
 import { formatBytes, formatDuration } from "../lib/format";
 import { pushToast } from "../stores/ui";
@@ -42,6 +42,7 @@ const EMPTY_SETTINGS: SettingsType = {
   maxBodyBytes: 0,
   interceptHttps: false,
   passthroughHosts: [],
+  passthroughPresets: [],
   captureIncludeHosts: [],
   captureExcludeHosts: [],
   manualProxy: false,
@@ -57,6 +58,7 @@ const Settings: Component = () => {
   const [local, setLocal] = createStore<SettingsType>({ ...EMPTY_SETTINGS });
   const [initialized, setInitialized] = createSignal(false);
   const [state, { refetch: refetchState }] = createResource(getState);
+  const [passthroughPresets] = createResource(getPassthroughPresets);
   const [systemProxyBusy, setSystemProxyBusy] = createSignal(false);
   const [clearConfirmOpen, setClearConfirmOpen] = createSignal(false);
   const [importRulesPending, setImportRulesPending] = createSignal<Rule[] | null>(null);
@@ -102,6 +104,11 @@ const Settings: Component = () => {
     setLocal(key, value);
     queuePatch({ [key]: value } as Partial<SettingsType>);
   }
+
+  const onTogglePassthroughPreset = (name: string, enabled: boolean) => {
+    const next = enabled ? [...local.passthroughPresets, name] : local.passthroughPresets.filter((n) => n !== name);
+    setField("passthroughPresets", next);
+  };
 
   // ---- system proxy ----
   const onToggleSystemProxy = async (next: boolean) => {
@@ -328,6 +335,30 @@ const Settings: Component = () => {
               <Toggle checked={local.interceptHttps} onChange={(v) => setField("interceptHttps", v)} label="Intercept HTTPS" />
             </div>
             <div class="settings-field">
+              <span class="settings-field__label">Passthrough presets</span>
+              <p class="settings-field__desc">
+                Built-in groups of hosts that are never MITM'd — cloud CLIs, container registries, and apps that pin their
+                certificate or ship their own CA bundle all break outright under interception. Their hosts are unioned with the
+                manual list below.
+              </p>
+              <div class="settings-preset-list">
+                <For each={passthroughPresets()}>
+                  {(preset: PassthroughPreset) => (
+                    <div class="settings-preset-list__row">
+                      <Toggle
+                        checked={local.passthroughPresets.includes(preset.name)}
+                        onChange={(v) => onTogglePassthroughPreset(preset.name, v)}
+                        label={preset.label}
+                      />
+                      <p class="settings-field__desc">
+                        {preset.description} ({preset.hosts.length} hosts)
+                      </p>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </div>
+            <div class="settings-field">
               <span class="settings-field__label">Passthrough hosts (glob)</span>
               <RepeatableInputList
                 values={local.passthroughHosts}
@@ -337,7 +368,10 @@ const Settings: Component = () => {
                 addLabel="Add host"
                 aria-label="Passthrough host glob"
               />
-              <p class="settings-field__desc">These hosts are tunneled without MITM (e.g. certificate-pinned apps).</p>
+              <p class="settings-field__desc">
+                These hosts are tunneled without MITM (e.g. certificate-pinned apps), in addition to whatever the presets above
+                cover.
+              </p>
             </div>
             <div class="settings-field">
               <span class="settings-field__label">CA fingerprint</span>

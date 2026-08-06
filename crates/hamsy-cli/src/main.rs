@@ -97,8 +97,7 @@ fn init_tracing(verbosity: u8) {
 fn install_panic_restore_hook(data_dir: PathBuf) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        match std::panic::catch_unwind(|| hamsy_api::sysproxy_state::restore_if_marked(&data_dir))
-        {
+        match std::panic::catch_unwind(|| hamsy_api::sysproxy_state::restore_if_marked(&data_dir)) {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
                 eprintln!("hamsy: failed to restore the system proxy after a panic: {err}")

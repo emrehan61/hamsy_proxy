@@ -312,7 +312,10 @@ mod tests {
     #[test]
     fn windows_uninstall_args_match_ca_common_name() {
         let args = windows_uninstall_args();
-        assert_eq!(args, vec!["certutil", "-delstore", "ROOT", "hamsy-proxy CA"]);
+        assert_eq!(
+            args,
+            vec!["certutil", "-delstore", "ROOT", "hamsy-proxy CA"]
+        );
     }
 
     #[test]

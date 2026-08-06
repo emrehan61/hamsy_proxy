@@ -6,6 +6,7 @@ import type {
   Flow,
   FlowListParams,
   FlowSummary,
+  PassthroughPreset,
   RequestRecord,
   Rule,
   Settings,
@@ -161,6 +162,12 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings & { r
   return request<Settings & { restartRequired: boolean }>("/settings", { method: "PUT", body: JSON.stringify(patch) });
 }
 
+// ---- passthrough presets ----
+
+export function getPassthroughPresets(): Promise<PassthroughPreset[]> {
+  return request<PassthroughPreset[]>("/presets/passthrough");
+}
+
 // ---- system proxy ----
 
 export function setSystemProxy(enabled: boolean): Promise<{ enabled: boolean }> {
@@ -222,6 +229,7 @@ const api = {
   exportRules,
   getSettings,
   updateSettings,
+  getPassthroughPresets,
   setSystemProxy,
   getSetupInfo,
   getHar,
