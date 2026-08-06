@@ -4,7 +4,7 @@ resolver = "2"
 members = ["crates/hamsy-core", "crates/hamsy-proxy", "crates/hamsy-api", "crates/hamsy-cli"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 
