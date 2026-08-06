@@ -240,14 +240,35 @@ pub(crate) fn set_host_header(headers: &mut Vec<HeaderPair>, host: &str, port: u
 }
 
 /// Applies a request-phase rule outcome's final header list and (possibly)
-/// rewritten URL to the in-flight request state, in the order that matters:
-/// `outcome`'s headers are adopted *first*, and only then - if the outcome
-/// rewrote the URL to a new host - is a fresh `Host` header set on top of
-/// them. Doing it in the opposite order lets `outcome`'s headers (which
-/// still carry whatever `Host` the *original* request had) silently
-/// clobber the just-computed one, so a URL-rewriting rule would send the
-/// new upstream a request with the wrong (or, for a cross-host rewrite that
-/// started from an absolute-form/h2 request, no) `Host` header.
+/// rewritten URL to the in-flight request state.
+///
+/// `outcome`'s headers are adopted as-is, and a URL rewrite deliberately
+/// does *not* overwrite `Host` with the rewrite target's host. This follows
+/// the "Map Remote" convention used by Charles/Proxyman and by
+/// `proxy_set_header Host $host` in nginx: redirecting a request to a
+/// different upstream changes *where* it's sent, not what origin it claims
+/// to be. The target's own host is very often the wrong `Host` value - e.g.
+/// a rule rewriting `https://dcs4s-live.mp.lura.live` to a local stitcher at
+/// `http://0.0.0.0:8082` still needs the stitcher to see
+/// `Host: dcs4s-live.mp.lura.live`, because the stitcher mints signed CDN
+/// URLs derived from the incoming Host; handing it `Host: 0.0.0.0:8082`
+/// makes it sign for the wrong origin and the CDN 403s the segments. A rule
+/// that genuinely wants a different `Host` can still set one explicitly via
+/// a `setRequestHeader` action - since that header arrives as part of
+/// `outcome_headers`, it's adopted like any other header and is never
+/// clobbered here.
+///
+/// The one case this function *does* synthesize a `Host` is when none is
+/// present at all after adopting `outcome_headers` and the URL was
+/// rewritten: an HTTP/2 client's request carries no `Host` header to begin
+/// with (h2 sends the `:authority` pseudo-header instead), so forwarding it
+/// as-is after a cross-host rewrite to an HTTP/1.1 upstream would produce a
+/// Host-less request that most origins reject. In that case a `Host` is
+/// computed from the *original* (pre-rewrite) URL, not the rewrite target,
+/// so it still reflects the request's real origin rather than the plumbing
+/// detail of where it now happens to be sent. The non-rewrite case is left
+/// to [`ensure_host_header`]'s last-resort fallback further down the
+/// pipeline.
 pub(crate) fn apply_outcome_url_and_headers(
     url: &mut url::Url,
     host: &mut String,
@@ -256,6 +277,7 @@ pub(crate) fn apply_outcome_url_and_headers(
     outcome_url: &str,
     outcome_headers: &[HeaderPair],
 ) {
+    let original_url = url.clone();
     let url_changed = outcome_url != url.to_string();
     *req_headers = outcome_headers.to_vec();
     strip_hop_by_hop(req_headers);
@@ -264,7 +286,13 @@ pub(crate) fn apply_outcome_url_and_headers(
             *url = parsed;
             *host = url.host_str().unwrap_or(host.as_str()).to_string();
             *port = url.port_or_known_default().unwrap_or(*port);
-            set_host_header(req_headers, host, *port, url.scheme());
+            if header_value(req_headers, "host").is_none() {
+                let orig_host = original_url.host_str().unwrap_or(host.as_str());
+                let orig_port = original_url
+                    .port_or_known_default()
+                    .unwrap_or(default_port(original_url.scheme()));
+                set_host_header(req_headers, orig_host, orig_port, original_url.scheme());
+            }
         }
     }
 }
@@ -1362,24 +1390,24 @@ mod tests {
         assert_eq!(req.uri().path_and_query().unwrap(), "/foo?bar=1");
     }
 
-    // ----- Bug 1: URL-rewrite outcome must not lose its Host header -----
+    // ----- Bug 1: URL-rewrite outcome must preserve the original Host -----
 
     #[test]
-    fn apply_outcome_url_and_headers_sets_new_host_on_rewrite() {
-        // Simulates a rule rewriting the target to a different host: the
-        // outcome's header list still carries the *old* Host (as it would,
-        // being derived from the original request's headers), and the fix
-        // must ensure the final headers reflect the *new* host rather than
-        // letting the stale one win.
-        let mut url = url::Url::parse("https://asdfadsg/orig").unwrap();
-        let mut host = "asdfadsg".to_string();
+    fn apply_outcome_url_and_headers_preserves_original_host_on_rewrite() {
+        // Simulates a rule rewriting the target to a different host (Map
+        // Remote-style, e.g. a CDN URL rewritten to a local stitcher): the
+        // outcome's header list carries the *original* Host, and that must
+        // survive the rewrite unchanged rather than being replaced with the
+        // rewrite target's own host.
+        let mut url = url::Url::parse("https://dcs4s-live.mp.lura.live/orig").unwrap();
+        let mut host = "dcs4s-live.mp.lura.live".to_string();
         let mut port: u16 = 443;
         let mut req_headers = vec![
-            HeaderPair::new("Host", "asdfadsg"),
+            HeaderPair::new("Host", "dcs4s-live.mp.lura.live"),
             HeaderPair::new("X-Custom", "1"),
         ];
         let outcome_headers = vec![
-            HeaderPair::new("Host", "asdfadsg"),
+            HeaderPair::new("Host", "dcs4s-live.mp.lura.live"),
             HeaderPair::new("X-Custom", "1"),
         ];
 
@@ -1388,16 +1416,19 @@ mod tests {
             &mut host,
             &mut port,
             &mut req_headers,
-            "http://localhost:8082/orig",
+            "http://0.0.0.0:8082/orig",
             &outcome_headers,
         );
 
-        assert_eq!(host, "localhost");
+        // The connection target out-params still point at the rewrite target.
+        assert_eq!(host, "0.0.0.0");
         assert_eq!(port, 8082);
+        // But the Host *header* stays the original, so a stitcher deriving
+        // signed CDN URLs from it signs for the right origin.
         assert_eq!(
             header_value(&req_headers, "host"),
-            Some("localhost:8082"),
-            "final headers must carry the new host, not the stale outcome-supplied one"
+            Some("dcs4s-live.mp.lura.live"),
+            "final headers must keep the original host, not the rewrite target's"
         );
         // Non-Host headers from the outcome are still preserved.
         assert_eq!(header_value(&req_headers, "x-custom"), Some("1"));
@@ -1422,6 +1453,65 @@ mod tests {
 
         assert_eq!(host, "example.com");
         assert_eq!(header_value(&req_headers, "host"), Some("example.com"));
+    }
+
+    #[test]
+    fn apply_outcome_url_and_headers_synthesizes_host_from_original_url_when_missing() {
+        // Simulates an HTTP/2 client's request (no Host header at all, h2
+        // uses :authority instead) hitting a cross-host rewrite rule. Since
+        // outcome_headers carries no Host, one must be synthesized - but
+        // from the *original* URL's host/port, not the rewrite target's.
+        let mut url = url::Url::parse("https://dcs4s-live.mp.lura.live:9443/orig").unwrap();
+        let mut host = "dcs4s-live.mp.lura.live".to_string();
+        let mut port: u16 = 9443;
+        let mut req_headers = vec![HeaderPair::new("X-Custom", "1")];
+        let outcome_headers = vec![HeaderPair::new("X-Custom", "1")];
+
+        apply_outcome_url_and_headers(
+            &mut url,
+            &mut host,
+            &mut port,
+            &mut req_headers,
+            "http://0.0.0.0:8082/orig",
+            &outcome_headers,
+        );
+
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(port, 8082);
+        assert_eq!(
+            header_value(&req_headers, "host"),
+            Some("dcs4s-live.mp.lura.live:9443"),
+            "synthesized Host must reflect the original URL (with its non-default port), not the rewrite target"
+        );
+    }
+
+    #[test]
+    fn apply_outcome_url_and_headers_explicit_rule_host_survives_rewrite() {
+        // A setRequestHeader rule action supplying an explicit Host arrives
+        // as part of outcome_headers, and must win over both the original
+        // and the rewrite target's host.
+        let mut url = url::Url::parse("https://dcs4s-live.mp.lura.live/orig").unwrap();
+        let mut host = "dcs4s-live.mp.lura.live".to_string();
+        let mut port: u16 = 443;
+        let mut req_headers = vec![HeaderPair::new("Host", "dcs4s-live.mp.lura.live")];
+        let outcome_headers = vec![HeaderPair::new("Host", "explicit.example.org")];
+
+        apply_outcome_url_and_headers(
+            &mut url,
+            &mut host,
+            &mut port,
+            &mut req_headers,
+            "http://0.0.0.0:8082/orig",
+            &outcome_headers,
+        );
+
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(port, 8082);
+        assert_eq!(
+            header_value(&req_headers, "host"),
+            Some("explicit.example.org"),
+            "an explicit setRequestHeader Host action must survive the rewrite unchanged"
+        );
     }
 
     // ----- Bug 2: outbound request must match the actual sender's version -----
@@ -1486,7 +1576,10 @@ mod tests {
 
         adapt_request_to_sender(&mut parts, HttpVersion::Http1, false, &url);
 
-        assert_eq!(parts.headers.get(http::header::HOST).unwrap(), "custom-host");
+        assert_eq!(
+            parts.headers.get(http::header::HOST).unwrap(),
+            "custom-host"
+        );
     }
 
     #[test]

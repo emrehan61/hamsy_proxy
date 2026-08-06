@@ -297,6 +297,7 @@ A rule (`hamsy_core::Rule`) pairs a **matcher** with a list of **actions**. See 
 - Actions are grouped into request-phase (URL/method/header/body rewriting, `redirect`, `mockResponse`, `block`) and response-phase (status/header/body rewriting) — a few (`delay`, `throttle`) apply in whichever phase the rule matched in.
 - All matching rules apply, in priority order (lower first, then insertion order for ties) — except `block` and `mockResponse`, which short-circuit any remaining rules in that phase.
 - `redirect`/`rewriteUrl` support `$1`–`$9` capture-group substitution from a `regex` URL matcher.
+- A `redirect`/`rewriteUrl` to a different host keeps the original request's `Host` header (Map Remote-style) rather than switching it to the new target's host; a `setRequestHeader` action for `Host` still overrides it.
 
 One example per action category (there are more variants — see `docs/RULES.md` for the full catalog):
 
