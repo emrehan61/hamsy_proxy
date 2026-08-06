@@ -53,7 +53,7 @@ use hamsy_core::{
 use crate::config::ProxyContext;
 use crate::error::{ProxyError, Result};
 use crate::tee::{collect_capped, FinalizeBody, TeeBody, TeeState, Throttled};
-use crate::upstream::ReleaseOnComplete;
+use crate::upstream::{HttpVersion, ReleaseOnComplete};
 use crate::BoxBody;
 
 /// Hard ceiling on how much of a request/response body we'll fully buffer
@@ -239,6 +239,36 @@ pub(crate) fn set_host_header(headers: &mut Vec<HeaderPair>, host: &str, port: u
     set_header(headers, "Host", &value);
 }
 
+/// Applies a request-phase rule outcome's final header list and (possibly)
+/// rewritten URL to the in-flight request state, in the order that matters:
+/// `outcome`'s headers are adopted *first*, and only then - if the outcome
+/// rewrote the URL to a new host - is a fresh `Host` header set on top of
+/// them. Doing it in the opposite order lets `outcome`'s headers (which
+/// still carry whatever `Host` the *original* request had) silently
+/// clobber the just-computed one, so a URL-rewriting rule would send the
+/// new upstream a request with the wrong (or, for a cross-host rewrite that
+/// started from an absolute-form/h2 request, no) `Host` header.
+pub(crate) fn apply_outcome_url_and_headers(
+    url: &mut url::Url,
+    host: &mut String,
+    port: &mut u16,
+    req_headers: &mut Vec<HeaderPair>,
+    outcome_url: &str,
+    outcome_headers: &[HeaderPair],
+) {
+    let url_changed = outcome_url != url.to_string();
+    *req_headers = outcome_headers.to_vec();
+    strip_hop_by_hop(req_headers);
+    if url_changed {
+        if let Ok(parsed) = url::Url::parse(outcome_url) {
+            *url = parsed;
+            *host = url.host_str().unwrap_or(host.as_str()).to_string();
+            *port = url.port_or_known_default().unwrap_or(*port);
+            set_host_header(req_headers, host, *port, url.scheme());
+        }
+    }
+}
+
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -349,8 +379,7 @@ fn payload_from_capture(
     content_encoding: Option<&str>,
     max_bytes: usize,
 ) -> BodyPayload {
-    let mut payload =
-        hamsy_core::to_payload(&captured, content_type, content_encoding, max_bytes);
+    let mut payload = hamsy_core::to_payload(&captured, content_type, content_encoding, max_bytes);
     if capture_truncated {
         payload.truncated = true;
         payload.size = payload.size.max(total);
@@ -447,11 +476,24 @@ pub(crate) async fn dispatch(
         .await?;
     let crate::upstream::Obtained {
         mut sender,
+        version,
         connect_ms,
         ssl_ms,
         server_addr,
-        ..
+        via_proxy,
     } = obtained;
+
+    // The sender obtained above speaks whatever version was actually
+    // negotiated on the *upstream* connection, which can differ from
+    // `outbound`'s version - e.g. a rule can redirect an h2 MITM client's
+    // request to a plain-HTTP target, and plain-HTTP upstreams are always
+    // HTTP/1.1 (see `upstream::Connector::obtain`'s non-`https` branch).
+    // Sending an HTTP/2-labeled, absolute-form, Host-less request over an
+    // HTTP/1.1 connection gets rejected by most origins ("HOST header is
+    // missing"), so adapt the request to match the sender before sending.
+    let (mut outbound_parts, outbound_body) = outbound.into_parts();
+    adapt_request_to_sender(&mut outbound_parts, version, via_proxy, url);
+    let outbound = Request::from_parts(outbound_parts, outbound_body);
 
     let wait_start = tokio::time::Instant::now();
     let resp = sender
@@ -515,6 +557,69 @@ pub(crate) fn build_outbound_request(
     let (mut parts, body) = req.into_parts();
     apply_headers_to_map(&mut parts.headers, headers)?;
     Ok(Request::from_parts(parts, body))
+}
+
+/// Adapts an already-built outbound request's version, request-target form,
+/// and `Host` header to match `sender_version` - the version actually
+/// negotiated on the upstream connection [`dispatch`] obtained, which can
+/// differ from the version the request was originally built with (see
+/// [`dispatch`]'s call site for why: a rule can retarget a request to an
+/// upstream whose negotiated protocol doesn't match the client's).
+///
+/// - HTTP/2 request onto an HTTP/1 sender: downgrades to HTTP/1.1 and,
+///   unless `via_proxy` (absolute-form is required when chaining through an
+///   upstream proxy, regardless of version), rewrites the URI to
+///   origin-form (path + query only). Either way, ensures a `Host` header
+///   is present - h2 requests never carry one, relying on the `:authority`
+///   pseudo-header instead, which HTTP/1.1 origins don't understand.
+/// - Non-HTTP/2 request onto an HTTP/2 sender: upgrades to HTTP/2 and
+///   rewrites the URI to absolute-form, since h2 derives its
+///   `:authority`/`:scheme` pseudo-headers from the URI itself (see
+///   [`build_outbound_request`]'s doc).
+/// - Otherwise (versions already compatible): left untouched.
+pub(crate) fn adapt_request_to_sender(
+    parts: &mut http::request::Parts,
+    sender_version: HttpVersion,
+    via_proxy: bool,
+    url: &url::Url,
+) {
+    match sender_version {
+        HttpVersion::Http1 if parts.version == http::Version::HTTP_2 => {
+            parts.version = http::Version::HTTP_11;
+            if !via_proxy {
+                if let Ok(uri) = path_with_query(url).parse::<http::Uri>() {
+                    parts.uri = uri;
+                }
+            }
+            ensure_host_header(&mut parts.headers, url);
+        }
+        HttpVersion::Http2 if parts.version != http::Version::HTTP_2 => {
+            parts.version = http::Version::HTTP_2;
+            if let Ok(uri) = url.as_str().parse::<http::Uri>() {
+                parts.uri = uri;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Inserts a `Host` header computed the same way [`set_host_header`] does,
+/// but only if one isn't already present.
+fn ensure_host_header(headers: &mut HeaderMap, url: &url::Url) {
+    if headers.contains_key(http::header::HOST) {
+        return;
+    }
+    let host = url.host_str().unwrap_or("");
+    let default_port = default_port(url.scheme());
+    let port = url.port_or_known_default().unwrap_or(default_port);
+    let value = if port == default_port {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    };
+    if let Ok(hv) = http::HeaderValue::from_str(&value) {
+        headers.insert(http::header::HOST, hv);
+    }
 }
 
 // ===== The captured (recorded + rule-applied) pipeline =====
@@ -691,16 +796,14 @@ async fn handle_captured_request(
         None
     };
 
-    if outcome.url != url.to_string() {
-        if let Ok(parsed) = url::Url::parse(&outcome.url) {
-            url = parsed;
-            host = url.host_str().unwrap_or(&host).to_string();
-            port = url.port_or_known_default().unwrap_or(port);
-            set_host_header(&mut req_headers, &host, port, url.scheme());
-        }
-    }
-    req_headers = outcome.headers.clone();
-    strip_hop_by_hop(&mut req_headers);
+    apply_outcome_url_and_headers(
+        &mut url,
+        &mut host,
+        &mut port,
+        &mut req_headers,
+        &outcome.url,
+        &outcome.headers,
+    );
     if !outcome.method.eq_ignore_ascii_case(&method_str) {
         // method changed via SetMethod; parsed below when building the request.
     }
@@ -1257,6 +1360,169 @@ mod tests {
         .unwrap();
         assert!(req.uri().authority().is_none());
         assert_eq!(req.uri().path_and_query().unwrap(), "/foo?bar=1");
+    }
+
+    // ----- Bug 1: URL-rewrite outcome must not lose its Host header -----
+
+    #[test]
+    fn apply_outcome_url_and_headers_sets_new_host_on_rewrite() {
+        // Simulates a rule rewriting the target to a different host: the
+        // outcome's header list still carries the *old* Host (as it would,
+        // being derived from the original request's headers), and the fix
+        // must ensure the final headers reflect the *new* host rather than
+        // letting the stale one win.
+        let mut url = url::Url::parse("https://asdfadsg/orig").unwrap();
+        let mut host = "asdfadsg".to_string();
+        let mut port: u16 = 443;
+        let mut req_headers = vec![
+            HeaderPair::new("Host", "asdfadsg"),
+            HeaderPair::new("X-Custom", "1"),
+        ];
+        let outcome_headers = vec![
+            HeaderPair::new("Host", "asdfadsg"),
+            HeaderPair::new("X-Custom", "1"),
+        ];
+
+        apply_outcome_url_and_headers(
+            &mut url,
+            &mut host,
+            &mut port,
+            &mut req_headers,
+            "http://localhost:8082/orig",
+            &outcome_headers,
+        );
+
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 8082);
+        assert_eq!(
+            header_value(&req_headers, "host"),
+            Some("localhost:8082"),
+            "final headers must carry the new host, not the stale outcome-supplied one"
+        );
+        // Non-Host headers from the outcome are still preserved.
+        assert_eq!(header_value(&req_headers, "x-custom"), Some("1"));
+    }
+
+    #[test]
+    fn apply_outcome_url_and_headers_no_rewrite_keeps_outcome_headers_as_is() {
+        let mut url = url::Url::parse("https://example.com/orig").unwrap();
+        let mut host = "example.com".to_string();
+        let mut port: u16 = 443;
+        let mut req_headers = vec![HeaderPair::new("Host", "example.com")];
+        let outcome_headers = vec![HeaderPair::new("Host", "example.com")];
+
+        apply_outcome_url_and_headers(
+            &mut url,
+            &mut host,
+            &mut port,
+            &mut req_headers,
+            "https://example.com/orig",
+            &outcome_headers,
+        );
+
+        assert_eq!(host, "example.com");
+        assert_eq!(header_value(&req_headers, "host"), Some("example.com"));
+    }
+
+    // ----- Bug 2: outbound request must match the actual sender's version -----
+
+    #[test]
+    fn adapt_request_to_sender_downgrades_h2_to_h1_and_sets_host() {
+        let url = url::Url::parse("http://localhost:8082/path?x=1").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(url.as_str())
+            .version(http::Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http1, false, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_11);
+        assert!(parts.uri.authority().is_none(), "should be origin-form");
+        assert_eq!(parts.uri.path_and_query().unwrap(), "/path?x=1");
+        assert_eq!(
+            parts.headers.get(http::header::HOST).unwrap(),
+            "localhost:8082"
+        );
+    }
+
+    #[test]
+    fn adapt_request_to_sender_downgrade_via_proxy_keeps_absolute_form_but_sets_host() {
+        let url = url::Url::parse("http://localhost:8082/path").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(url.as_str())
+            .version(http::Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http1, true, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_11);
+        assert!(
+            parts.uri.authority().is_some(),
+            "via_proxy must keep absolute-form"
+        );
+        assert_eq!(
+            parts.headers.get(http::header::HOST).unwrap(),
+            "localhost:8082"
+        );
+    }
+
+    #[test]
+    fn adapt_request_to_sender_does_not_overwrite_existing_host() {
+        let url = url::Url::parse("http://localhost:8082/path").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(url.as_str())
+            .version(http::Version::HTTP_2)
+            .header(http::header::HOST, "custom-host")
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http1, false, &url);
+
+        assert_eq!(parts.headers.get(http::header::HOST).unwrap(), "custom-host");
+    }
+
+    #[test]
+    fn adapt_request_to_sender_upgrades_to_h2_uses_absolute_form() {
+        let url = url::Url::parse("https://example.com/foo?bar=1").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/foo?bar=1")
+            .version(http::Version::HTTP_11)
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http2, false, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_2);
+        assert_eq!(parts.uri, http::Uri::try_from(url.as_str()).unwrap());
+    }
+
+    #[test]
+    fn adapt_request_to_sender_matching_versions_is_a_no_op() {
+        let url = url::Url::parse("http://localhost:8082/path").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/path")
+            .version(http::Version::HTTP_11)
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        let original_uri = parts.uri.clone();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http1, false, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_11);
+        assert_eq!(parts.uri, original_uri);
+        assert!(parts.headers.get(http::header::HOST).is_none());
     }
 
     #[test]
