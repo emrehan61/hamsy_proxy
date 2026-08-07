@@ -25,6 +25,12 @@
 //! HTTP/2 connection is not multiplexed across concurrent requests the way
 //! a maximally-efficient h2 client would, but it is correct, simple, and
 //! still allows concurrency via multiple pooled connections per key.
+//!
+//! Each [`Sender`] carries the peer address it was dialed to (see
+//! [`Sender::addr`]), resolved once at dial time and never recomputed. That
+//! address rides along through checkin and checkout, so a pooled reuse
+//! reports the same [`Obtained::server_addr`] the original dial did, instead
+//! of going blank on every request after the first.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -67,28 +73,51 @@ pub enum HttpVersion {
     Http2,
 }
 
-/// A live sender for an upstream connection, either HTTP/1.1 or HTTP/2.
-pub enum Sender {
+/// The underlying HTTP/1.1 or HTTP/2 client handle wrapped by [`Sender`].
+enum SenderKind {
     /// An HTTP/1.1 connection.
     Http1(hyper::client::conn::http1::SendRequest<BoxBody>),
     /// An HTTP/2 connection.
     Http2(hyper::client::conn::http2::SendRequest<BoxBody>),
 }
 
+/// A live sender for an upstream connection, either HTTP/1.1 or HTTP/2,
+/// paired with the peer address it was dialed to.
+///
+/// The address is resolved once, at dial time (see [`Connector::obtain`]),
+/// and is carried on the `Sender` itself rather than threaded separately
+/// through the pool's checkin/checkout calls: a `Sender` travels from a
+/// fresh dial, through a caller-owned request/response cycle, into
+/// [`ReleaseOnComplete`] and back into the pool without passing through any
+/// call site this module controls end-to-end, so this is the only way a
+/// pooled reuse can still report the same `server_addr` the original dial
+/// did (see `Obtained::server_addr`).
+pub struct Sender {
+    kind: SenderKind,
+    addr: String,
+}
+
 impl Sender {
     fn is_closed(&self) -> bool {
-        match self {
-            Sender::Http1(s) => s.is_closed(),
-            Sender::Http2(s) => s.is_closed(),
+        match &self.kind {
+            SenderKind::Http1(s) => s.is_closed(),
+            SenderKind::Http2(s) => s.is_closed(),
         }
     }
 
     /// Which [`HttpVersion`] this sender speaks.
     pub fn version(&self) -> HttpVersion {
-        match self {
-            Sender::Http1(_) => HttpVersion::Http1,
-            Sender::Http2(_) => HttpVersion::Http2,
+        match &self.kind {
+            SenderKind::Http1(_) => HttpVersion::Http1,
+            SenderKind::Http2(_) => HttpVersion::Http2,
         }
+    }
+
+    /// The resolved peer address this connection was dialed to (or, for a
+    /// connection made through a chained upstream proxy, the proxy's
+    /// address).
+    pub fn addr(&self) -> &str {
+        &self.addr
     }
 
     /// Sends `req` on this connection and awaits the response.
@@ -96,9 +125,9 @@ impl Sender {
         &mut self,
         req: Request<BoxBody>,
     ) -> hyper::Result<Response<Incoming>> {
-        match self {
-            Sender::Http1(s) => s.send_request(req).await,
-            Sender::Http2(s) => s.send_request(req).await,
+        match &mut self.kind {
+            SenderKind::Http1(s) => s.send_request(req).await,
+            SenderKind::Http2(s) => s.send_request(req).await,
         }
     }
 }
@@ -203,7 +232,10 @@ pub struct Obtained {
     /// Milliseconds spent on the TLS handshake, or `-1.0` if this wasn't a
     /// TLS connection (or was pooled).
     pub ssl_ms: f64,
-    /// The dialed peer address, if a fresh connection was made.
+    /// The peer address this connection was dialed to. Populated both for a
+    /// freshly dialed connection and for a pooled reuse - a pooled hit
+    /// reports the same address captured at the connection's original dial
+    /// (see [`Sender::addr`]).
     pub server_addr: Option<String>,
     /// Whether this connection was made through a chained upstream proxy
     /// (see `Settings::upstream_proxy`); if true, the caller must send
@@ -295,12 +327,13 @@ impl Connector {
 
         if let Some(sender) = self.pool.checkout(&key) {
             let version = sender.version();
+            let server_addr = sender.addr().to_string();
             return Ok(Obtained {
                 sender,
                 version,
                 connect_ms: 0.0,
                 ssl_ms: -1.0,
-                server_addr: None,
+                server_addr: Some(server_addr),
                 via_proxy,
             });
         }
@@ -334,7 +367,7 @@ impl Connector {
             let ssl_ms = ssl_start.elapsed().as_secs_f64() * 1000.0;
             let negotiated_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(b"h2");
             let io = TokioIo::new(tls_stream);
-            let (sender, version) = handshake(io, negotiated_h2).await?;
+            let (sender, version) = handshake(io, negotiated_h2, server_addr.clone()).await?;
             Ok(Obtained {
                 sender,
                 version,
@@ -345,7 +378,7 @@ impl Connector {
             })
         } else {
             let io = TokioIo::new(tcp);
-            let (sender, version) = handshake(io, false).await?;
+            let (sender, version) = handshake(io, false, server_addr.clone()).await?;
             Ok(Obtained {
                 sender,
                 version,
@@ -373,7 +406,7 @@ impl Connector {
 /// Performs the HTTP/1.1 or HTTP/2 client handshake over an already
 /// connected (and, for HTTPS, already TLS-terminated) stream, spawning a
 /// background task to drive the connection.
-async fn handshake<T>(io: T, want_h2: bool) -> Result<(Sender, HttpVersion)>
+async fn handshake<T>(io: T, want_h2: bool, addr: String) -> Result<(Sender, HttpVersion)>
 where
     T: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -386,7 +419,13 @@ where
                 tracing::debug!(%err, "upstream h2 connection task ended");
             }
         });
-        Ok((Sender::Http2(sender), HttpVersion::Http2))
+        Ok((
+            Sender {
+                kind: SenderKind::Http2(sender),
+                addr,
+            },
+            HttpVersion::Http2,
+        ))
     } else {
         let (sender, conn) = hyper::client::conn::http1::handshake(io)
             .await
@@ -396,7 +435,13 @@ where
                 tracing::debug!(%err, "upstream h1 connection task ended");
             }
         });
-        Ok((Sender::Http1(sender), HttpVersion::Http1))
+        Ok((
+            Sender {
+                kind: SenderKind::Http1(sender),
+                addr,
+            },
+            HttpVersion::Http1,
+        ))
     }
 }
 

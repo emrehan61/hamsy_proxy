@@ -19,7 +19,7 @@ use hamsy_core::{
     WsMessage,
 };
 
-use crate::config::ProxyContext;
+use crate::config::{OwnListener, ProxyContext};
 use crate::http::{self, ConnInfo};
 use crate::BoxBody;
 
@@ -78,6 +78,21 @@ pub async fn handle_upgrade(
     let port = url
         .port_or_known_default()
         .unwrap_or(http::default_port(dial_scheme));
+
+    // See `config::OwnListener`'s doc. A WS upgrade aimed at hamsy's own
+    // proxy port must be refused outright (forwarding it would loop hamsy
+    // back into itself, same as the plain-HTTP/CONNECT paths). One aimed at
+    // hamsy's own UI/API port - which, once loopback traffic is no longer
+    // OS-bypassed, is exactly what happens when the web UI's own browser
+    // tab opens its `/api/ws` flow-event socket through this proxy - is
+    // legitimate and must still be forwarded, just never *captured*
+    // (`own_listener` is read once here and threaded down to the capture
+    // decision below, rather than re-checked, since it can't change mid
+    // request).
+    let own_listener = ctx.own_listener(&host, port);
+    if own_listener == OwnListener::ProxyPort {
+        return http::self_loop_response(&host, port);
+    }
 
     // Unlike the normal proxy pipeline, we must NOT strip Connection/Upgrade
     // /Sec-WebSocket-* headers - those are exactly what makes this an
@@ -142,7 +157,19 @@ pub async fn handle_upgrade(
     let resp_headers = http::header_pairs_from(origin_resp.headers());
     let response = http::build_client_response(101, &resp_headers, crate::empty_body());
 
-    let capture = ctx.settings.read().capture_websockets;
+    // Gate WS capture the same way the HTTP path does (pause switch +
+    // include/exclude host filters, via `should_capture`), with
+    // `capture_websockets` layered on top as the WS-specific opt-out.
+    // `capture_websockets` is read into its own statement first so its
+    // read-lock guard is dropped before `should_capture` takes its own -
+    // nesting two `RwLock` read guards here would risk a reader/reader
+    // deadlock around a pending writer.
+    // `own_listener == UiPort` overrides `capture_websockets`/`should_capture`
+    // unconditionally: this is the specific case that causes the feedback
+    // loop described above, not merely a filterable preference.
+    let capture_websockets = ctx.settings.read().capture_websockets;
+    let capture =
+        own_listener != OwnListener::UiPort && capture_websockets && ctx.should_capture(&host);
     let flow_meta = FlowMeta {
         host,
         port,

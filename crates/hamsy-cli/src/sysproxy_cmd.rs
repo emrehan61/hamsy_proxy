@@ -29,17 +29,17 @@ pub fn dispatch(cmd: ProxyCommand) -> Result<()> {
     }
 }
 
-/// Bypass list applied when enabling the OS system proxy: traffic to these
-/// hosts is left to connect directly rather than through the proxy.
-const SYSTEM_PROXY_BYPASS: &[&str] = &["localhost", "127.0.0.1", "::1", "*.local"];
-
 fn on() -> Result<()> {
     let data_dir = resolve_data_dir(None);
     let settings = hamsy_core::Settings::load(&data_dir.join("settings.json"));
-    let bypass: Vec<String> = SYSTEM_PROXY_BYPASS.iter().map(|s| s.to_string()).collect();
-    hamsy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", settings.proxy_port, &bypass)
-        .map_err(anyhow::Error::msg)
-        .context("failed to enable the system proxy")?;
+    hamsy_api::sysproxy_state::acquire(
+        &data_dir,
+        "127.0.0.1",
+        settings.proxy_port,
+        &settings.system_proxy_bypass,
+    )
+    .map_err(anyhow::Error::msg)
+    .context("failed to enable the system proxy")?;
     println!("System proxy enabled: 127.0.0.1:{}", settings.proxy_port);
     Ok(())
 }

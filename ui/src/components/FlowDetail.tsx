@@ -49,6 +49,16 @@ function rawHeaders(headers: HeaderPair[]): string {
   return headers.map((h) => `${h.name}: ${h.value}`).join("\n");
 }
 
+// Effective (post-rule) request URL, when it differs from the flow's
+// (original, client-facing) `url` — i.e. a rule rewrote the destination.
+// Returns null when there's no request or the URL wasn't changed, so
+// callers can use it directly as a <Show> condition.
+function rewrittenUrl(flow: Flow): string | null {
+  const effective = flow.request?.url;
+  if (!effective || effective === flow.url) return null;
+  return effective;
+}
+
 const OverviewTab: Component<{ flow: Flow }> = (props) => {
   return (
     <div class="flow-detail__overview">
@@ -64,6 +74,9 @@ const OverviewTab: Component<{ flow: Flow }> = (props) => {
         <Show when={props.flow.fromCache}>
           <span class="flow-detail__badge flow-detail__badge--muted">from cache</span>
         </Show>
+        <Show when={rewrittenUrl(props.flow)}>
+          <span class="flow-detail__badge flow-detail__badge--muted">rewritten</span>
+        </Show>
       </div>
 
       <TimingsBar timings={props.flow.timings} total={props.flow.durationMs ?? undefined} />
@@ -73,6 +86,16 @@ const OverviewTab: Component<{ flow: Flow }> = (props) => {
         <dl class="flow-detail__kv">
           <dt>App</dt>
           <dd class="mono">{props.flow.app ?? "Unknown"}</dd>
+          <dt>Server</dt>
+          <dd class="mono">{props.flow.serverAddr ?? "-"}</dd>
+          <Show when={rewrittenUrl(props.flow)}>
+            {(url) => (
+              <>
+                <dt>Sent to</dt>
+                <dd class="mono">{url()}</dd>
+              </>
+            )}
+          </Show>
         </dl>
       </div>
 

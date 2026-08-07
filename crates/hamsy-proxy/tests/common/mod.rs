@@ -62,6 +62,28 @@ where
     addr
 }
 
+/// Installs the `ring` rustls `CryptoProvider` as the process-level default,
+/// exactly once.
+///
+/// Under `cargo test --workspace`, Cargo's feature unification links both
+/// rustls crypto backends into this test binary: `hamsy-proxy` pins `ring`
+/// (see `crates/hamsy-proxy/Cargo.toml`), while `hamsy-cli`'s `self_update`
+/// -> `reqwest`+rustls pulls in `aws-lc-rs` (see `crates/hamsy-cli/Cargo.toml`).
+/// With both backends present, rustls 0.23 refuses to auto-pick one and
+/// panics on the first `ServerConfig`/`ClientConfig` builder call. The
+/// `hamsy-cli` binary works around this by installing `ring` explicitly in
+/// `main()`; this test binary has no such single entry point (tests run
+/// concurrently and each spins up its own TLS origin/proxy), so every
+/// harness function that touches rustls calls this first. `install_default`
+/// errors if a provider is already installed (another test won the race),
+/// which is harmless, so the error is ignored rather than unwrapped.
+fn install_crypto_provider() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Spawns a TLS origin server (self-signed cert for `localhost`), returning
 /// its address plus the certificate's DER bytes - handed to a test client
 /// that should trust the origin directly (used by the passthrough test).
@@ -70,6 +92,8 @@ where
     F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Response<OriginBody>> + Send + 'static,
 {
+    install_crypto_provider();
+
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .expect("self-signed cert");
     let cert_der = certified.cert.der().to_vec();
@@ -137,6 +161,8 @@ pub async fn spawn_proxy(settings: Settings) -> TestProxy {
 /// up a throwaway TLS origin server signed by a one-off self-signed cert
 /// that isn't in any real trust store.
 pub async fn spawn_proxy_trusting(settings: Settings, extra_roots: &[Vec<u8>]) -> TestProxy {
+    install_crypto_provider();
+
     let dir = tempfile::tempdir().expect("tempdir");
     let ca = Arc::new(CertAuthority::load_or_generate(dir.path()).expect("ca"));
     let rules = Arc::new(RulesStore::load(&dir.path().join("rules.json")));

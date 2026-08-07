@@ -28,6 +28,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 - [Rules](#rules)
 - [Mobile (iOS/Android)](#mobile-iosandroid)
 - [Certificate-pinned apps will not work](#certificate-pinned-apps-will-not-work)
+- [Capturing traffic to a local server](#capturing-traffic-to-a-local-server)
 - [Troubleshooting](#troubleshooting)
 - [HAR export/import](#har-exportimport)
 - [Architecture](#architecture)
@@ -335,6 +336,61 @@ One example per action category (there are more variants — see `docs/RULES.md`
 
 Apps that pin their expected TLS certificate (banking apps, some chat apps) will reject hamsy-proxy's minted certificate and fail to connect, by design, regardless of whether the CA is trusted. This is the same limitation every MITM debugging proxy has — Proxyman, Charles, mitmproxy included.
 
+## Capturing traffic to a local server
+
+Pointing a rule at a local app, or just wanting to watch a dev server's own traffic, runs into a routing wall before hamsy-proxy is even involved. hamsy captures loopback traffic correctly once it reaches the proxy port — nothing in the capture pipeline treats `127.0.0.1`/`localhost` specially, and MITM'ing your own local dev server is a primary use case (`passthroughPresets` deliberately excludes loopback from every built-in preset, see the Configuration table). The reason a local server's traffic doesn't show up is that it never reaches hamsy in the first place, for two independent reasons that are easy to conflate:
+
+- **The OS system proxy's bypass list.** `systemProxyBypass` (see the Configuration table) defaults to `["localhost", "127.0.0.1", "::1", "*.local"]`, and hamsy applies it as the OS proxy's bypass list whenever it turns the system proxy on — by `hamsy run`, `hamsy proxy on`, or the web UI's Settings toggle. Any client that honors the OS proxy setting (which is most of them) connects to those hosts directly instead of through hamsy, by design — it's what keeps hamsy from routing its own UI/API traffic through itself. Clear `systemProxyBypass` in Settings (or set it to `[]` in `settings.json`) and this half of the problem goes away.
+- **The browser's own internal loopback bypass.** Chrome and Firefox each separately hardcode a bypass for loopback addresses that has nothing to do with the OS proxy's bypass list — clearing `systemProxyBypass` does not touch it. A browser still won't proxy its own `localhost`/`127.0.0.1` requests until you override this directly (below).
+
+**Non-browser clients** are the easy case: point the client at hamsy explicitly instead of going through the OS proxy, which sidesteps both bypass mechanisms above entirely.
+
+```
+export http_proxy=http://127.0.0.1:9080
+export https_proxy=http://127.0.0.1:9080
+```
+
+For a JVM app, the equivalent is a pair of system properties:
+
+```
+-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=9080 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=9080
+```
+
+For HTTPS the client also needs to trust hamsy's CA, same as any other MITM'd traffic — see [Quick start](#quick-start) (`hamsy cert install`).
+
+**Browsers** need both pieces: pointed at hamsy explicitly, and told to override their internal loopback bypass. The recipe that works on macOS:
+
+```
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --proxy-server="http://127.0.0.1:9080" --proxy-bypass-list="<-loopback>" --user-data-dir=/tmp/hamsy-chrome
+```
+
+Linux (the binary is normally `google-chrome` on `PATH`) and Windows use the same flags against a different binary:
+
+```
+google-chrome --proxy-server="http://127.0.0.1:9080" --proxy-bypass-list="<-loopback>" --user-data-dir=/tmp/hamsy-chrome
+```
+```
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --proxy-server="http://127.0.0.1:9080" --proxy-bypass-list="<-loopback>" --user-data-dir=C:\hamsy-chrome-profile
+```
+
+`--proxy-bypass-list="<-loopback>"` is a literal Chrome flag, not a placeholder to fill in — `<-loopback>` is the syntax Chrome uses to remove loopback from its built-in bypass list. The separate `--user-data-dir` matters for a reason that trips people up: Chrome only applies `--proxy-server`/`--proxy-bypass-list` when it starts a genuinely new browser process — if a normal Chrome window is already open on your default profile, a second `chrome` invocation just hands its arguments to that already-running process and the flags are silently ignored. Pointing `--user-data-dir` at an empty directory forces a fresh process, which also keeps this proxied session's cookies out of your everyday profile.
+
+Firefox needs its proxy configured as usual (Settings → Network Settings → Manual proxy configuration, `127.0.0.1` / `9080` for both HTTP and HTTPS, with the "No Proxy for" field cleared of `localhost`/`127.0.0.1`) plus one `about:config` change to defeat its own internal bypass: set `network.proxy.allow_hijacking_localhost` to `true`.
+
+**Or skip both bypass mechanisms without touching the browser at all**, by reaching the local server through a hostname that isn't a loopback literal — an `/etc/hosts` entry (`127.0.0.1  local.hamsy.test`) or the machine's own LAN IP. Neither `systemProxyBypass`'s default list nor a browser's internal bypass matches anything but `localhost`/`127.0.0.1`/`::1`/`*.local`, so a hostname like `local.hamsy.test` goes through an ordinary, unmodified browser with no launch flags and no `about:config` edit. The tradeoff: the local app has to actually emit that hostname (not `127.0.0.1`) in whatever URLs it hands back, and the `/etc/hosts` entry is a system-wide edit rather than something scoped to one browser session.
+
+**The manifest-rewrite workflow** is the pattern this section exists for: a rule redirects a CDN URL to a local app —
+
+```json
+{"type": "redirect", "to": "http://127.0.0.1:8082/$1"}
+```
+
+— matched against, say, `https://cdn.example.com/(.*)`. The local app receives the request, and rewrites the rendition/segment URLs inside the manifest it returns to point at itself. The player then fetches those directly — plain requests to `127.0.0.1:8082`, no rule involved. With the client routed through hamsy and both loopback bypasses cleared as above, those follow-on requests show up as their own flows just like anything else. This is exactly the case where the `/etc/hosts`-alias option above tends to be the best fit: you already control what hostname the local app writes into the manifest, so emitting `local.hamsy.test` instead of `127.0.0.1` there means the follow-on requests need no browser flags or profile juggling at all.
+
+The original rule-rewritten request is filed in the Traffic list under the CDN URL you actually requested, not the rewrite target — that's deliberate, Charles-style Map Remote behavior (see [Rules](#rules)), not a bug. To confirm where it actually went, open its detail pane: the Overview tab's `Server` row shows the address actually contacted, and — because a rewrite happened — a `Sent to` row shows the rewrite target.
+
+**One thing that's easy to get wrong**: when a rule redirects to a local app, target it as `http://127.0.0.1:8082/...` or `http://localhost:8082/...`, not `http://0.0.0.0:8082/...`. `0.0.0.0` is a bind-any address — it tells a server "listen on every interface," it isn't a real destination to connect to. It happens to work as a rule target on macOS and Linux (the kernel treats it as `127.0.0.1` for outbound connections), but that's not portable and it confuses some clients, so prefer a real loopback address.
+
 ## Troubleshooting
 
 - **HTTPS sites show a connection error / "your connection is not private"** — the CA isn't trusted by the client yet. Run `hamsy cert install`. On iOS, installing the profile alone is not enough — you also need the Certificate Trust Settings step in [Mobile (iOS/Android)](#mobile-iosandroid).
@@ -343,6 +399,7 @@ Apps that pin their expected TLS certificate (banking apps, some chat apps) will
   export http_proxy=http://127.0.0.1:9080
   export https_proxy=http://127.0.0.1:9080
   ```
+- **A local dev server (`localhost`/`127.0.0.1`) never shows up in the Traffic list**, even though loopback isn't in any `passthroughPresets` — see [Capturing traffic to a local server](#capturing-traffic-to-a-local-server): the OS system proxy's default bypass list keeps this traffic from ever reaching hamsy's proxy port, and browsers separately bypass loopback internally regardless of that list.
 - **`hamsy` refuses to start, printing "port ... is already in use"** — pass `--proxy-port`/`--ui-port` (the error message names the one that's already in use). Both listeners are bound before anything else happens — before the startup banner prints, before the browser opens — so a port conflict is always reported cleanly rather than leaving a half-started process behind.
 - **Some app breaks entirely once the proxy/CA is on**, rather than just showing one failed request — almost always certificate pinning; see [Certificate-pinned apps will not work](#certificate-pinned-apps-will-not-work). The common cases (cloud CLIs, container registries, Meta/Apple/Google apps and services) are already excluded by default via `passthroughPresets` — check whether the relevant preset is still enabled before assuming this is a new problem. For anything else, add the host to `passthroughHosts` (Settings, or `settings.json` directly) so it's never MITM'd. Conversely, if you actually want to intercept a host one of these presets covers, turn that preset off in Settings.
 - **The web UI shows a bare "Web UI not built" placeholder page** instead of the real UI — the binary was built without `--features embed-ui`, and no built `ui/dist` was found on disk either. See [Install / build](#install--build) for the exact lookup order (`$HAMSY_UI_DIR`, then `./ui/dist`, then `<exe dir>/ui/dist`) and how to build it.
@@ -395,6 +452,7 @@ Data lives under `$HAMSY_HOME` if set, otherwise `~/.hamsy` (`%USERPROFILE%\.ham
 | `theme` | `"dark"` | UI theme name. |
 | `upstreamProxy` | `null` | Optional upstream proxy to chain through, e.g. `"http://host:port"`. |
 | `paused` | `false` | Whether capture is currently paused. |
+| `systemProxyBypass` | `["localhost", "127.0.0.1", "::1", "*.local"]` | Host bypass list applied whenever the OS system proxy is enabled — by `hamsy run`, `hamsy proxy on`, or the web UI's Settings toggle, all three read this same setting. Traffic to these hosts connects directly instead of through hamsy. Defaults to loopback so hamsy doesn't route its own UI/API traffic through itself. Note: because loopback is bypassed at the OS level by default, `http://localhost:...` traffic never reaches hamsy even though `passthroughPresets` deliberately allows MITM'ing it — see [Capturing traffic to a local server](#capturing-traffic-to-a-local-server) for how to actually capture a local server. |
 
 ## Development
 

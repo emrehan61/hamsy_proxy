@@ -5,6 +5,7 @@ import type { Component } from "solid-js";
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import { wsClient, type WsStatus } from "../lib/ws";
 import { setTheme, theme } from "../stores/settings";
+import { apiState, systemProxyBusy, toggleSystemProxy } from "../stores/systemProxy";
 import Button from "./Button";
 
 export interface ToolbarProps {
@@ -106,6 +107,56 @@ const ExportHarMenu: Component<{
   );
 };
 
+// Distinct from Pause: Pause leaves hamsy as the proxy and just stops
+// recording; this disengages the OS *system* proxy so traffic goes direct
+// and nothing new arrives at hamsy at all. Named "system proxy" rather than
+// a bare "proxy off" because it doesn't stop clients pointed at hamsy
+// directly (env vars, a phone set up via the Setup page) — those keep
+// flowing and keep being captured either way.
+const SystemProxyControl: Component = () => {
+  const proxy = () => apiState()?.systemProxy;
+  const port = () => apiState()?.proxyPort;
+  const loading = () => apiState() === undefined;
+  const supported = () => proxy()?.supported !== false;
+  const enabled = () => proxy()?.enabled ?? false;
+
+  const label = () => {
+    if (loading() || !supported()) return "System proxy";
+    return enabled() ? "System proxy: On" : "System proxy: Off";
+  };
+
+  const tooltip = () => {
+    if (loading()) return "Loading system proxy state…";
+    const p = proxy();
+    if (!p || !supported()) {
+      return `System proxy control isn't supported on this platform${p ? ` (${p.platform})` : ""}. Point clients at 127.0.0.1:${port() ?? "?"} manually.`;
+    }
+    if (enabled()) {
+      return `hamsy is your OS's system proxy (127.0.0.1:${port() ?? "?"}). Click to turn it off and restore your previous proxy settings — clients pointed at hamsy directly (env vars, a phone from Setup) keep working and stay captured either way.`;
+    }
+    return `Your OS is not routed through hamsy right now — only clients pointed at 127.0.0.1:${port() ?? "?"} directly are captured. Click to make hamsy the system proxy again.`;
+  };
+
+  const onClick = () => void toggleSystemProxy(!enabled());
+
+  return (
+    <Button
+      variant="default"
+      size="sm"
+      icon={enabled() ? "plug" : "plug-off"}
+      disabled={loading() || !supported() || systemProxyBusy()}
+      title={tooltip()}
+      onClick={onClick}
+    >
+      <span
+        class={`toolbar__system-proxy-dot${enabled() ? " toolbar__system-proxy-dot--on" : " toolbar__system-proxy-dot--off"}`}
+        aria-hidden="true"
+      />
+      {label()}
+    </Button>
+  );
+};
+
 const Toolbar: Component<ToolbarProps> = (props) => {
   const onClearClick = () => {
     if (confirm("Clear all captured flows? This cannot be undone.")) {
@@ -124,6 +175,7 @@ const Toolbar: Component<ToolbarProps> = (props) => {
       >
         {props.paused ? "Resume" : "Pause"}
       </Button>
+      <SystemProxyControl />
       <Button variant="ghost" size="sm" icon="trash" onClick={onClearClick} aria-label="Clear flows">
         Clear
       </Button>

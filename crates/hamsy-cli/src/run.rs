@@ -55,10 +55,6 @@ pub struct RunArgs {
     pub no_https: bool,
 }
 
-/// Bypass list applied when hamsy-proxy enables the OS system proxy: traffic to
-/// these hosts is left to connect directly rather than through the proxy.
-const SYSTEM_PROXY_BYPASS: &[&str] = &["localhost", "127.0.0.1", "::1", "*.local"];
-
 /// RAII guard: while alive, this process may have enabled the OS system
 /// proxy via `sysproxy_state::acquire`. Its `Drop` restores from the
 /// marker on *any* exit path this process takes, including an early `?`
@@ -162,6 +158,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let ui_port = settings.ui_port;
     let manual_proxy_setting = settings.manual_proxy;
     let max_flows = settings.max_flows;
+    let system_proxy_bypass = settings.system_proxy_bypass.clone();
 
     // Build the shared handles once, mirroring
     // `hamsy-proxy/tests/common/mod.rs::spawn_proxy_trusting`.
@@ -265,8 +262,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
         !manual_proxy_setting
     };
     if system_proxy_requested {
-        let bypass: Vec<String> = SYSTEM_PROXY_BYPASS.iter().map(|s| s.to_string()).collect();
-        match hamsy_api::sysproxy_state::acquire(&data_dir, "127.0.0.1", proxy_port, &bypass) {
+        match hamsy_api::sysproxy_state::acquire(
+            &data_dir,
+            "127.0.0.1",
+            proxy_port,
+            &system_proxy_bypass,
+        ) {
             Ok(()) => {
                 tracing::info!("enabled the OS system proxy");
                 println!("  System proxy enabled (127.0.0.1:{proxy_port}).");

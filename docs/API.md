@@ -370,6 +370,13 @@ GET    /api/state
                      "windows" / "linux" / "unknown"; `supported` is
                      whether this platform's system-proxy integration is
                      implemented at all (true only for macos/windows/linux).
+                     `systemProxy.enabled` specifically means "the OS proxy
+                     is enabled and currently points at *this* hamsy
+                     instance" (`127.0.0.1:<proxyPort>`) -- not merely
+                     "some OS proxy is on". If another application (or the
+                     user, by hand) holds the OS proxy, or it points at a
+                     different host/port, this reads `false`, even though
+                     the OS proxy is in fact enabled.
 
 GET    /api/flows?limit=&afterSeq=&q=&methods=&statusClass=&resourceTypes=&host=&onlyModified=
                      -> 200 { "flows": FlowSummary[] }
@@ -480,6 +487,17 @@ POST   /api/system-proxy
                      Disabling without ever having enabled it through one
                      of those tracked paths still just turns the proxy
                      off (there's no snapshot to restore).
+                     Enabling also applies the configured
+                     `systemProxyBypass` setting (default: loopback --
+                     `localhost`, `127.0.0.1`, `::1`, `*.local`) as the OS
+                     proxy's bypass list, same as `hamsy run` and
+                     `hamsy proxy on` -- all three share this one setting
+                     rather than each hardcoding their own list. See the
+                     top-level README.md's "Capturing traffic to a local
+                     server" section for how to actually route loopback
+                     traffic through this bypass when you need to capture
+                     it (the OS bypass list is only half the problem --
+                     browsers separately bypass loopback internally).
 
 GET    /api/setup
                      -> 200 {

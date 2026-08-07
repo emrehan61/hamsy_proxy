@@ -81,6 +81,29 @@ pub struct Settings {
     pub upstream_proxy: Option<String>,
     /// Whether capture is currently paused.
     pub paused: bool,
+    /// Host bypass list applied whenever hamsy enables the OS system proxy
+    /// -- from `hamsy run`, `hamsy proxy on`, and the web UI's Settings
+    /// toggle alike (all three read this one field, replacing what used to
+    /// be a copy-pasted constant in each). Traffic to these hosts connects
+    /// directly instead of through hamsy.
+    ///
+    /// Defaults to loopback addresses so that, when the system proxy is
+    /// active, hamsy doesn't end up routing its own UI/API traffic through
+    /// itself. Because this struct is `#[serde(default)]`, an existing
+    /// `~/.hamsy/settings.json` written before this field existed has no
+    /// `systemProxyBypass` key and therefore picks up this default
+    /// automatically on next load.
+    #[serde(default = "default_system_proxy_bypass")]
+    pub system_proxy_bypass: Vec<String>,
+}
+
+/// Default value for [`Settings::system_proxy_bypass`]. See that field's
+/// doc comment.
+fn default_system_proxy_bypass() -> Vec<String> {
+    ["localhost", "127.0.0.1", "::1", "*.local"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 impl Default for Settings {
@@ -102,6 +125,7 @@ impl Default for Settings {
             theme: "dark".to_string(),
             upstream_proxy: None,
             paused: false,
+            system_proxy_bypass: default_system_proxy_bypass(),
         }
     }
 }
@@ -279,6 +303,10 @@ mod tests {
             s.passthrough_presets,
             passthrough_presets::default_enabled()
         );
+        assert_eq!(
+            s.system_proxy_bypass,
+            vec!["localhost", "127.0.0.1", "::1", "*.local"]
+        );
     }
 
     #[test]
@@ -327,6 +355,25 @@ mod tests {
         fs::write(&path, r#"{"proxyPort":9080,"uiPort":9081}"#).unwrap();
         let s = Settings::load(&path);
         assert_eq!(s.max_total_bytes, Settings::default().max_total_bytes);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_settings_missing_system_proxy_bypass_defaults() {
+        // Simulates a pre-existing `~/.hamsy/settings.json` written before
+        // `systemProxyBypass` existed: the field is absent, and
+        // `#[serde(default = "default_system_proxy_bypass")]` must fill it
+        // in rather than failing to parse.
+        let path = std::env::temp_dir().join(format!(
+            "hamsy-test-legacy-bypass-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, r#"{"proxyPort":9080,"uiPort":9081}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(
+            s.system_proxy_bypass,
+            Settings::default().system_proxy_bypass
+        );
         let _ = fs::remove_file(&path);
     }
 

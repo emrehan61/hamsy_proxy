@@ -31,13 +31,50 @@ pub fn supported() -> bool {
     ))
 }
 
-/// Returns whether the system HTTP proxy currently appears to be enabled.
+/// Returns whether *some* system HTTP proxy currently appears to be
+/// enabled, regardless of who set it up or what it points at.
+///
+/// This does NOT mean "hamsy-proxy's proxy is on" -- another application
+/// (or the user, by hand) can hold the OS proxy just as well. Use
+/// `status_for` when the question is specifically "is the OS proxy
+/// pointed at *this* hamsy instance"; that's almost always the more
+/// useful question for anything user-facing. This generic form exists for
+/// `hamsy proxy status`, which intentionally reports on the OS-wide
+/// setting.
 ///
 /// Errors (rather than `Ok(false)`) are returned when the platform is
 /// unsupported or the underlying command fails to run at all, so callers
 /// can distinguish "definitely off" from "couldn't check".
 pub fn status() -> Result<bool, String> {
     imp::status()
+}
+
+/// Returns whether the system HTTP proxy is currently enabled *and*
+/// pointed at `host:port` -- i.e. whether the OS proxy is this hamsy
+/// instance's doing, not merely "some proxy is on". `host`/`port` should
+/// be exactly what this instance would pass to `enable` (always
+/// `"127.0.0.1"` and `settings.proxy_port` at every call site today).
+///
+/// Same error semantics as `status()`: `Err` means "couldn't check", not
+/// "not ours".
+pub fn status_for(host: &str, port: u16) -> Result<bool, String> {
+    imp::status_for(host, port)
+}
+
+/// Whether `actual` (a hostname/address reported back by the OS) refers
+/// to the same host as `expected` (what this hamsy instance configured,
+/// always a loopback address in practice). Only tolerant of the common
+/// `127.0.0.1` <-> `localhost` spelling difference; anything else must
+/// match exactly (case-insensitively).
+fn host_matches(expected: &str, actual: &str) -> bool {
+    fn normalize(h: &str) -> std::borrow::Cow<'_, str> {
+        if h.eq_ignore_ascii_case("127.0.0.1") || h.eq_ignore_ascii_case("localhost") {
+            std::borrow::Cow::Borrowed("127.0.0.1")
+        } else {
+            std::borrow::Cow::Borrowed(h)
+        }
+    }
+    normalize(expected).eq_ignore_ascii_case(&normalize(actual))
 }
 
 /// Points the OS system HTTP/HTTPS proxy at `host:port`, bypassing `bypass`
@@ -155,6 +192,35 @@ mod imp {
             .any(|l| l.trim().eq_ignore_ascii_case("Enabled: Yes")))
     }
 
+    /// Only checks the first active network service (same simplification
+    /// `status`/`enable`/`disable` already make in this file) -- a proxy
+    /// that's ours on one service and not another is not a case this
+    /// reports separately.
+    pub fn status_for(host: &str, port: u16) -> Result<bool, String> {
+        let services = network_services()?;
+        let Some(first) = services.first() else {
+            return Ok(false);
+        };
+        let kv = parse_kv(&run("networksetup", &["-getwebproxy", first])?);
+        Ok(matches_expected(&kv, host, port))
+    }
+
+    /// True iff `kv` (parsed `-getwebproxy` output) shows the proxy
+    /// enabled and pointed at `host:port`.
+    fn matches_expected(kv: &HashMap<String, String>, host: &str, port: u16) -> bool {
+        let enabled = kv
+            .get("Enabled")
+            .is_some_and(|v| v.eq_ignore_ascii_case("yes"));
+        if !enabled {
+            return false;
+        }
+        let server_matches = kv
+            .get("Server")
+            .is_some_and(|s| super::host_matches(host, s));
+        let port_matches = kv.get("Port").and_then(|p| p.parse::<u16>().ok()) == Some(port);
+        server_matches && port_matches
+    }
+
     pub fn enable(host: &str, port: u16, bypass: &[String]) -> Result<(), String> {
         let services = network_services()?;
         if services.is_empty() {
@@ -170,16 +236,33 @@ mod imp {
                 "networksetup",
                 &["-setsecurewebproxy", svc, host, &port_str, "off"],
             )?;
-            if !bypass.is_empty() {
-                let mut args = vec!["-setproxybypassdomains".to_string(), svc.clone()];
-                args.extend(bypass.iter().cloned());
-                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                run("networksetup", &arg_refs)?;
-            }
+            let args = bypass_domains_args(svc, bypass);
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            run("networksetup", &arg_refs)?;
             run("networksetup", &["-setwebproxystate", svc, "on"])?;
             run("networksetup", &["-setsecurewebproxystate", svc, "on"])?;
         }
         Ok(())
+    }
+
+    /// Builds the argv for `networksetup -setproxybypassdomains` that
+    /// applies `bypass` to `service`. Always produces a call that actively
+    /// sets the OS-level list -- including an empty `bypass`, which is
+    /// encoded as the literal `"Empty"` keyword `networksetup` documents
+    /// for clearing bypass-domain entries (`man networksetup`: "Specify
+    /// \"Empty\" for domain1 to clear all Domain Name entries."). This
+    /// must never be skipped for an empty list: skipping leaves whatever
+    /// bypass domains the OS already had (e.g. from a prior `hamsy run`),
+    /// so clearing `systemProxyBypass` in settings would silently do
+    /// nothing.
+    fn bypass_domains_args(service: &str, bypass: &[String]) -> Vec<String> {
+        let mut args = vec!["-setproxybypassdomains".to_string(), service.to_string()];
+        if bypass.is_empty() {
+            args.push("Empty".to_string());
+        } else {
+            args.extend(bypass.iter().cloned());
+        }
+        args
     }
 
     pub fn disable() -> Result<(), String> {
@@ -258,12 +341,9 @@ mod imp {
             return Err("snapshot is not a macOS snapshot".to_string());
         };
         for svc in services {
-            if !svc.bypass_domains.is_empty() {
-                let mut args = vec!["-setproxybypassdomains".to_string(), svc.service.clone()];
-                args.extend(svc.bypass_domains.iter().cloned());
-                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                run("networksetup", &arg_refs)?;
-            }
+            let args = bypass_domains_args(&svc.service, &svc.bypass_domains);
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            run("networksetup", &arg_refs)?;
 
             if svc.web_enabled {
                 if let (Some(server), Some(port)) = (&svc.web_server, svc.web_port) {
@@ -336,6 +416,57 @@ mod imp {
             let domains = parse_bypass_domains("There aren't any bypass domains set.\n\n");
             assert!(domains.is_empty());
         }
+
+        #[test]
+        fn bypass_domains_args_empty_bypass_uses_empty_keyword_not_skipped() {
+            // This is the argv that must be produced -- and must always be
+            // produced, never skipped -- for an empty `systemProxyBypass`,
+            // so clearing the setting actually clears the OS bypass list.
+            let args = bypass_domains_args("Wi-Fi", &[]);
+            assert_eq!(args, vec!["-setproxybypassdomains", "Wi-Fi", "Empty"]);
+        }
+
+        #[test]
+        fn bypass_domains_args_nonempty_bypass_lists_each_domain() {
+            let args =
+                bypass_domains_args("Wi-Fi", &["localhost".to_string(), "127.0.0.1".to_string()]);
+            assert_eq!(
+                args,
+                vec!["-setproxybypassdomains", "Wi-Fi", "localhost", "127.0.0.1"]
+            );
+        }
+
+        #[test]
+        fn matches_expected_true_when_enabled_and_host_port_match() {
+            let kv = parse_kv("Enabled: Yes\nServer: 127.0.0.1\nPort: 9080\n");
+            assert!(matches_expected(&kv, "127.0.0.1", 9080));
+        }
+
+        #[test]
+        fn matches_expected_false_when_port_differs() {
+            let kv = parse_kv("Enabled: Yes\nServer: 127.0.0.1\nPort: 8281\n");
+            assert!(!matches_expected(&kv, "127.0.0.1", 9080));
+        }
+
+        #[test]
+        fn matches_expected_false_when_host_differs() {
+            let kv = parse_kv("Enabled: Yes\nServer: 10.0.0.5\nPort: 9080\n");
+            assert!(!matches_expected(&kv, "127.0.0.1", 9080));
+        }
+
+        #[test]
+        fn matches_expected_false_when_disabled() {
+            // Enabled: No, even with a matching host/port -- e.g. hamsy
+            // configured the proxy and then it was toggled off elsewhere.
+            let kv = parse_kv("Enabled: No\nServer: 127.0.0.1\nPort: 9080\n");
+            assert!(!matches_expected(&kv, "127.0.0.1", 9080));
+        }
+
+        #[test]
+        fn matches_expected_true_for_loopback_spelling_equivalence() {
+            let kv = parse_kv("Enabled: Yes\nServer: localhost\nPort: 9080\n");
+            assert!(matches_expected(&kv, "127.0.0.1", 9080));
+        }
     }
 }
 
@@ -349,6 +480,32 @@ mod imp {
     pub fn status() -> Result<bool, String> {
         let out = run("reg", &["query", KEY, "/v", "ProxyEnable"])?;
         Ok(out.contains("0x1"))
+    }
+
+    pub fn status_for(host: &str, port: u16) -> Result<bool, String> {
+        let enabled = run("reg", &["query", KEY, "/v", "ProxyEnable"])?.contains("0x1");
+        let server = query_value("ProxyServer")?;
+        Ok(matches_expected(enabled, server.as_deref(), host, port))
+    }
+
+    /// True iff `enabled` and `server` (a Windows `ProxyServer` registry
+    /// value) points at `host:port`. `enable` here only ever writes the
+    /// plain `"host:port"` form (applying to all protocols); Windows can
+    /// also hold a per-protocol form like
+    /// `"http=127.0.0.1:9080;https=127.0.0.1:9080"` (e.g. set by some
+    /// other tool), which this does not attempt to parse -- it falls
+    /// through to the conservative "not ours" answer instead.
+    fn matches_expected(enabled: bool, server: Option<&str>, host: &str, port: u16) -> bool {
+        if !enabled {
+            return false;
+        }
+        let Some(server) = server else {
+            return false;
+        };
+        let Some((s_host, s_port)) = server.rsplit_once(':') else {
+            return false;
+        };
+        s_port.parse::<u16>().ok() == Some(port) && super::host_matches(host, s_host)
     }
 
     pub fn enable(host: &str, port: u16, bypass: &[String]) -> Result<(), String> {
@@ -382,20 +539,9 @@ mod imp {
             ],
         )?;
         let override_list = bypass.join(";");
-        run(
-            "reg",
-            &[
-                "add",
-                KEY,
-                "/v",
-                "ProxyOverride",
-                "/t",
-                "REG_SZ",
-                "/d",
-                &override_list,
-                "/f",
-            ],
-        )?;
+        let args = proxy_override_args(&override_list);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run("reg", &arg_refs)?;
         // NOTE: this does not broadcast `INTERNET_OPTION_SETTINGS_CHANGED` /
         // `INTERNET_OPTION_REFRESH` via `InternetSetOptionW`, since doing so
         // would require a `winapi`/`windows` crate dependency we're avoiding
@@ -403,6 +549,28 @@ mod imp {
         // WinINet-based ones) may not notice the change until restarted.
         // This is an accepted limitation.
         Ok(())
+    }
+
+    /// Builds the argv for `reg add ... /v ProxyOverride ...` that writes
+    /// `override_list` (a `;`-joined bypass list, possibly empty). This is
+    /// always run unconditionally -- never skipped for an empty
+    /// `override_list` -- because an empty `ProxyOverride` value is
+    /// Windows' normal, correct way of expressing "no bypass exceptions"
+    /// at the WinINet layer; skipping the write would leave whatever
+    /// override list was already in the registry (e.g. from a prior
+    /// `hamsy run`) instead of clearing it.
+    fn proxy_override_args(override_list: &str) -> Vec<String> {
+        vec![
+            "add".to_string(),
+            KEY.to_string(),
+            "/v".to_string(),
+            "ProxyOverride".to_string(),
+            "/t".to_string(),
+            "REG_SZ".to_string(),
+            "/d".to_string(),
+            override_list.to_string(),
+            "/f".to_string(),
+        ]
     }
 
     pub fn disable() -> Result<(), String> {
@@ -538,6 +706,85 @@ mod imp {
             let out = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\n    ProxyEnable    REG_DWORD    0x1\n";
             assert_eq!(parse_reg_value(out, "ProxyEnable"), Some("0x1".to_string()));
         }
+
+        #[test]
+        fn proxy_override_args_empty_bypass_writes_empty_string_not_skipped() {
+            // An empty bypass list must still produce a write (of an empty
+            // value), never be omitted -- omitting it would leave a stale
+            // ProxyOverride value from a prior run in place.
+            let args = proxy_override_args("");
+            assert_eq!(
+                args,
+                vec![
+                    "add",
+                    KEY,
+                    "/v",
+                    "ProxyOverride",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    "",
+                    "/f",
+                ]
+            );
+        }
+
+        #[test]
+        fn proxy_override_args_nonempty_bypass_joins_with_semicolons() {
+            let args = proxy_override_args("localhost;127.0.0.1");
+            let d_index = args.iter().position(|a| a == "/d").unwrap();
+            assert_eq!(args[d_index + 1], "localhost;127.0.0.1");
+        }
+
+        #[test]
+        fn matches_expected_true_when_enabled_and_host_port_match() {
+            assert!(matches_expected(
+                true,
+                Some("127.0.0.1:9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_false_when_port_differs() {
+            assert!(!matches_expected(
+                true,
+                Some("127.0.0.1:8281"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_false_when_host_differs() {
+            assert!(!matches_expected(
+                true,
+                Some("10.0.0.5:9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_false_when_disabled() {
+            assert!(!matches_expected(
+                false,
+                Some("127.0.0.1:9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_true_for_loopback_spelling_equivalence() {
+            assert!(matches_expected(
+                true,
+                Some("localhost:9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
     }
 }
 
@@ -549,6 +796,49 @@ mod imp {
     pub fn status() -> Result<bool, String> {
         let out = run("gsettings", &["get", "org.gnome.system.proxy", "mode"])?;
         Ok(out.trim().trim_matches('\'') == "manual")
+    }
+
+    pub fn status_for(host: &str, port: u16) -> Result<bool, String> {
+        let mode = run("gsettings", &["get", "org.gnome.system.proxy", "mode"])?;
+        let enabled = mode.trim().trim_matches('\'') == "manual";
+        let http_host = gsettings_get("org.gnome.system.proxy.http", "host");
+        let http_port = gsettings_get("org.gnome.system.proxy.http", "port");
+        Ok(matches_expected(
+            enabled,
+            http_host.as_deref(),
+            http_port.as_deref(),
+            host,
+            port,
+        ))
+    }
+
+    /// True iff `enabled` (GNOME proxy `mode` is `manual`) and the
+    /// `org.gnome.system.proxy.http` `host`/`port` (raw gsettings text,
+    /// e.g. `"'127.0.0.1'"` / `"9080"`) match `host`/`port`. Only the
+    /// `http` sub-schema is checked, not `https` -- `enable` always
+    /// writes the same host:port to both, so checking one is enough to
+    /// detect what `enable` itself can produce; this mirrors the
+    /// "check the first active service" simplification already used on
+    /// macOS.
+    fn matches_expected(
+        enabled: bool,
+        http_host: Option<&str>,
+        http_port: Option<&str>,
+        host: &str,
+        port: u16,
+    ) -> bool {
+        if !enabled {
+            return false;
+        }
+        let Some(http_host) = http_host else {
+            return false;
+        };
+        let Some(http_port) = http_port else {
+            return false;
+        };
+        let actual_host = http_host.trim().trim_matches('\'');
+        let actual_port: Option<u16> = http_port.trim().trim_matches('\'').parse().ok();
+        super::host_matches(host, actual_host) && actual_port == Some(port)
     }
 
     /// Formats `entries` as a gsettings/GVariant string-array literal, e.g.
@@ -586,13 +876,16 @@ mod imp {
             "gsettings",
             &["set", "org.gnome.system.proxy.https", "port", &port_str],
         )?;
-        if !bypass.is_empty() {
-            let literal = gvariant_string_array(bypass);
-            run(
-                "gsettings",
-                &["set", "org.gnome.system.proxy", "ignore-hosts", &literal],
-            )?;
-        }
+        // Always set `ignore-hosts`, even for an empty `bypass` -- an
+        // empty GVariant array (`[]`) actively clears the ignore list at
+        // the gsettings/dconf level, so it must never be skipped. Skipping
+        // it would leave whatever `ignore-hosts` the OS already had (e.g.
+        // from a prior `hamsy run`), silently keeping localhost bypassed.
+        let literal = gvariant_string_array(bypass);
+        run(
+            "gsettings",
+            &["set", "org.gnome.system.proxy", "ignore-hosts", &literal],
+        )?;
         Ok(())
     }
 
@@ -712,6 +1005,61 @@ mod imp {
         fn gvariant_string_array_formats_empty_list() {
             assert_eq!(gvariant_string_array(&[]), "[]");
         }
+
+        #[test]
+        fn matches_expected_true_when_enabled_and_host_port_match() {
+            assert!(matches_expected(
+                true,
+                Some("'127.0.0.1'"),
+                Some("9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_false_when_port_differs() {
+            assert!(!matches_expected(
+                true,
+                Some("'127.0.0.1'"),
+                Some("8281"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_false_when_host_differs() {
+            assert!(!matches_expected(
+                true,
+                Some("'10.0.0.5'"),
+                Some("9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_false_when_disabled() {
+            assert!(!matches_expected(
+                false,
+                Some("'127.0.0.1'"),
+                Some("9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
+
+        #[test]
+        fn matches_expected_true_for_loopback_spelling_equivalence() {
+            assert!(matches_expected(
+                true,
+                Some("'localhost'"),
+                Some("9080"),
+                "127.0.0.1",
+                9080
+            ));
+        }
     }
 }
 
@@ -720,6 +1068,10 @@ mod imp {
     use crate::sysproxy::Snapshot;
 
     pub fn status() -> Result<bool, String> {
+        Err("system proxy control is not supported on this platform".to_string())
+    }
+
+    pub fn status_for(_host: &str, _port: u16) -> Result<bool, String> {
         Err("system proxy control is not supported on this platform".to_string())
     }
 
@@ -760,6 +1112,27 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(snapshot, back);
+    }
+
+    #[test]
+    fn host_matches_exact_match() {
+        assert!(host_matches("127.0.0.1", "127.0.0.1"));
+    }
+
+    #[test]
+    fn host_matches_loopback_spelling_equivalence() {
+        assert!(host_matches("127.0.0.1", "localhost"));
+        assert!(host_matches("localhost", "127.0.0.1"));
+    }
+
+    #[test]
+    fn host_matches_case_insensitive() {
+        assert!(host_matches("127.0.0.1", "LOCALHOST"));
+    }
+
+    #[test]
+    fn host_matches_false_for_different_host() {
+        assert!(!host_matches("127.0.0.1", "192.168.1.5"));
     }
 
     #[test]

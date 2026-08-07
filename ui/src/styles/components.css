@@ -1333,6 +1333,23 @@
   background: var(--red);
 }
 
+.toolbar__system-proxy-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--s1);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.toolbar__system-proxy-dot--on {
+  background: var(--green);
+}
+
+.toolbar__system-proxy-dot--off {
+  background: var(--amber);
+}
+
 .toolbar__export-menu {
   position: relative;
 }

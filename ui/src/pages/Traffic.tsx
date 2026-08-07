@@ -31,10 +31,11 @@ import FlowTable, { type FlowTableApi } from "../components/FlowTable";
 import FlowDetail from "../components/FlowDetail";
 import SplitPane from "../components/SplitPane";
 import Toolbar from "../components/Toolbar";
-import EmptyState from "../components/EmptyState";
+import EmptyState, { type EmptyStateProps } from "../components/EmptyState";
 import SessionTabs, { importHarFileList } from "../components/SessionTabs";
 import HarSessionView from "../components/HarSessionView";
 import Icon from "../components/Icon";
+import { apiState } from "../stores/systemProxy";
 
 // ---- cURL export ----
 //
@@ -154,6 +155,29 @@ const Traffic: Component = () => {
   // ---- pause (settings is the single source of truth; WS is the live
   // control channel, REST persists it for other clients/restarts) ----
   const paused = () => settings()?.paused ?? false;
+
+  // ---- system proxy off (drives the empty-state copy below so a quiet
+  // flow list reads as "proxy is off" rather than "hamsy is broken") ----
+  const systemProxyOff = () => {
+    const sp = apiState()?.systemProxy;
+    return sp !== undefined && sp.supported && !sp.enabled;
+  };
+
+  const noFlowsEmptyState = createMemo<EmptyStateProps>(() => {
+    if (systemProxyOff()) {
+      return {
+        icon: "plug-off",
+        title: "System proxy is off",
+        description: `Hamsy isn't receiving new traffic — use the "System proxy" button above to turn it back on, or point a client at 127.0.0.1:${apiState()?.proxyPort ?? "?"} directly.`,
+      };
+    }
+    return {
+      icon: "list",
+      title: "No flows captured yet",
+      description: `Set your system proxy to 127.0.0.1:${apiState()?.proxyPort ?? "9080"} and install the CA cert.`,
+      action: { label: "Go to Setup", href: "/setup" },
+    };
+  });
 
   const onTogglePause = () => {
     const next = !paused();
@@ -457,17 +481,7 @@ const Traffic: Component = () => {
                   />
                 </Show>
                 <div class="traffic-page__table">
-                  <Show
-                    when={flowCount() > 0}
-                    fallback={
-                      <EmptyState
-                        icon="plug-off"
-                        title="No flows captured yet"
-                        description="Set your system proxy to 127.0.0.1:9080 and install the CA cert."
-                        action={{ label: "Go to Setup", href: "/setup" }}
-                      />
-                    }
-                  >
+                  <Show when={flowCount() > 0} fallback={<EmptyState {...noFlowsEmptyState()} />}>
                     <Show
                       when={filteredFlows().length > 0}
                       fallback={<div class="traffic-page__no-match">No flows match your filters.</div>}

@@ -10,17 +10,26 @@ use crate::ApiState;
 /// Builds the `GET /api/state` response body. Shared with `routes::ws`,
 /// which sends the same shape as the initial `state` event on connect.
 ///
-/// `sysproxy::status()` shells out to a platform command
+/// `sysproxy::status_for` shells out to a platform command
 /// (`networksetup`/`reg`/`gsettings`) synchronously, so it runs via
 /// `spawn_blocking` rather than stalling the calling async task -- this
 /// function is on the hot path for every `GET /api/state` poll and every WS
 /// connect.
+///
+/// `status_for` (not `status`) is used deliberately: `systemProxy.enabled`
+/// must answer "is the OS proxy pointed at *this* hamsy instance", not
+/// "is some OS proxy on at all". Another application (or the user, by
+/// hand) can hold the OS proxy just as well, and reporting that as `true`
+/// here would both mislabel someone else's proxy as hamsy's in the UI and
+/// make the toggle-off control disable it out from under them.
 pub async fn state_snapshot(state: &ApiState) -> Value {
     let settings = state.settings();
-    let system_proxy_enabled = tokio::task::spawn_blocking(sysproxy::status)
-        .await
-        .unwrap_or(Ok(false))
-        .unwrap_or(false);
+    let proxy_port = settings.proxy_port;
+    let system_proxy_enabled =
+        tokio::task::spawn_blocking(move || sysproxy::status_for("127.0.0.1", proxy_port))
+            .await
+            .unwrap_or(Ok(false))
+            .unwrap_or(false);
 
     json!({
         "version": state.version(),

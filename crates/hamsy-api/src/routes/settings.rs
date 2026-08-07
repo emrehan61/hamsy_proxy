@@ -83,8 +83,13 @@ pub async fn system_proxy(
 ) -> Result<Json<Value>, ApiError> {
     if body.enabled {
         let settings = state.settings();
-        sysproxy_state::acquire(state.data_dir(), "127.0.0.1", settings.proxy_port, &[])
-            .map_err(ApiError::BadGateway)?;
+        sysproxy_state::acquire(
+            state.data_dir(),
+            "127.0.0.1",
+            settings.proxy_port,
+            &settings.system_proxy_bypass,
+        )
+        .map_err(ApiError::BadGateway)?;
     } else {
         sysproxy_state::release(state.data_dir()).map_err(ApiError::BadGateway)?;
     }

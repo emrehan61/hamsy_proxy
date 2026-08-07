@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use hamsy_core::{BodyPayload, Flow, FlowState, RequestRecord, ResponseRecord, ServerEvent};
 
-use crate::config::ProxyContext;
+use crate::config::{OwnListener, ProxyContext};
 use crate::error::{ProxyError, Result};
 use crate::http::{self, now_ms, ConnInfo};
 use crate::server;
@@ -49,6 +49,16 @@ pub fn handle_connect(
             Ok(v) => v,
             Err(e) => return http::error_response(StatusCode::BAD_REQUEST, &e.to_string()),
         };
+
+        // A `CONNECT` aimed at hamsy's own proxy port must be refused before
+        // ever completing the tunnel - see `config::OwnListener::ProxyPort`'s
+        // doc. Checked here (rather than only in `http::handle_proxy_request`)
+        // because a blind (non-MITM'd) or opaque tunnel never reaches that
+        // code path at all: it would just hand raw bytes straight back into
+        // this accept loop as a fresh "client" connection.
+        if ctx.own_listener(&host, port) == OwnListener::ProxyPort {
+            return http::self_loop_response(&host, port);
+        }
 
         let upgrade_fut = hyper::upgrade::on(&mut req);
         tokio::spawn(async move {
@@ -195,7 +205,15 @@ async fn run_passthrough_flow<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    if !ctx.should_capture(host) {
+    // Bug 2 (feedback amplification): even a blind, byte-level TLS tunnel
+    // must never be captured if it targets hamsy's own UI/API port - see
+    // `config::OwnListener::UiPort`'s doc. `should_capture` alone only
+    // consults the host allow/deny lists, which know nothing about *which
+    // port* a host maps to, so it can't tell "the UI's own host, on the UI
+    // port" apart from "the UI's own host, on some other service" - hence
+    // the separate `own_listener` check here.
+    let is_own_ui = ctx.own_listener(host, port) == OwnListener::UiPort;
+    if is_own_ui || !ctx.should_capture(host) {
         if let Err(err) = raw_tunnel(client, host, port).await {
             tracing::debug!(%err, host, port, "passthrough tunnel failed");
         }

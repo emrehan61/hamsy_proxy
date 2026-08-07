@@ -197,6 +197,8 @@ export interface Settings {
   captureIncludeHosts: string[];
   captureExcludeHosts: string[];
   manualProxy: boolean;
+  /** Hosts that bypass the proxy at the OS level whenever the system proxy is enabled. */
+  systemProxyBypass: string[];
   captureWebsockets: boolean;
   theme: string;
   upstreamProxy: string | null;

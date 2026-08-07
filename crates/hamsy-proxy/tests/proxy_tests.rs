@@ -254,12 +254,33 @@ async fn redirect_action_retargets_to_different_origin() {
         .expect("create rule");
 
     let client = common::client_trusting_proxy_ca(&proxy);
+    let client_url = format!("http://localhost:{}/", origin_a.port());
     let resp = client
-        .get(format!("http://localhost:{}/", origin_a.port()))
+        .get(client_url.clone())
         .send()
         .await
         .expect("request");
     assert_eq!(resp.text().await.expect("body"), "origin B");
+
+    // `flow.request` must reflect the request as it was actually sent
+    // upstream (the rewrite target), while `flow.original_request` keeps
+    // the client's pre-rule snapshot - both used to collapse onto the same
+    // pre-rule record, silently losing the rewrite from captured data.
+    let flows = proxy.ctx.flows.list(&Default::default());
+    assert_eq!(flows.len(), 1);
+    let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
+    let rewritten_url = format!("http://localhost:{}/", origin_b.port());
+    assert_eq!(
+        flow.request.as_ref().expect("request recorded").url,
+        rewritten_url
+    );
+    assert_eq!(
+        flow.original_request
+            .as_ref()
+            .expect("original_request recorded")
+            .url,
+        client_url
+    );
 }
 
 /// 8. A gzip-encoded response: decoded correctly in the recorded flow, but
@@ -430,4 +451,38 @@ async fn client_app_is_resolved_for_real_loopback_connection() {
         flows[0].app.is_some(),
         "expected the connecting process's app to be resolved on macOS"
     );
+}
+
+/// 12. A request whose target is hamsy's own proxy port must be refused
+/// (508) fast, rather than forwarded - forwarding it would make the proxy
+/// dial itself, which `ProxyContext::own_listener` /
+/// `http::self_loop_response` exist to prevent (see `config.rs`). Wrapped in
+/// a timeout so that if this guard ever regresses, the test fails instead of
+/// hanging the whole suite in the resulting self-proxy loop.
+#[tokio::test]
+async fn request_to_own_proxy_port_is_refused_not_looped() {
+    let proxy = common::spawn_proxy(Settings::default()).await;
+    // `spawn_proxy` binds its listener to an OS-assigned ephemeral port
+    // rather than `settings.proxy_port` (a test-harness simplification, see
+    // its doc), so align the setting with the actual listening port to
+    // reproduce what happens in production once `systemProxyBypass` no
+    // longer excludes loopback: a request the OS routes straight back to
+    // hamsy's own listener.
+    proxy.ctx.settings.write().proxy_port = proxy.addr.port();
+    let client = common::client_trusting_proxy_ca(&proxy);
+
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client
+            .get(format!("http://127.0.0.1:{}/", proxy.addr.port()))
+            .send(),
+    )
+    .await
+    .expect("must not hang - the guard must fail fast rather than looping")
+    .expect("request");
+
+    assert_eq!(resp.status(), 508);
+
+    // And nothing should have been captured for it either way.
+    assert!(proxy.ctx.flows.list(&Default::default()).is_empty());
 }

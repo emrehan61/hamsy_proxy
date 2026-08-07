@@ -10,7 +10,8 @@ import { createStore, reconcile } from "solid-js/store";
 import "../styles/settings.css";
 import type { PassthroughPreset, Rule, Settings as SettingsType } from "../lib/types";
 import * as api from "../lib/api";
-import { getHar, getPassthroughPresets, getState, importHar as importHarApi } from "../lib/api";
+import { getHar, getPassthroughPresets, importHar as importHarApi } from "../lib/api";
+import { apiState, systemProxyBusy, toggleSystemProxy } from "../stores/systemProxy";
 import { triggerDownload } from "../lib/download";
 import { formatBytes, formatDuration } from "../lib/format";
 import { pushToast } from "../stores/ui";
@@ -46,6 +47,7 @@ const EMPTY_SETTINGS: SettingsType = {
   captureIncludeHosts: [],
   captureExcludeHosts: [],
   manualProxy: false,
+  systemProxyBypass: [],
   captureWebsockets: false,
   theme: "dark",
   upstreamProxy: null,
@@ -57,9 +59,7 @@ const FLUSH_MS = 400;
 const Settings: Component = () => {
   const [local, setLocal] = createStore<SettingsType>({ ...EMPTY_SETTINGS });
   const [initialized, setInitialized] = createSignal(false);
-  const [state, { refetch: refetchState }] = createResource(getState);
   const [passthroughPresets] = createResource(getPassthroughPresets);
-  const [systemProxyBusy, setSystemProxyBusy] = createSignal(false);
   const [clearConfirmOpen, setClearConfirmOpen] = createSignal(false);
   const [importRulesPending, setImportRulesPending] = createSignal<Rule[] | null>(null);
   const [importRulesReplace, setImportRulesReplace] = createSignal(false);
@@ -111,17 +111,8 @@ const Settings: Component = () => {
   };
 
   // ---- system proxy ----
-  const onToggleSystemProxy = async (next: boolean) => {
-    setSystemProxyBusy(true);
-    try {
-      await api.setSystemProxy(next);
-      await refetchState();
-    } catch {
-      pushToast({ level: "error", message: "Failed to update system proxy" });
-    } finally {
-      setSystemProxyBusy(false);
-    }
-  };
+  // Shared store (../stores/systemProxy) so this toggle and the Toolbar's
+  // always-visible control read/write the same state and can never disagree.
 
   // ---- data: HAR export/import ----
   const onExportHarAll = async () => {
@@ -376,14 +367,14 @@ const Settings: Component = () => {
             <div class="settings-field">
               <span class="settings-field__label">CA fingerprint</span>
               <div class="settings-field__row">
-                <code class="settings-field__mono-value">{state()?.caFingerprint ?? "—"}</code>
+                <code class="settings-field__mono-value">{apiState()?.caFingerprint ?? "—"}</code>
                 <Button
                   variant="ghost"
                   size="sm"
                   icon="copy"
                   aria-label="Copy CA fingerprint"
                   onClick={() => {
-                    const fp = state()?.caFingerprint;
+                    const fp = apiState()?.caFingerprint;
                     if (!fp) return;
                     navigator.clipboard.writeText(fp).then(
                       () => pushToast({ level: "success", message: "Copied fingerprint" }),
@@ -400,21 +391,42 @@ const Settings: Component = () => {
 
           <section class="settings-section">
             <h2 class="settings-section__title">System proxy</h2>
-            <div class="settings-field settings-field--row" title={state()?.systemProxy.supported === false ? "Not supported on this platform" : undefined}>
+            <div class="settings-field settings-field--row" title={apiState()?.systemProxy.supported === false ? "Not supported on this platform" : undefined}>
               <Toggle
-                checked={state()?.systemProxy.enabled ?? false}
-                disabled={systemProxyBusy() || state()?.systemProxy.supported === false}
-                onChange={(v) => void onToggleSystemProxy(v)}
+                checked={apiState()?.systemProxy.enabled ?? false}
+                disabled={systemProxyBusy() || apiState()?.systemProxy.supported === false}
+                onChange={(v) => void toggleSystemProxy(v)}
                 label="Set as system proxy"
               />
               <p class="settings-field__desc">
-                Platform: {state()?.systemProxy.platform ?? "unknown"}
-                <Show when={state()?.systemProxy.supported === false}> — not supported on this platform.</Show>
+                Same control as the "System proxy" button in the toolbar. Platform: {apiState()?.systemProxy.platform ?? "unknown"}
+                <Show when={apiState()?.systemProxy.supported === false}> — not supported on this platform.</Show>
+                <Show when={apiState()?.systemProxy.supported !== false}>
+                  {" "}
+                  Only affects clients relying on the OS proxy setting — clients pointed at 127.0.0.1:{apiState()?.proxyPort ?? "?"}{" "}
+                  directly keep being captured either way.
+                </Show>
               </p>
             </div>
             <div class="settings-field settings-field--row">
               <Toggle checked={local.manualProxy} onChange={(v) => setField("manualProxy", v)} label="Manual proxy setup" />
               <p class="settings-field__desc">Don't change the OS system proxy on startup; configure clients yourself.</p>
+            </div>
+            <div class="settings-field">
+              <span class="settings-field__label">System proxy bypass hosts</span>
+              <RepeatableInputList
+                values={local.systemProxyBypass}
+                onChange={(v) => setField("systemProxyBypass", v)}
+                placeholder="localhost"
+                mono
+                addLabel="Add host"
+                aria-label="System proxy bypass host"
+              />
+              <p class="settings-field__desc">
+                Hosts listed here bypass the proxy at the OS level, so their traffic is never captured. Loopback is listed by
+                default so hamsy doesn't route its own UI traffic through itself. Clearing this list won't by itself make Chrome
+                or Firefox proxy their localhost requests — browsers bypass loopback internally regardless of this setting.
+              </p>
             </div>
           </section>
 
@@ -465,11 +477,11 @@ const Settings: Component = () => {
             <h2 class="settings-section__title">About</h2>
             <dl class="settings-about">
               <dt>Version</dt>
-              <dd>{state()?.version ?? "—"}</dd>
+              <dd>{apiState()?.version ?? "—"}</dd>
               <dt>Uptime</dt>
-              <dd>{state() ? formatDuration(state()!.uptimeSecs * 1000) : "—"}</dd>
+              <dd>{apiState() ? formatDuration(apiState()!.uptimeSecs * 1000) : "—"}</dd>
               <dt>Flows captured</dt>
-              <dd>{state()?.flowCount ?? "—"}</dd>
+              <dd>{apiState()?.flowCount ?? "—"}</dd>
             </dl>
           </section>
         </div>

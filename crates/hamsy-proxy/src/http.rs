@@ -50,7 +50,7 @@ use hamsy_core::{
     TlsInfo,
 };
 
-use crate::config::ProxyContext;
+use crate::config::{OwnListener, ProxyContext};
 use crate::error::{ProxyError, Result};
 use crate::tee::{collect_capped, FinalizeBody, TeeBody, TeeState, Throttled};
 use crate::upstream::{HttpVersion, ReleaseOnComplete};
@@ -102,15 +102,60 @@ pub async fn handle_proxy_request(
         Err(e) => return Ok(error_response(StatusCode::BAD_REQUEST, &e.to_string())),
     };
     let host = url.host_str().unwrap_or("").to_string();
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(default_port(url.scheme()));
 
     let mut headers = header_pairs_from(&parts.headers);
     strip_hop_by_hop(&mut headers);
+
+    // Loopback can now be excluded from the OS system-proxy bypass list
+    // (`Settings::system_proxy_bypass`), so a request whose target is one of
+    // hamsy's own listeners can genuinely reach this point. This check runs
+    // *before* the pause/capture gate below because both of its outcomes
+    // must apply unconditionally - even while paused, or while the host is
+    // excluded from capture. See `OwnListener`'s doc for why the two cases
+    // are handled oppositely (refuse vs. forward-but-never-capture).
+    match ctx.own_listener(&host, port) {
+        OwnListener::ProxyPort => return Ok(self_loop_response(&host, port)),
+        OwnListener::UiPort => {
+            return Ok(forward_untouched(&ctx, parts, body, &conn, url, headers).await)
+        }
+        OwnListener::None => {}
+    }
 
     if ctx.is_paused() || !ctx.should_capture(&host) {
         return Ok(forward_untouched(&ctx, parts, body, &conn, url, headers).await);
     }
 
     Ok(handle_captured_request(ctx, parts, body, conn, url, headers).await)
+}
+
+/// Builds the refusal response for a request whose target is
+/// [`OwnListener::ProxyPort`] - hamsy's own MITM proxy listener.
+///
+/// Forwarding such a request would make the proxy dial itself, and the
+/// dialed request would in turn be accepted, handled, and dialed again by
+/// this very code path: unbounded recursion that exhausts sockets/file
+/// descriptors well before anything else notices. `508 Loop Detected`
+/// (WebDAV, RFC 5842) is the closest standard status for "this would
+/// recurse forever". Refusing fast here rather than forwarding is a hard
+/// prerequisite for `Settings::system_proxy_bypass` ever excluding
+/// loopback: without it, a client dialing hamsy's own proxy port *through*
+/// hamsy (unavoidable once loopback isn't OS-bypassed) would spin the
+/// process rather than getting a clear, immediate error.
+///
+/// Shared by the plain-HTTP path (here), the `CONNECT` path
+/// (`connect::handle_connect`), and the WebSocket-upgrade path
+/// (`websocket::handle_upgrade`) so the refusal is surfaced identically
+/// regardless of which one caught it.
+pub(crate) fn self_loop_response(host: &str, port: u16) -> Response<BoxBody> {
+    error_response(
+        StatusCode::LOOP_DETECTED,
+        &format!(
+            "refusing to forward to hamsy's own proxy port ({host}:{port}); this would loop back into hamsy itself"
+        ),
+    )
 }
 
 // ===== URL / header helpers =====
@@ -269,6 +314,12 @@ pub(crate) fn set_host_header(headers: &mut Vec<HeaderPair>, host: &str, port: u
 /// detail of where it now happens to be sent. The non-rewrite case is left
 /// to [`ensure_host_header`]'s last-resort fallback further down the
 /// pipeline.
+///
+/// A retained (or synthesized) `Host` that now names a different host than
+/// `url` is exactly what it looks like to a downstream h2 leg -
+/// [`align_h2_authority_with_host`] is what keeps that legal there by moving
+/// the identity from the header into `:authority`, since h2 (unlike h1)
+/// requires the two to agree when both are present.
 pub(crate) fn apply_outcome_url_and_headers(
     url: &mut url::Url,
     host: &mut String,
@@ -294,6 +345,52 @@ pub(crate) fn apply_outcome_url_and_headers(
                 set_host_header(req_headers, orig_host, orig_port, original_url.scheme());
             }
         }
+    }
+}
+
+/// Builds the [`RequestRecord`] for a request as it is actually being sent
+/// upstream, once request-phase rule mutations have been applied.
+///
+/// This is what [`Flow::request`] must hold after a rule rewrite - as
+/// opposed to [`Flow::original_request`], the pre-rule client snapshot -
+/// so a rewrite to e.g. a dead local server is still debuggable from the
+/// captured data. `url`/`http_version`/`req_headers` are the post-mutation
+/// values the caller already computed (`req_headers` is expected to be
+/// `outcome.headers` post-[`strip_hop_by_hop`], with any body-driven
+/// `Content-Length`/`Content-Encoding` adjustments already applied), and
+/// `query` is recomputed from the rewritten `url` rather than copied from
+/// the pre-rule record.
+///
+/// `outcome_body` is `RequestOutcome::body`: when a rule replaced the body,
+/// it's re-encoded via [`hamsy_core::to_payload`] with the encoding forced
+/// to `None`, mirroring that the caller already strips `Content-Encoding`
+/// before forwarding a replaced body. When `None`, `fallback_body` is
+/// reused as-is - callers must apply the resulting record to the flow
+/// *before* the request is dispatched upstream, so a streamed body's later
+/// `FinalizeBody` backfill (which only ever assigns `.body`, see
+/// `handle_captured_request`) lands after this and is never clobbered by
+/// it.
+#[allow(clippy::too_many_arguments)]
+fn effective_request_record(
+    outcome_method: &str,
+    url: &url::Url,
+    http_version: &str,
+    req_headers: &[HeaderPair],
+    outcome_body: Option<&[u8]>,
+    fallback_body: &BodyPayload,
+    content_type: Option<&str>,
+    max_body_bytes: usize,
+) -> RequestRecord {
+    RequestRecord {
+        method: outcome_method.to_string(),
+        url: url.to_string(),
+        http_version: http_version.to_string(),
+        headers: req_headers.to_vec(),
+        body: match outcome_body {
+            Some(bytes) => hamsy_core::to_payload(bytes, content_type, None, max_body_bytes),
+            None => fallback_body.clone(),
+        },
+        query: query_pairs(url),
     }
 }
 
@@ -353,6 +450,7 @@ fn error_label(status: StatusCode) -> &'static str {
         StatusCode::FORBIDDEN => "blocked",
         StatusCode::BAD_GATEWAY => "upstream_error",
         StatusCode::BAD_REQUEST => "bad_request",
+        StatusCode::LOOP_DETECTED => "loop_detected",
         _ => "error",
     }
 }
@@ -584,7 +682,72 @@ pub(crate) fn build_outbound_request(
         .map_err(|e| ProxyError::Other(format!("failed to build outbound request: {e}")))?;
     let (mut parts, body) = req.into_parts();
     apply_headers_to_map(&mut parts.headers, headers)?;
+    if version == http::Version::HTTP_2 {
+        align_h2_authority_with_host(&mut parts);
+    }
     Ok(Request::from_parts(parts, body))
+}
+
+/// Reconciles a `Host` header with an HTTP/2 request's `:authority` by
+/// moving it there, then dropping the header.
+///
+/// In h2, origin identity is carried by the `:authority` pseudo-header
+/// (which hyper derives from the request URI), not by a `host` header - h2
+/// requests don't normally carry one at all. RFC 9113 §8.3.1 requires that
+/// *if* a `host` header is present, it must match `:authority` exactly; a
+/// mismatch is a protocol error the origin is required to reject, typically
+/// by resetting the stream with `RST_STREAM(PROTOCOL_ERROR)`.
+///
+/// That mismatch is exactly what [`apply_outcome_url_and_headers`] can
+/// produce: on a cross-host `rewriteUrl` rule, it deliberately *keeps* the
+/// original `Host` header rather than adopting the rewrite target's host
+/// (Charles "Map Remote" convention - see its doc for why). Over HTTP/1.1
+/// that's fine, since `Host` is just a header there. But
+/// [`build_outbound_request`] and [`adapt_request_to_sender`] both set an h2
+/// request's URI to the (rewritten) `url`, so hyper would derive
+/// `:authority` from the rewrite target while the stale `Host` header still
+/// names the original origin - two different values, which h2 (correctly)
+/// treats as a protocol violation rather than silently preferring one.
+///
+/// The fix is to honor the *intent* behind keeping `Host` - the upstream
+/// should see the original origin identity - in the way h2 actually allows:
+/// by putting that identity in `:authority` instead of a header. This is
+/// purely a request-framing concern and does not change *where* the request
+/// is sent: [`dispatch`] independently derives the connection target (and
+/// TLS SNI) from `url`'s host, before the request this function edits is
+/// ever handed to it. So the net effect matches the HTTP/1.1 path exactly:
+/// connect to the rewrite target, but claim the original origin - just
+/// expressed via `:authority` instead of `Host`.
+///
+/// Infallible, as required for a step in the request-forwarding path that
+/// must never panic on attacker- or rule-controlled input:
+/// - No `Host` header: nothing to do: `:authority` is already whatever the
+///   URI produced.
+/// - `Host` present and a valid [`http::uri::Authority`]: the URI is rebuilt
+///   with that authority (keeping the existing scheme and path-and-query),
+///   and the header is removed. If `Host` already equals the URI's
+///   authority this is a no-op beyond dropping the now-redundant header.
+/// - `Host` present but invalid, or URI reconstruction otherwise fails: the
+///   authority is left as derived from the URI, but the header is still
+///   removed - a leftover conflicting `host` header is the actual protocol
+///   violation this function exists to prevent, so on any failure to honor
+///   it, removing it is the safe default rather than leaving it in place.
+fn align_h2_authority_with_host(parts: &mut http::request::Parts) {
+    let Some(host_value) = parts.headers.remove(http::header::HOST) else {
+        return;
+    };
+    let Some(authority) = host_value
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<http::uri::Authority>().ok())
+    else {
+        return;
+    };
+    let mut uri_parts = parts.uri.clone().into_parts();
+    uri_parts.authority = Some(authority);
+    if let Ok(uri) = http::Uri::from_parts(uri_parts) {
+        parts.uri = uri;
+    }
 }
 
 /// Adapts an already-built outbound request's version, request-target form,
@@ -599,11 +762,20 @@ pub(crate) fn build_outbound_request(
 ///   upstream proxy, regardless of version), rewrites the URI to
 ///   origin-form (path + query only). Either way, ensures a `Host` header
 ///   is present - h2 requests never carry one, relying on the `:authority`
-///   pseudo-header instead, which HTTP/1.1 origins don't understand.
+///   pseudo-header instead, which HTTP/1.1 origins don't understand. The
+///   `:authority` present on entry (captured before any origin-form rewrite
+///   discards it) is preferred over deriving one from `url` - see
+///   [`ensure_host_header`]'s doc for why this matters for a rewrite rule
+///   that changed the request's host.
 /// - Non-HTTP/2 request onto an HTTP/2 sender: upgrades to HTTP/2 and
 ///   rewrites the URI to absolute-form, since h2 derives its
 ///   `:authority`/`:scheme` pseudo-headers from the URI itself (see
-///   [`build_outbound_request`]'s doc).
+///   [`build_outbound_request`]'s doc). Then reconciles any surviving `Host`
+///   header with the new `:authority` via
+///   [`align_h2_authority_with_host`] - an h1-shaped request being upgraded
+///   here (e.g. a rule retargeted an h1 client's request to an upstream
+///   that negotiated h2) still has whatever `Host` it started with, which
+///   can now disagree with the `:authority` just derived from `url`.
 /// - Otherwise (versions already compatible): left untouched.
 pub(crate) fn adapt_request_to_sender(
     parts: &mut http::request::Parts,
@@ -614,28 +786,57 @@ pub(crate) fn adapt_request_to_sender(
     match sender_version {
         HttpVersion::Http1 if parts.version == http::Version::HTTP_2 => {
             parts.version = http::Version::HTTP_11;
+            // Captured before the origin-form rewrite below discards it.
+            // See `ensure_host_header`'s doc for why this - not `url` - is
+            // the right source for the `Host` this downgrade needs.
+            let preserved_authority = parts.uri.authority().map(|a| a.as_str().to_string());
             if !via_proxy {
                 if let Ok(uri) = path_with_query(url).parse::<http::Uri>() {
                     parts.uri = uri;
                 }
             }
-            ensure_host_header(&mut parts.headers, url);
+            ensure_host_header(&mut parts.headers, url, preserved_authority.as_deref());
         }
         HttpVersion::Http2 if parts.version != http::Version::HTTP_2 => {
             parts.version = http::Version::HTTP_2;
             if let Ok(uri) = url.as_str().parse::<http::Uri>() {
                 parts.uri = uri;
             }
+            align_h2_authority_with_host(parts);
         }
         _ => {}
     }
 }
 
-/// Inserts a `Host` header computed the same way [`set_host_header`] does,
-/// but only if one isn't already present.
-fn ensure_host_header(headers: &mut HeaderMap, url: &url::Url) {
+/// Inserts a `Host` header, but only if one isn't already present.
+///
+/// `preferred_authority`, when `Some`, is used verbatim; otherwise a value
+/// is computed from `url` the same way [`set_host_header`] does.
+///
+/// The h2-onto-h1 downgrade in [`adapt_request_to_sender`] always passes
+/// the pre-downgrade `:authority` as `preferred_authority`, and needs to:
+/// an h2 request built via [`build_outbound_request`] has already had any
+/// `Host` header folded into `:authority` and removed by
+/// [`align_h2_authority_with_host`] - including a `Host`
+/// [`apply_outcome_url_and_headers`] preserved from *before* a cross-host
+/// `rewriteUrl` rule, which is the entire point of that preservation. By
+/// the time a downgrade to HTTP/1.1 happens here, that header is gone, so
+/// falling back to `url` (the rewrite *target*) would silently reintroduce
+/// the bug both of those functions exist to prevent - just one hop later,
+/// and only when the origin happens to decline h2. `:authority` is the only
+/// place that original identity still lives, so it must win over `url`.
+///
+/// Every other caller (there are none today besides that one) can safely
+/// pass `None` to get the old `url`-derived behavior.
+fn ensure_host_header(headers: &mut HeaderMap, url: &url::Url, preferred_authority: Option<&str>) {
     if headers.contains_key(http::header::HOST) {
         return;
+    }
+    if let Some(authority) = preferred_authority {
+        if let Ok(hv) = http::HeaderValue::from_str(authority) {
+            headers.insert(http::header::HOST, hv);
+            return;
+        }
     }
     let host = url.host_str().unwrap_or("");
     let default_port = default_port(url.scheme());
@@ -852,6 +1053,35 @@ async fn handle_captured_request(
     } else {
         outbound_body_base
     };
+
+    // `flow.request` was seeded with the pre-rule client request at capture
+    // time and never touched again on the old code path, so a rewrite (URL,
+    // method, headers, or body) was invisible in captured data even though
+    // `outcome.modified` said otherwise. Record the effective, post-mutation
+    // request now - strictly before `dispatch` below starts streaming the
+    // outbound body - so both the success path and `finalize_error` (neither
+    // of which otherwise touches `f.request`) leave the flow holding what
+    // was actually sent, and so this can never race the streamed-body
+    // backfill closure just below (which only ever assigns `.body`).
+    if outcome.modified {
+        let effective = effective_request_record(
+            &outcome.method,
+            &url,
+            &http_version_str,
+            &req_headers,
+            outcome.body.as_deref(),
+            &req_record.body,
+            content_type.as_deref(),
+            max_body_bytes,
+        );
+        if let Some(summary) = ctx.flows.update(flow_id, |f| {
+            f.request = Some(effective);
+        }) {
+            let _ = ctx
+                .events
+                .send(hamsy_core::ServerEvent::Flow { flow: summary });
+        }
+    }
 
     // Wire up deferred finalization for the streamed request body case: once
     // the body finishes draining to upstream, backfill the flow's recorded
@@ -1334,6 +1564,13 @@ mod tests {
     }
 
     #[test]
+    fn self_loop_response_is_508_with_labeled_json_body() {
+        let resp = self_loop_response("127.0.0.1", 19080);
+        assert_eq!(resp.status(), StatusCode::LOOP_DETECTED);
+        assert_eq!(error_label(resp.status()), "loop_detected");
+    }
+
+    #[test]
     fn safe_status_falls_back_on_invalid_code() {
         assert_eq!(safe_status(200), StatusCode::OK);
         assert_eq!(safe_status(9999), StatusCode::INTERNAL_SERVER_ERROR);
@@ -1583,6 +1820,58 @@ mod tests {
     }
 
     #[test]
+    fn adapt_request_to_sender_downgrade_prefers_preserved_authority_over_url() {
+        // Simulates the full h2 rewrite-then-downgrade path: `url` is the
+        // rewrite target (what `dispatch` connects to), but the request's
+        // `:authority` already holds the original host - exactly what it
+        // holds after `align_h2_authority_with_host` folded a preserved
+        // `Host` into it at build time. The downgrade must recover *that*,
+        // not resynthesize a Host from `url` and silently reintroduce the
+        // rewrite-target-Host bug one hop later.
+        let url = url::Url::parse("http://0.0.0.0:8082/x.m3u8").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("https://dcs4-live.mp.lura.live/x.m3u8")
+            .version(http::Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http1, false, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_11);
+        assert!(parts.uri.authority().is_none(), "should be origin-form");
+        assert_eq!(parts.uri.path_and_query().unwrap(), "/x.m3u8");
+        assert_eq!(
+            parts.headers.get(http::header::HOST).unwrap(),
+            "dcs4-live.mp.lura.live",
+            "must recover the preserved original host, not the rewrite target"
+        );
+    }
+
+    #[test]
+    fn adapt_request_to_sender_downgrade_falls_back_to_url_when_uri_has_no_authority() {
+        // No `:authority` to prefer (the request was never put in
+        // absolute-form) - falls back to the old `url`-derived behavior.
+        let url = url::Url::parse("http://localhost:9000/path?x=1").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/path?x=1")
+            .version(http::Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http1, false, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_11);
+        assert_eq!(
+            parts.headers.get(http::header::HOST).unwrap(),
+            "localhost:9000"
+        );
+    }
+
+    #[test]
     fn adapt_request_to_sender_upgrades_to_h2_uses_absolute_form() {
         let url = url::Url::parse("https://example.com/foo?bar=1").unwrap();
         let req = Request::builder()
@@ -1597,6 +1886,111 @@ mod tests {
 
         assert_eq!(parts.version, http::Version::HTTP_2);
         assert_eq!(parts.uri, http::Uri::try_from(url.as_str()).unwrap());
+    }
+
+    // ----- Bug 3: h2 requests must not carry a Host that disagrees with
+    // :authority (RFC 9113 §8.3.1) - see `align_h2_authority_with_host`. -----
+
+    #[test]
+    fn build_outbound_request_http2_moves_differing_host_into_authority() {
+        // Reproduces the 502: a rewriteUrl rule retargets the connection to
+        // dcs4s-live but (per `apply_outcome_url_and_headers`) keeps the
+        // original Host header naming dcs4-live. Over h2 this must not
+        // surface as a Host/:authority mismatch.
+        let url = url::Url::parse("https://dcs4s-live.mp.lura.live/x.m3u8").unwrap();
+        let headers = vec![HeaderPair::new("Host", "dcs4-live.mp.lura.live")];
+        let req = build_outbound_request(
+            &Method::GET,
+            &url,
+            &headers,
+            false,
+            http::Version::HTTP_2,
+            crate::empty_body(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            req.uri().authority().map(|a| a.as_str()),
+            Some("dcs4-live.mp.lura.live"),
+            ":authority must carry the original origin identity"
+        );
+        assert_eq!(req.uri().scheme_str(), Some("https"));
+        assert_eq!(req.uri().path(), "/x.m3u8");
+        assert!(
+            req.headers().get(http::header::HOST).is_none(),
+            "the now-redundant Host header must be dropped"
+        );
+    }
+
+    #[test]
+    fn build_outbound_request_http11_keeps_host_header_and_origin_form() {
+        // Same inputs as above, but HTTP/1.1: must be entirely unaffected by
+        // the h2 authority alignment (guards against regressing the h1 path
+        // that `apply_outcome_url_and_headers` was written for).
+        let url = url::Url::parse("https://dcs4s-live.mp.lura.live/x.m3u8").unwrap();
+        let headers = vec![HeaderPair::new("Host", "dcs4-live.mp.lura.live")];
+        let req = build_outbound_request(
+            &Method::GET,
+            &url,
+            &headers,
+            false,
+            http::Version::HTTP_11,
+            crate::empty_body(),
+        )
+        .unwrap();
+
+        assert!(req.uri().authority().is_none(), "should be origin-form");
+        assert_eq!(req.uri().path(), "/x.m3u8");
+        assert_eq!(
+            req.headers().get(http::header::HOST).unwrap(),
+            "dcs4-live.mp.lura.live"
+        );
+    }
+
+    #[test]
+    fn adapt_request_to_sender_upgrade_to_h2_aligns_differing_host() {
+        let url = url::Url::parse("https://dcs4s-live.mp.lura.live/x.m3u8").unwrap();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/x.m3u8")
+            .version(http::Version::HTTP_11)
+            .header(http::header::HOST, "dcs4-live.mp.lura.live")
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+
+        adapt_request_to_sender(&mut parts, HttpVersion::Http2, false, &url);
+
+        assert_eq!(parts.version, http::Version::HTTP_2);
+        assert_eq!(
+            parts.uri.authority().map(|a| a.as_str()),
+            Some("dcs4-live.mp.lura.live")
+        );
+        assert!(parts.headers.get(http::header::HOST).is_none());
+    }
+
+    #[test]
+    fn align_h2_authority_with_host_malformed_host_drops_header_without_panicking() {
+        let mut parts = Request::builder()
+            .uri("https://example.com/path")
+            .version(http::Version::HTTP_2)
+            .header(http::header::HOST, "not a host")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        align_h2_authority_with_host(&mut parts);
+
+        assert!(
+            parts.headers.get(http::header::HOST).is_none(),
+            "a malformed Host must still be removed rather than left conflicting"
+        );
+        // The URI is left as whatever it already was - untouched, not panicked.
+        assert_eq!(
+            parts.uri.authority().map(|a| a.as_str()),
+            Some("example.com")
+        );
     }
 
     #[test]
@@ -1626,5 +2020,81 @@ mod tests {
             union_matched(a, b),
             vec!["r1".to_string(), "r2".to_string(), "r3".to_string()]
         );
+    }
+
+    // ----- Bug 3: `flow.request` must reflect the effective (post-rule)
+    // request, not stay frozen at the client's pre-rule one -----
+
+    #[test]
+    fn effective_request_record_carries_rewritten_url_and_recomputed_query() {
+        // Simulates the dcs4s-live -> local stitcher rewrite from the module
+        // docs: the effective record must carry the rewrite target's URL and
+        // a query recomputed from it, not the client's original one.
+        let rewritten = url::Url::parse("http://0.0.0.0:8082/x.m3u8?token=abc").unwrap();
+        let headers = vec![HeaderPair::new("Host", "dcs4s-live.mp.lura.live")];
+        let fallback_body = BodyPayload::default();
+
+        let effective = effective_request_record(
+            "GET",
+            &rewritten,
+            "HTTP/1.1",
+            &headers,
+            None,
+            &fallback_body,
+            None,
+            1024,
+        );
+
+        assert_eq!(effective.url, "http://0.0.0.0:8082/x.m3u8?token=abc");
+        assert_eq!(effective.query, vec![HeaderPair::new("token", "abc")]);
+        assert_eq!(effective.method, "GET");
+        assert_eq!(effective.headers, headers);
+    }
+
+    #[test]
+    fn effective_request_record_falls_back_to_recorded_body_when_untouched() {
+        // No rule replaced the body: the effective record must reuse the
+        // body already captured from the client rather than re-decoding
+        // anything, so the streamed-body backfill closure (which later
+        // assigns into this same field) still has something sane to land on.
+        let url = url::Url::parse("http://localhost/echo").unwrap();
+        let fallback_body = hamsy_core::to_payload(b"original", Some("text/plain"), None, 1024);
+
+        let effective = effective_request_record(
+            "GET",
+            &url,
+            "HTTP/1.1",
+            &[],
+            None,
+            &fallback_body,
+            Some("text/plain"),
+            1024,
+        );
+
+        assert_eq!(effective.body.data, "original");
+    }
+
+    #[test]
+    fn effective_request_record_reencodes_rule_replaced_body_without_encoding() {
+        // A rule that replaces the body also strips Content-Encoding before
+        // forwarding (see the call site in `handle_captured_request`), so
+        // the replacement bytes must be re-decoded with `None` rather than
+        // whatever encoding the original body arrived with.
+        let url = url::Url::parse("http://localhost/echo").unwrap();
+        let fallback_body = BodyPayload::default();
+
+        let effective = effective_request_record(
+            "POST",
+            &url,
+            "HTTP/1.1",
+            &[],
+            Some(b"replaced"),
+            &fallback_body,
+            Some("text/plain"),
+            1024,
+        );
+
+        assert_eq!(effective.body.data, "replaced");
+        assert!(effective.body.encoding.is_none());
     }
 }

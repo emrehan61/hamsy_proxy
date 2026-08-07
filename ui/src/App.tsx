@@ -16,6 +16,7 @@ import { getState } from "./lib/api";
 import { initSettingsSync } from "./stores/settings";
 import { initFlowsSync } from "./stores/flows";
 import { initRulesSync } from "./stores/rules";
+import { initSystemProxySync } from "./stores/systemProxy";
 import { wsClient } from "./lib/ws";
 import Sidebar from "./components/Sidebar";
 import ToastHost from "./components/Toast";
@@ -39,6 +40,7 @@ const App: Component<AppProps> = (props) => {
     initSettingsSync();
     initFlowsSync();
     initRulesSync();
+    initSystemProxySync();
 
     getState()
       .then(() => setBackendReachable(true))
