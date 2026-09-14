@@ -32,6 +32,10 @@ pub struct TeeState {
 impl TeeState {
     /// Returns `(captured_bytes, total_bytes_seen, truncated)`. `captured`
     /// may be shorter than `total` if the cap was reached.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
     pub fn snapshot(&self) -> (Bytes, u64, bool) {
         (
             Bytes::copy_from_slice(&self.captured),
@@ -147,6 +151,122 @@ where
         }
     }
     Ok((buf.freeze(), total, truncated))
+}
+
+/// Buffer only a rule-eligible body. Never return a silently truncated body.
+/// Stop reading immediately at the cap; the caller returns an explicit error.
+pub async fn collect_for_rules<B>(mut body: B, cap: usize) -> Result<Bytes>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+{
+    let mut buf = BytesMut::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| ProxyError::Other(format!("body read error: {e}")))?;
+        if let Some(data) = frame.data_ref() {
+            if data.len() > cap.saturating_sub(buf.len()) {
+                return Err(ProxyError::Other(format!(
+                    "body exceeds rule buffer limit ({cap} bytes); request not forwarded partially"
+                )));
+            }
+            buf.extend_from_slice(data);
+        }
+    }
+    Ok(buf.freeze())
+}
+
+/// Shared CPU budget for body decoding and rule work.
+pub(crate) fn body_cpu_budget() -> &'static Arc<tokio::sync::Semaphore> {
+    static BUDGET: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    BUDGET.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(4)))
+}
+
+/// Run required body work off the executor, with bounded active jobs.
+pub(crate) async fn body_cpu<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> T {
+    let permit = body_cpu_budget()
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("body budget open");
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        job()
+    })
+    .await
+    .expect("body worker panicked")
+}
+
+/// Capture is best-effort: when all body workers are busy, record only
+/// metadata (callback(false)) rather than queueing unlimited captured bodies.
+/// Normal EOF waits asynchronously for its capture job; aborts detach the job.
+pub struct CaptureBody<B> {
+    inner: B,
+    finalize: Option<Box<dyn FnOnce(bool) + Send + Sync>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    done: bool,
+}
+
+impl<B> CaptureBody<B> {
+    pub fn new(inner: B, finalize: impl FnOnce(bool) + Send + Sync + 'static) -> Self {
+        Self {
+            inner,
+            finalize: Some(Box::new(finalize)),
+            task: None,
+            done: false,
+        }
+    }
+    fn start(&mut self) {
+        if let Some(finalize) = self.finalize.take() {
+            static QUEUE: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
+                std::sync::OnceLock::new();
+            let queue = QUEUE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(32)));
+            if let Ok(permit) = queue.clone().try_acquire_owned() {
+                self.task = Some(tokio::spawn(async move {
+                    let _permit = permit;
+                    body_cpu(move || finalize(true)).await;
+                }));
+            } else {
+                finalize(false);
+            }
+        }
+    }
+}
+impl<B: Body<Data = Bytes> + Unpin> Body for CaptureBody<B> {
+    type Data = Bytes;
+    type Error = B::Error;
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<std::result::Result<Frame<Bytes>, B::Error>>> {
+        let this = self.get_mut();
+        if !this.done {
+            match Pin::new(&mut this.inner).poll_frame(cx) {
+                Poll::Ready(None) => {
+                    this.done = true;
+                    this.start();
+                }
+                other => return other,
+            }
+        }
+        if let Some(task) = &mut this.task {
+            if Pin::new(task).poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            this.task = None;
+        }
+        Poll::Ready(None)
+    }
+    fn is_end_stream(&self) -> bool {
+        self.done && self.task.is_none()
+    }
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+impl<B> Drop for CaptureBody<B> {
+    fn drop(&mut self) {
+        self.start();
+    }
 }
 
 /// A simple token-bucket rate limiter, decoupled from any specific clock so
@@ -451,5 +571,32 @@ mod tests {
         let finalize = FinalizeBody::new(body, move || ran2.store(true, Ordering::SeqCst));
         drop(finalize);
         assert!(ran.load(Ordering::SeqCst));
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_finalization_runs_off_the_async_worker() {
+        let async_thread = std::thread::current().id();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let body = CaptureBody::new(Full::new(Bytes::from_static(b"body")), move |capture| {
+            assert!(capture);
+            tx.send(std::thread::current().id()).unwrap();
+        });
+        assert_eq!(
+            body.collect().await.unwrap().to_bytes(),
+            Bytes::from_static(b"body")
+        );
+        assert_ne!(rx.await.unwrap(), async_thread);
+    }
+
+    #[tokio::test]
+    async fn aborted_capture_still_finalizes() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let body = CaptureBody::new(Full::new(Bytes::from_static(b"body")), move |_| {
+            let _ = tx.send(());
+        });
+        drop(body);
+        tokio::time::timeout(Duration::from_secs(2), rx)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

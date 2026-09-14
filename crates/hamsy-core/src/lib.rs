@@ -24,7 +24,7 @@ pub use flow::{
     BodyKind, BodyPayload, Flow, FlowId, FlowState, FlowSummary, HeaderPair, RequestRecord,
     ResourceType, ResponseRecord, Timings, TlsInfo, WsDirection, WsMessage,
 };
-pub use har::{export_har, import_har};
+pub use har::{export_har, export_har_refs, import_har};
 pub use passthrough_presets::Preset;
 pub use rule::{
     Action, BodyCond, BodyCondOp, HeaderCond, HeaderOp, JsonOp, JsonOpKind, Matcher,

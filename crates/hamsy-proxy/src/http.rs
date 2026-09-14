@@ -14,17 +14,8 @@
 //! mutate the body - in which case it must be fully buffered first so the
 //! mutation can be applied before anything is sent.
 //!
-//! Knowing "does any rule need this body" *exactly* would require
-//! duplicating `rule.rs`'s full (non-body) matching logic here, just to
-//! evaluate whether a specific request's body condition is even reachable.
-//! Instead, [`ruleset_needs_request_body`]/[`ruleset_needs_response_body`]
-//! use a conservative, always-correct approximation: if *any* enabled rule
-//! anywhere has a body condition or a body-mutating action, we buffer -
-//! regardless of whether that particular rule would even match this
-//! request. This trades a bit of unnecessary buffering (when some unrelated
-//! rule elsewhere has a body condition) for the guarantee that a mutation is
-//! never silently skipped, without needing to leave `hamsy-core` or
-//! duplicate its matching semantics.
+//! The core rule engine probes metadata mutations in execution order, stopping
+//! at the first reachable body condition/action. Unrelated requests keep streaming.
 //!
 //! When not buffering, the body is streamed through a [`crate::tee::TeeBody`]
 //! (capped copy for recording, full stream to the destination) wrapped in a
@@ -45,21 +36,22 @@ use tokio::time::Duration;
 use uuid::Uuid;
 
 use hamsy_core::{
-    Action, BodyKind, BodyPayload, Flow, FlowId, FlowState, HeaderPair, MockedResponse, RequestCtx,
-    RequestRecord, ResourceType, ResponseCtx, ResponseOutcome, ResponseRecord, Rule, RuleSet,
-    TlsInfo,
+    BodyKind, BodyPayload, Flow, FlowId, FlowState, HeaderPair, MockedResponse, RequestCtx,
+    RequestRecord, ResourceType, ResponseCtx, ResponseOutcome, ResponseRecord, TlsInfo,
 };
+
+#[cfg(test)]
+use hamsy_core::{Action, Rule, RuleSet};
 
 use crate::config::{OwnListener, ProxyContext};
 use crate::error::{ProxyError, Result};
-use crate::tee::{collect_capped, FinalizeBody, TeeBody, TeeState, Throttled};
+use crate::tee::{body_cpu, collect_for_rules, CaptureBody, TeeBody, TeeState, Throttled};
 use crate::upstream::{HttpVersion, ReleaseOnComplete};
 use crate::BoxBody;
 
 /// Hard ceiling on how much of a request/response body we'll fully buffer
-/// in memory to let a rule mutate it. Beyond this, mutation is skipped for
-/// that particular body (logged at debug level) rather than risking
-/// unbounded memory use.
+/// in memory to let a rule mutate it. Exceeding the limit returns an explicit
+/// error rather than silently forwarding a truncated upload or download.
 const HARD_BUFFER_CAP: usize = 64 * 1024 * 1024;
 
 /// Per-connection context `server.rs`/`connect.rs` provide so a single
@@ -86,6 +78,8 @@ pub struct ConnInfo {
     /// resolved once per accepted connection (see `crate::appid`). `None`
     /// when unresolved (remote/LAN client, non-macOS, or lookup failure).
     pub app: Option<String>,
+    /// Best-effort attribution resolved independently of network traffic.
+    pub app_resolution: Option<crate::appid::AppResolution>,
 }
 
 /// Handles one proxied request: the full capture/rule/dispatch/record
@@ -455,42 +449,56 @@ fn error_label(status: StatusCode) -> &'static str {
     }
 }
 
-// ===== Buffering decision =====
+// ===== Body preparation =====
 
-/// Conservative, ruleset-wide check for whether *any* enabled rule could
-/// need the request body (see the module-level doc for why this is
-/// intentionally coarser than per-request matching).
-fn ruleset_needs_request_body(ruleset: &RuleSet) -> bool {
-    ruleset.rules().iter().any(rule_touches_request_body)
-}
-
-fn rule_touches_request_body(rule: &Rule) -> bool {
-    rule.matcher.request_body.is_some()
-        || rule.actions.iter().any(|a| {
-            matches!(
-                a,
-                Action::SetRequestBody { .. }
-                    | Action::ReplaceInRequestBody { .. }
-                    | Action::JsonPatchRequest { .. }
+/// Rules consume decoded content. Unknown/corrupt/oversized codings produce an
+/// explicit error rather than feeding compressed binary to text replacements.
+fn decode_for_rules(bytes: &[u8], encoding: Option<&str>) -> Result<Bytes> {
+    if encoding.is_some_and(|value| {
+        value.split(',').any(|token| {
+            !matches!(
+                token.trim().to_ascii_lowercase().as_str(),
+                "" | "identity" | "gzip" | "x-gzip" | "deflate" | "br" | "zstd"
             )
         })
+    }) {
+        return Err(ProxyError::Other(
+            "unsupported Content-Encoding for body rule".into(),
+        ));
+    }
+    let (decoded, truncated) = hamsy_core::decode_body(bytes, encoding, HARD_BUFFER_CAP)
+        .map_err(|e| ProxyError::Other(format!("cannot decode body for rule: {e}")))?;
+    if truncated {
+        return Err(ProxyError::Other(
+            "decoded body exceeds rule buffer limit".into(),
+        ));
+    }
+    Ok(Bytes::from(decoded))
 }
 
-/// Same as [`ruleset_needs_request_body`], for the response phase.
-fn ruleset_needs_response_body(ruleset: &RuleSet) -> bool {
-    ruleset.rules().iter().any(rule_touches_response_body)
-}
-
-fn rule_touches_response_body(rule: &Rule) -> bool {
-    rule.matcher.response_body.is_some()
-        || rule.actions.iter().any(|a| {
-            matches!(
-                a,
-                Action::SetResponseBody { .. }
-                    | Action::ReplaceInResponseBody { .. }
-                    | Action::JsonPatchResponse { .. }
-            )
-        })
+fn capture_payload(
+    state: &Mutex<TeeState>,
+    capture: bool,
+    content_type: Option<&str>,
+    encoding: Option<&str>,
+    cap: usize,
+) -> BodyPayload {
+    if !capture {
+        let size = state.lock().total();
+        return BodyPayload {
+            kind: if size == 0 {
+                BodyKind::None
+            } else {
+                BodyKind::Truncated
+            },
+            data: String::new(),
+            size,
+            truncated: size != 0,
+            encoding: encoding.map(str::to_string),
+        };
+    }
+    let (bytes, total, truncated) = state.lock().snapshot();
+    payload_from_capture(bytes, total, truncated, content_type, encoding, cap)
 }
 
 /// Builds a [`BodyPayload`] from a (possibly tee-capped) capture, correcting
@@ -874,13 +882,19 @@ async fn handle_captured_request(
     let scheme = url.scheme().to_string();
 
     let ruleset = ctx.ruleset();
-    let need_req_body = ruleset_needs_request_body(&ruleset);
     let max_body_bytes = ctx.max_body_bytes();
 
     let content_type = header_value(&req_headers, "content-type").map(str::to_string);
     let content_encoding = header_value(&req_headers, "content-encoding").map(str::to_string);
     let path = path_with_query(&url);
     let resource_type = resource_type_for_request(&req_headers, url.path());
+    let need_req_body = ruleset.needs_request_body(RequestCtx {
+        method: &method_str,
+        url: &url,
+        headers: &req_headers,
+        body: None,
+        resource_type,
+    });
     let query = query_pairs(&url);
 
     // ----- Step 1: obtain (or defer) the request body -----
@@ -892,16 +906,10 @@ async fn handle_captured_request(
         Streamed(Arc<Mutex<TeeState>>),
     }
     let (req_body_plan, outbound_body_base): (ReqBody, BoxBody) = if need_req_body {
-        match collect_capped(body, HARD_BUFFER_CAP).await {
-            Ok((bytes, _total, hit_hard_cap)) => {
-                if hit_hard_cap {
-                    tracing::debug!(host = %host, "request body exceeded 64MiB hard cap; skipping rule body matching/mutation for this request");
-                }
-                (ReqBody::Buffered(bytes.clone()), crate::full_body(bytes))
-            }
+        match collect_for_rules(body, HARD_BUFFER_CAP).await {
+            Ok(bytes) => (ReqBody::Buffered(bytes.clone()), crate::full_body(bytes)),
             Err(e) => {
-                tracing::debug!(error = %e, "failed to buffer request body; forwarding will likely fail");
-                (ReqBody::Buffered(Bytes::new()), crate::empty_body())
+                return error_response(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string());
             }
         }
     } else {
@@ -910,7 +918,14 @@ async fn handle_captured_request(
     };
 
     let req_body_for_rules: Option<Bytes> = match &req_body_plan {
-        ReqBody::Buffered(b) => Some(b.clone()),
+        ReqBody::Buffered(b) => {
+            let bytes = b.clone();
+            let encoding = content_encoding.clone();
+            match body_cpu(move || decode_for_rules(&bytes, encoding.as_deref())).await {
+                Ok(decoded) => Some(decoded),
+                Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
+            }
+        }
         ReqBody::Streamed(_) => None,
     };
 
@@ -920,12 +935,15 @@ async fn handle_captured_request(
         http_version: http_version_str.clone(),
         headers: req_headers.clone(),
         body: match &req_body_plan {
-            ReqBody::Buffered(b) => hamsy_core::to_payload(
-                b,
-                content_type.as_deref(),
-                content_encoding.as_deref(),
-                max_body_bytes,
-            ),
+            ReqBody::Buffered(b) => {
+                let b = b.clone();
+                let ct = content_type.clone();
+                let ce = content_encoding.clone();
+                body_cpu(move || {
+                    hamsy_core::to_payload(&b, ct.as_deref(), ce.as_deref(), max_body_bytes)
+                })
+                .await
+            }
             ReqBody::Streamed(_) => BodyPayload::default(),
         },
         query: query.clone(),
@@ -954,14 +972,41 @@ async fn handle_captured_request(
         flow: flow.summary(),
     });
 
+    if let Some(resolution) = &conn.app_resolution {
+        resolution.attach(&ctx, flow.summary.id);
+    }
+
     // ----- Step 2: request-phase rules -----
-    let outcome = ruleset.apply_request(RequestCtx {
-        method: &method_str,
-        url: &url,
-        headers: &req_headers,
-        body: req_body_for_rules.as_deref(),
-        resource_type,
-    });
+    let mut outcome = if need_req_body {
+        let rules = ruleset.clone();
+        let method = method_str.clone();
+        let url = url.clone();
+        let headers = req_headers.clone();
+        let body = req_body_for_rules.clone();
+        body_cpu(move || {
+            rules.apply_request(RequestCtx {
+                method: &method,
+                url: &url,
+                headers: &headers,
+                body: body.as_deref(),
+                resource_type,
+            })
+        })
+        .await
+    } else {
+        ruleset.apply_request(RequestCtx {
+            method: &method_str,
+            url: &url,
+            headers: &req_headers,
+            body: None,
+            resource_type,
+        })
+    };
+    // An outcome carries the input body even if no action changed it.
+    // Preserve the original wire bytes and Content-Encoding in that case.
+    if outcome.body.as_deref() == req_body_for_rules.as_deref() {
+        outcome.body = None;
+    }
 
     if let Some(reason) = outcome.blocked.clone() {
         let original = if outcome.modified {
@@ -1064,16 +1109,28 @@ async fn handle_captured_request(
     // was actually sent, and so this can never race the streamed-body
     // backfill closure just below (which only ever assigns `.body`).
     if outcome.modified {
-        let effective = effective_request_record(
-            &outcome.method,
-            &url,
-            &http_version_str,
-            &req_headers,
-            outcome.body.as_deref(),
-            &req_record.body,
-            content_type.as_deref(),
-            max_body_bytes,
-        );
+        let effective = {
+            let method = outcome.method.clone();
+            let url = url.clone();
+            let version = http_version_str.clone();
+            let headers = req_headers.clone();
+            let bytes = outcome.body.clone();
+            let recorded = req_record.body.clone();
+            let ct = content_type.clone();
+            body_cpu(move || {
+                effective_request_record(
+                    &method,
+                    &url,
+                    &version,
+                    &headers,
+                    bytes.as_deref(),
+                    &recorded,
+                    ct.as_deref(),
+                    max_body_bytes,
+                )
+            })
+            .await
+        };
         if let Some(summary) = ctx.flows.update(flow_id, |f| {
             f.request = Some(effective);
         }) {
@@ -1095,12 +1152,10 @@ async fn handle_captured_request(
             let content_type = content_type.clone();
             let content_encoding = content_encoding.clone();
             let modified = outcome.modified;
-            let finalize = move || {
-                let (captured, total, truncated) = state.lock().snapshot();
-                let payload = payload_from_capture(
-                    captured,
-                    total,
-                    truncated,
+            let finalize = move |capture| {
+                let payload = capture_payload(
+                    &state,
+                    capture,
                     content_type.as_deref(),
                     content_encoding.as_deref(),
                     max_body_bytes,
@@ -1118,7 +1173,7 @@ async fn handle_captured_request(
                     let _ = events.send(hamsy_core::ServerEvent::Flow { flow: summary });
                 }
             };
-            crate::box_body(FinalizeBody::new(outbound_body, finalize))
+            crate::box_body(CaptureBody::new(outbound_body, finalize))
         }
         _ => outbound_body,
     };
@@ -1194,7 +1249,16 @@ async fn handle_captured_request(
     let resp_headers = header_pairs_from(&resp_parts.headers);
     let resp_content_type = header_value(&resp_headers, "content-type").map(str::to_string);
     let resp_content_encoding = header_value(&resp_headers, "content-encoding").map(str::to_string);
-    let need_resp_body = ruleset_needs_response_body(&ruleset);
+    let need_resp_body = ruleset.needs_response_body(ResponseCtx {
+        method: &method_str,
+        url: &url,
+        headers: &req_headers,
+        body: req_body_for_rules.as_deref(),
+        resource_type,
+        status: resp_parts.status.as_u16(),
+        resp_headers: &resp_headers,
+        resp_body: None,
+    });
     let status_text = resp_parts
         .status
         .canonical_reason()
@@ -1203,7 +1267,7 @@ async fn handle_captured_request(
     let resp_http_version = format!("{:?}", resp_parts.version);
 
     if need_resp_body {
-        let (bytes, _total, hit_hard_cap) = match collect_capped(resp_body, HARD_BUFFER_CAP).await {
+        let bytes = match collect_for_rules(resp_body, HARD_BUFFER_CAP).await {
             Ok(v) => v,
             Err(e) => {
                 return finalize_error(
@@ -1217,32 +1281,60 @@ async fn handle_captured_request(
                 .await;
             }
         };
-        if hit_hard_cap {
-            tracing::debug!(host = %host, "response body exceeded 64MiB hard cap; skipping rule body matching/mutation for this response");
-        }
+        let prepared = {
+            let bytes = bytes.clone();
+            let encoding = resp_content_encoding.clone();
+            let ct = resp_content_type.clone();
+            let rules = ruleset.clone();
+            let method = method_str.clone();
+            let url = url.clone();
+            let headers = req_headers.clone();
+            let request_body = req_body_for_rules.clone();
+            let response_headers = resp_headers.clone();
+            let status = resp_parts.status.as_u16();
+            body_cpu(move || {
+                let decoded = decode_for_rules(&bytes, encoding.as_deref())?;
+                let record_body =
+                    hamsy_core::to_payload(&decoded, ct.as_deref(), None, max_body_bytes);
+                let mut result = rules.apply_response(ResponseCtx {
+                    method: &method,
+                    url: &url,
+                    headers: &headers,
+                    body: request_body.as_deref(),
+                    resource_type,
+                    status,
+                    resp_headers: &response_headers,
+                    resp_body: Some(&decoded),
+                });
+                if result.body.as_deref() == Some(decoded.as_ref()) {
+                    result.body = None;
+                }
+                Ok::<_, ProxyError>((record_body, result))
+            })
+            .await
+        };
+        let (mut record_body, mut resp_outcome) = match prepared {
+            Ok(value) => value,
+            Err(e) => {
+                return finalize_error(
+                    &ctx,
+                    flow_id,
+                    original_request,
+                    outcome.matched.clone(),
+                    outcome.modified,
+                    &e,
+                )
+                .await
+            }
+        };
+        record_body.encoding = resp_content_encoding.clone();
         let resp_record = ResponseRecord {
             status: resp_parts.status.as_u16(),
             status_text: status_text.clone(),
             http_version: resp_http_version.clone(),
             headers: resp_headers.clone(),
-            body: hamsy_core::to_payload(
-                &bytes,
-                resp_content_type.as_deref(),
-                resp_content_encoding.as_deref(),
-                max_body_bytes,
-            ),
+            body: record_body,
         };
-
-        let resp_outcome: ResponseOutcome = ruleset.apply_response(ResponseCtx {
-            method: &method_str,
-            url: &url,
-            headers: &req_headers,
-            body: req_body_for_rules.as_deref(),
-            resource_type,
-            status: resp_parts.status.as_u16(),
-            resp_headers: &resp_headers,
-            resp_body: Some(&bytes),
-        });
 
         let original_response = if resp_outcome.modified {
             Some(resp_record.clone())
@@ -1253,11 +1345,11 @@ async fn handle_captured_request(
         // `Bytes` rather than `Vec<u8>`: the unmodified path below just
         // reuses the already-materialized `bytes` via a cheap refcount
         // clone instead of copying the whole body again.
-        let final_body_bytes: Bytes = match &resp_outcome.body {
+        let final_body_bytes: Bytes = match resp_outcome.body.take() {
             Some(b) => {
                 remove_header(&mut final_headers, "content-encoding");
                 set_header(&mut final_headers, "Content-Length", &b.len().to_string());
-                Bytes::from(b.clone())
+                Bytes::from(b)
             }
             None => bytes.clone(),
         };
@@ -1276,12 +1368,15 @@ async fn handle_captured_request(
                 .to_string(),
             http_version: resp_http_version,
             headers: final_headers.clone(),
-            body: hamsy_core::to_payload(
-                &final_body_bytes,
-                resp_content_type.as_deref(),
-                None,
-                max_body_bytes,
-            ),
+            body: {
+                let bytes = final_body_bytes.clone();
+                let ct = header_value(&final_headers, "content-type").map(str::to_string);
+                let ce = header_value(&final_headers, "content-encoding").map(str::to_string);
+                body_cpu(move || {
+                    hamsy_core::to_payload(&bytes, ct.as_deref(), ce.as_deref(), max_body_bytes)
+                })
+                .await
+            },
         };
 
         let matched_rules = union_matched(outcome.matched.clone(), resp_outcome.matched.clone());
@@ -1338,12 +1433,10 @@ async fn handle_captured_request(
     let flows_for_finalize = ctx.flows.clone();
     let events_for_finalize = ctx.events.clone();
     let headers_for_finalize = final_headers.clone();
-    let finalize = move || {
-        let (captured, total, truncated) = tee_state.lock().snapshot();
-        let payload = payload_from_capture(
-            captured,
-            total,
-            truncated,
+    let finalize = move |capture| {
+        let payload = capture_payload(
+            &tee_state,
+            capture,
             resp_content_type.as_deref(),
             resp_content_encoding.as_deref(),
             max_body_bytes,
@@ -1368,7 +1461,7 @@ async fn handle_captured_request(
             let _ = events_for_finalize.send(hamsy_core::ServerEvent::Flow { flow: summary });
         }
     };
-    let final_body = crate::box_body(FinalizeBody::new(tee_body, finalize));
+    let final_body = crate::box_body(CaptureBody::new(tee_body, finalize));
     let final_body = match resp_outcome.throttle_bps {
         Some(bps) => crate::box_body(Throttled::new(final_body, bps)),
         None => final_body,
@@ -1418,12 +1511,23 @@ async fn respond_mocked(
         .iter()
         .find(|h| h.name.eq_ignore_ascii_case("content-type"))
         .map(|h| h.value.clone());
+    let mock_body = Bytes::from(mocked.body);
+    let capture_bytes = mock_body.clone();
+    let payload = body_cpu(move || {
+        hamsy_core::to_payload(
+            &capture_bytes,
+            content_type.as_deref(),
+            None,
+            max_body_bytes,
+        )
+    })
+    .await;
     let resp_record = ResponseRecord {
         status: mocked.status,
         status_text,
         http_version,
         headers: mocked.headers.clone(),
-        body: hamsy_core::to_payload(&mocked.body, content_type.as_deref(), None, max_body_bytes),
+        body: payload,
     };
     let finished_at = now_ms();
     if let Some(summary) = ctx.flows.update(flow_id, |f| {
@@ -1437,11 +1541,7 @@ async fn respond_mocked(
             .events
             .send(hamsy_core::ServerEvent::Flow { flow: summary });
     }
-    build_client_response(
-        mocked.status,
-        &mocked.headers,
-        crate::full_body(mocked.body),
-    )
+    build_client_response(mocked.status, &mocked.headers, crate::full_body(mock_body))
 }
 
 pub(crate) fn build_client_response(
@@ -1496,6 +1596,15 @@ mod tests {
 
     #[test]
     fn ruleset_needs_request_body_detects_matcher_and_actions() {
+        fn needs_body(rules: &RuleSet) -> bool {
+            rules.needs_request_body(RequestCtx {
+                method: "GET",
+                url: &url::Url::parse("http://example.com/").unwrap(),
+                headers: &[],
+                body: None,
+                resource_type: ResourceType::Other,
+            })
+        }
         let with_cond = RuleSet::new(vec![sample_rule(
             vec![],
             Matcher {
@@ -1506,7 +1615,7 @@ mod tests {
                 ..Matcher::default()
             },
         )]);
-        assert!(ruleset_needs_request_body(&with_cond));
+        assert!(needs_body(&with_cond));
 
         let with_action = RuleSet::new(vec![sample_rule(
             vec![Action::ReplaceInRequestBody {
@@ -1516,7 +1625,7 @@ mod tests {
             }],
             Matcher::default(),
         )]);
-        assert!(ruleset_needs_request_body(&with_action));
+        assert!(needs_body(&with_action));
 
         let without = RuleSet::new(vec![sample_rule(
             vec![Action::SetRequestHeader {
@@ -1525,7 +1634,7 @@ mod tests {
             }],
             Matcher::default(),
         )]);
-        assert!(!ruleset_needs_request_body(&without));
+        assert!(!needs_body(&without));
     }
 
     #[test]
@@ -1542,6 +1651,7 @@ mod tests {
             tls: None,
             mirror_h2: false,
             app: None,
+            app_resolution: None,
         };
         let url = build_target_url(&parts, &conn).unwrap();
         assert_eq!(url.as_str(), "http://example.com/path?x=1");
@@ -1558,6 +1668,7 @@ mod tests {
             tls: None,
             mirror_h2: false,
             app: None,
+            app_resolution: None,
         };
         let url = build_target_url(&parts, &conn).unwrap();
         assert_eq!(url.as_str(), "https://example.com:8443/path?x=1");

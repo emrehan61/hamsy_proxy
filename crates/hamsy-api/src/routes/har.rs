@@ -6,7 +6,7 @@ use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use hamsy_core::{export_har, import_har, ServerEvent};
+use hamsy_core::{export_har_refs, import_har, ServerEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -26,19 +26,16 @@ pub async fn export(
     State(state): State<ApiState>,
     Query(params): Query<HarQueryParams>,
 ) -> Result<Response, ApiError> {
-    // `flows().all()`/`.ids()` already take the store's read lock only long
-    // enough to clone the matching flows, releasing it before returning --
-    // so by the time `flows` lands here, the lock is already gone; this is
-    // just the owned snapshot.
+    // Snapshot Arc handles only; export never deep-copies payloads under the store lock.
     let flows = match params.ids.filter(|s| !s.is_empty()) {
         Some(ids_raw) => {
             let ids: Vec<Uuid> = ids_raw
                 .split(',')
                 .filter_map(|s| Uuid::parse_str(s.trim()).ok())
                 .collect();
-            state.flows().ids(&ids)
+            state.flows().snapshots(Some(&ids))
         }
-        None => state.flows().all(),
+        None => state.flows().snapshots(None),
     };
 
     // Building the HAR document and serializing it is CPU-bound and can be
@@ -46,7 +43,7 @@ pub async fn export(
     // doesn't stall this async worker thread.
     let version = state.version().to_string();
     let body = tokio::task::spawn_blocking(move || {
-        let har = export_har(&flows, &version);
+        let har = export_har_refs(flows.iter().map(|flow| flow.as_ref()), &version);
         serde_json::to_vec(&har)
     })
     .await

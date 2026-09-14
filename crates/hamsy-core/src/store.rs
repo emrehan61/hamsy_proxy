@@ -1,6 +1,7 @@
 //! In-memory flow store: a capacity-bounded ring buffer of [`Flow`]s.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
@@ -32,7 +33,7 @@ pub struct FlowQuery {
 }
 
 struct Inner {
-    flows: HashMap<FlowId, Flow>,
+    flows: HashMap<FlowId, Arc<Flow>>,
     order: VecDeque<FlowId>,
     capacity: usize,
     next_seq: u64,
@@ -43,17 +44,13 @@ struct Inner {
 
 impl Inner {
     /// Evicts oldest-first until BOTH the flow count is within `capacity`
-    /// and `total_bytes` is within `max_total_bytes`. A single oversized
-    /// flow can still push `total_bytes` over budget by itself (there's
-    /// nothing smaller left to evict for it), but the ring buffer never
-    /// holds more than it needs to once older flows are gone.
+    /// and `total_bytes` is within `max_total_bytes`, including eviction
+    /// of a single flow that exceeds the entire budget.
     fn evict_if_needed(&mut self) {
         while self.order.len() > self.capacity || self.total_bytes > self.max_total_bytes {
             if let Some(oldest) = self.order.pop_front() {
                 if let Some(flow) = self.flows.remove(&oldest) {
-                    self.total_bytes = self
-                        .total_bytes
-                        .saturating_sub(flow.summary.request_size + flow.summary.response_size);
+                    self.total_bytes = self.total_bytes.saturating_sub(stored_payload_bytes(&flow));
                 }
             } else {
                 break;
@@ -103,34 +100,57 @@ impl FlowStore {
         let mut inner = self.inner.write();
         let id = flow.summary.id;
         if let Some(old) = inner.flows.remove(&id) {
-            inner.total_bytes = inner
-                .total_bytes
-                .saturating_sub(old.summary.request_size + old.summary.response_size);
+            inner.total_bytes = inner.total_bytes.saturating_sub(stored_payload_bytes(&old));
             inner.order.retain(|existing| *existing != id);
         }
-        inner.total_bytes += flow.summary.request_size + flow.summary.response_size;
+        inner.total_bytes += stored_payload_bytes(&flow);
         inner.order.push_back(id);
-        inner.flows.insert(id, flow);
+        inner.flows.insert(id, Arc::new(flow));
         inner.evict_if_needed();
     }
 
     /// Applies `f` to the flow with the given `id`, updating byte
     /// accounting, and returns its new summary. Returns `None` if no flow
-    /// with that id exists.
+    /// with that id exists or the updated flow exceeds the retention budget.
     pub fn update<F: FnOnce(&mut Flow)>(&self, id: FlowId, f: F) -> Option<FlowSummary> {
-        let mut inner = self.inner.write();
-        let flow = inner.flows.get_mut(&id)?;
-        let before = flow.summary.request_size + flow.summary.response_size;
+        // Export snapshots may share this flow. Detach outside the global
+        // lock so a large active flow cannot pause unrelated capture updates.
+        // Recheck identity before applying the FnOnce callback: another writer
+        // may have updated/replaced/evicted it while the copy was made.
+        let (mut inner, before) = loop {
+            let inner = self.inner.write();
+            let stored = inner.flows.get(&id)?;
+            let before = stored_payload_bytes(stored);
+            if Arc::strong_count(stored) == 1 && Arc::weak_count(stored) == 0 {
+                break (inner, before);
+            }
+            let snapshot = Arc::clone(stored);
+            drop(inner);
+            let detached = Arc::new((*snapshot).clone());
+            let mut inner = self.inner.write();
+            if inner
+                .flows
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(current, &snapshot))
+            {
+                inner.flows.insert(id, detached);
+                break (inner, before);
+            }
+        };
+        let flow =
+            Arc::get_mut(inner.flows.get_mut(&id)?).expect("exclusive flow under write lock");
         f(flow);
-        let after = flow.summary.request_size + flow.summary.response_size;
+        let after = stored_payload_bytes(flow);
         let summary = flow.summary();
         inner.total_bytes = inner.total_bytes.saturating_sub(before) + after;
-        Some(summary)
+        inner.evict_if_needed();
+        inner.flows.contains_key(&id).then_some(summary)
     }
 
     /// Returns a clone of the flow with the given `id`, if present.
     pub fn get(&self, id: FlowId) -> Option<Flow> {
-        self.inner.read().flows.get(&id).cloned()
+        let snapshot = self.inner.read().flows.get(&id).cloned();
+        snapshot.map(|flow| (*flow).clone())
     }
 
     /// Lists flow summaries matching `query`, newest-insertion-order last
@@ -197,23 +217,37 @@ impl FlowStore {
         results
     }
 
-    /// Returns clones of every stored flow, in insertion order.
-    pub fn all(&self) -> Vec<Flow> {
+    /// Shares immutable snapshots in insertion order. Only Arc handles are
+    /// cloned under the store lock; payloads remain shared with the store.
+    /// A later update uses copy-on-write to preserve the snapshot.
+    pub fn snapshots(&self, ids: Option<&[FlowId]>) -> Vec<Arc<Flow>> {
         let inner = self.inner.read();
-        inner
-            .order
+        match ids {
+            Some(ids) => ids
+                .iter()
+                .filter_map(|id| inner.flows.get(id).cloned())
+                .collect(),
+            None => inner
+                .order
+                .iter()
+                .filter_map(|id| inner.flows.get(id).cloned())
+                .collect(),
+        }
+    }
+
+    /// Returns clones of every stored flow, copying outside the store lock.
+    pub fn all(&self) -> Vec<Flow> {
+        self.snapshots(None)
             .iter()
-            .filter_map(|id| inner.flows.get(id))
-            .cloned()
+            .map(|flow| (**flow).clone())
             .collect()
     }
 
-    /// Returns clones of the flows matching `ids`, skipping any that are
-    /// not present, in the order requested.
+    /// Returns clones in requested order, copying outside the store lock.
     pub fn ids(&self, ids: &[FlowId]) -> Vec<Flow> {
-        let inner = self.inner.read();
-        ids.iter()
-            .filter_map(|id| inner.flows.get(id).cloned())
+        self.snapshots(Some(ids))
+            .iter()
+            .map(|flow| (**flow).clone())
             .collect()
     }
 
@@ -244,8 +278,8 @@ impl FlowStore {
         inner.evict_if_needed();
     }
 
-    /// Changes the maximum total bytes (`requestSize + responseSize` summed
-    /// across all stored flows) the store may hold, evicting the oldest
+    /// Changes the maximum retained payload allocation (including original
+    /// bodies and WebSocket messages) the store may hold, evicting the oldest
     /// flows immediately if the store is currently over the new budget. See
     /// [`Settings::max_total_bytes`](crate::Settings::max_total_bytes).
     pub fn set_max_total_bytes(&self, max: u64) {
@@ -254,10 +288,29 @@ impl FlowStore {
         inner.evict_if_needed();
     }
 
-    /// Returns the sum of `requestSize + responseSize` across all stored flows.
+    /// Returns retained payload allocation bytes; excludes metadata and external snapshots.
     pub fn total_bytes(&self) -> u64 {
         self.inner.read().total_bytes
     }
+}
+
+// Count allocated storage, not wire sizes: base64 grows, decoded bodies can
+// expand, and truncated captures may be much smaller than their source.
+fn stored_payload_bytes(flow: &Flow) -> u64 {
+    let requests = [&flow.request, &flow.original_request];
+    let responses = [&flow.response, &flow.original_response];
+    requests
+        .into_iter()
+        .flatten()
+        .map(|r| r.body.data.capacity() as u64)
+        .chain(
+            responses
+                .into_iter()
+                .flatten()
+                .map(|r| r.body.data.capacity() as u64),
+        )
+        .chain(flow.ws_messages.iter().map(|m| m.data.capacity() as u64))
+        .sum()
 }
 
 fn flow_matches_search(flow: &Flow, needle: &str) -> bool {
@@ -308,7 +361,10 @@ mod tests {
             url: format!("http://{host}/path"),
             http_version: "HTTP/1.1".to_string(),
             headers: vec![HeaderPair::new("X-Test", "hello")],
-            body: BodyPayload::default(),
+            body: BodyPayload {
+                data: "x".repeat(30),
+                ..Default::default()
+            },
             query: vec![],
         };
         let mut flow = Flow::new_request(
@@ -478,9 +534,88 @@ mod tests {
         store.insert(flow);
         assert_eq!(store.total_bytes(), 30);
         store.update(id, |f| {
-            f.summary.response_size = 100;
+            f.request.as_mut().unwrap().body.data = "x".repeat(110);
         });
         assert_eq!(store.total_bytes(), 110);
+    }
+
+    #[test]
+    fn update_counts_originals_and_ws_and_evicts() {
+        let store = FlowStore::new(10);
+        store.set_max_total_bytes(100);
+        let first = make_flow(1, "GET", "a.com", None, false);
+        let first_id = first.summary.id;
+        let second = make_flow(2, "GET", "b.com", None, false);
+        let id = second.summary.id;
+        store.insert(first);
+        store.insert(second);
+        store.update(id, |flow| {
+            flow.original_request = flow.request.clone();
+            flow.ws_messages.push(crate::flow::WsMessage {
+                direction: crate::flow::WsDirection::Recv,
+                opcode: "text".into(),
+                timestamp: 0,
+                data: "w".repeat(20),
+                size: 9999,
+            });
+        });
+        assert!(store.get(first_id).is_none());
+        assert_eq!(store.total_bytes(), 80);
+        // Wire/decoded sizes never determine the retained allocation.
+        store.update(id, |flow| flow.summary.response_size = u64::MAX);
+        assert_eq!(store.total_bytes(), 80);
+        assert!(store
+            .update(id, |flow| {
+                flow.request.as_mut().unwrap().body.data = "x".repeat(101);
+            })
+            .is_none());
+        assert!(store.is_empty());
+        assert_eq!(store.total_bytes(), 0);
+    }
+
+    #[test]
+    fn snapshots_share_payloads_and_preserve_export_view() {
+        let store = FlowStore::new(10);
+        let flow = make_flow(1, "GET", "a.com", None, false);
+        let id = flow.summary.id;
+        store.insert(flow);
+        let snapshot = store.snapshots(None);
+        let second = store.snapshots(Some(&[id]));
+        assert!(Arc::ptr_eq(&snapshot[0], &second[0]));
+        store.update(id, |f| f.request.as_mut().unwrap().body.data = "new".into());
+        assert_eq!(
+            snapshot[0].request.as_ref().unwrap().body.data,
+            "x".repeat(30)
+        );
+        assert_eq!(store.get(id).unwrap().request.unwrap().body.data, "new");
+        store.clear();
+        let har = crate::export_har_refs(snapshot.iter().map(AsRef::as_ref), "test");
+        assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_snapshot_updates_do_not_lose_writes() {
+        let store = FlowStore::new(10);
+        let flow = make_flow(1, "GET", "a.com", None, false);
+        let id = flow.summary.id;
+        store.insert(flow);
+        let initial = store.snapshots(None);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..100 {
+                        let snapshot = store.snapshots(None);
+                        store
+                            .update(id, |flow| flow.summary.response_size += 1)
+                            .unwrap();
+                        assert_eq!(snapshot.len(), 1);
+                    }
+                });
+            }
+        });
+        assert_eq!(initial[0].summary.response_size, 20);
+        assert_eq!(store.get(id).unwrap().summary.response_size, 420);
+        assert_eq!(store.total_bytes(), 30);
     }
 
     #[test]
@@ -495,8 +630,7 @@ mod tests {
 
     #[test]
     fn set_max_total_bytes_evicts_immediately() {
-        // Each flow accounts for 30 bytes (request_size 10 + response_size
-        // 20; see `make_flow`), well under the ring-buffer capacity of 10.
+        // Each flow retains a 30-byte body, independent of wire size.
         let store = FlowStore::new(10);
         for i in 1..=5u64 {
             store.insert(make_flow(i, "GET", "a.com", Some(200), false));

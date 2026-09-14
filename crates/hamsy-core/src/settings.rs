@@ -25,8 +25,8 @@ pub struct Settings {
     pub max_flows: usize,
     /// Maximum body size (bytes) captured before truncation.
     pub max_body_bytes: usize,
-    /// Maximum total bytes (`requestSize + responseSize` summed across all
-    /// stored flows) retained in the in-memory store, enforced alongside
+    /// Maximum retained payload allocation bytes (including original bodies
+    /// and WebSocket data; excludes metadata and export snapshots), enforced alongside
     /// `max_flows` -- whichever bound is hit first evicts the oldest flow.
     /// Guards against a small number of huge bodies (well under
     /// `max_flows`) still ballooning memory use.

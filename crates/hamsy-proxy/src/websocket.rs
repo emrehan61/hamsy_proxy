@@ -29,6 +29,8 @@ use crate::BoxBody;
 /// without bound. Past this, the oldest messages are dropped to make room
 /// for new ones (most-recent-`N`, ring-buffer style).
 const MAX_WS_MESSAGES_PER_FLOW: usize = 1000;
+/// Retained encoded payload budget for each socket.
+const MAX_WS_PAYLOAD_BYTES_PER_FLOW: usize = 16 * 1024 * 1024;
 
 /// Returns true if `req` is an HTTP/1.1 WebSocket upgrade request
 /// (`Connection: upgrade` + `Upgrade: websocket` + a `Sec-WebSocket-Key`).
@@ -177,6 +179,7 @@ pub async fn handle_upgrade(
         scheme: ws_scheme.to_string(),
         client_addr: conn.client_addr.to_string(),
         app: conn.app.clone(),
+        app_resolution: conn.app_resolution.clone(),
     };
 
     tokio::spawn(async move {
@@ -214,6 +217,7 @@ struct FlowMeta {
     scheme: String,
     client_addr: String,
     app: Option<String>,
+    app_resolution: Option<crate::appid::AppResolution>,
 }
 
 /// Relays traffic between the client and origin WebSocket connections,
@@ -267,6 +271,10 @@ async fn relay<C, O>(
     let _ = ctx.events.send(ServerEvent::Flow {
         flow: flow.summary(),
     });
+
+    if let Some(resolution) = &meta.app_resolution {
+        resolution.attach(&ctx, flow_id);
+    }
 
     let max_bytes = ctx.max_body_bytes();
     let client_ws = WebSocketStream::from_raw_socket(client_io, Role::Server, None).await;
@@ -367,11 +375,19 @@ fn record_message(
 }
 
 /// Trims `messages` down to the most recent [`MAX_WS_MESSAGES_PER_FLOW`]
-/// entries in place, dropping the oldest ones first.
+/// entries and the payload byte budget, dropping the oldest ones first.
 fn cap_ws_messages(messages: &mut Vec<WsMessage>) {
-    if messages.len() > MAX_WS_MESSAGES_PER_FLOW {
-        let excess = messages.len() - MAX_WS_MESSAGES_PER_FLOW;
-        messages.drain(0..excess);
+    let mut bytes: usize = messages.iter().map(|m| m.data.capacity()).sum();
+    let mut excess = messages.len().saturating_sub(MAX_WS_MESSAGES_PER_FLOW);
+    for message in &messages[..excess] {
+        bytes -= message.data.capacity();
+    }
+    while bytes > MAX_WS_PAYLOAD_BYTES_PER_FLOW && excess < messages.len() {
+        bytes -= messages[excess].data.capacity();
+        excess += 1;
+    }
+    if excess > 0 {
+        messages.drain(..excess);
     }
 }
 
@@ -397,6 +413,31 @@ fn cap_str(s: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_ws_messages_limits_allocated_payload_bytes() {
+        let mut messages: Vec<_> = (0..3)
+            .map(|i| WsMessage {
+                direction: WsDirection::Recv,
+                opcode: "binary".into(),
+                timestamp: i,
+                data: "x".repeat(8 * 1024 * 1024),
+                size: 1,
+            })
+            .collect();
+        cap_ws_messages(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].timestamp, 1);
+        messages.push(WsMessage {
+            direction: WsDirection::Recv,
+            opcode: "text".into(),
+            timestamp: 3,
+            data: "x".repeat(MAX_WS_PAYLOAD_BYTES_PER_FLOW + 1),
+            size: 1,
+        });
+        cap_ws_messages(&mut messages);
+        assert!(messages.is_empty());
+    }
 
     #[test]
     fn cap_str_truncates_at_char_boundary() {

@@ -58,12 +58,7 @@ impl ProxyServer {
                             let _ = stream.set_nodelay(true);
                             let ctx = self.ctx.clone();
                             tasks.spawn(async move {
-                                // Resolved once per accepted connection, here
-                                // in the per-connection task rather than the
-                                // accept loop, so a slow/rate-limited scan
-                                // (see `crate::appid`) never blocks accepting
-                                // the next connection.
-                                let app = crate::appid::resolve_client_app(peer_addr).await;
+                                let app_resolution = crate::appid::AppResolution::start(peer_addr);
                                 let io = TokioIo::new(stream);
                                 let conn_info = ConnInfo {
                                     client_addr: peer_addr,
@@ -71,7 +66,8 @@ impl ProxyServer {
                                     authority: None,
                                     tls: None,
                                     mirror_h2: false,
-                                    app,
+                                    app: None,
+                                    app_resolution: Some(app_resolution),
                                 };
                                 serve_h1(ctx, io, conn_info).await;
                             });
@@ -123,8 +119,14 @@ async fn route(
     conn_info: ConnInfo,
 ) -> Response<BoxBody> {
     if req.method() == Method::CONNECT {
-        return connect::handle_connect(ctx, req, conn_info.client_addr, conn_info.app.clone())
-            .await;
+        return connect::handle_connect(
+            ctx,
+            req,
+            conn_info.client_addr,
+            conn_info.app.clone(),
+            conn_info.app_resolution.clone(),
+        )
+        .await;
     }
     if websocket::is_websocket_upgrade(&req) {
         return websocket::handle_upgrade(ctx, req, conn_info).await;

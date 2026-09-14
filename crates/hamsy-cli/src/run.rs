@@ -118,6 +118,7 @@ impl Drop for SystemProxyGuard {
 /// Runs the proxy and API/UI servers until interrupted (`Ctrl-C`/`SIGTERM`),
 /// per `args`.
 pub async fn run(args: RunArgs) -> Result<()> {
+    println!("hamsi proxy runlanıyor");
     let data_dir = resolve_data_dir(args.data_dir.as_deref());
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("failed to create data dir {}", data_dir.display()))?;

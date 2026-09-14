@@ -17,7 +17,15 @@ use crate::flow::{
 
 /// Exports `flows` as a HAR 1.2 document.
 pub fn export_har(flows: &[Flow], creator_version: &str) -> Value {
-    let entries: Vec<Value> = flows.iter().map(export_entry).collect();
+    export_har_refs(flows.iter(), creator_version)
+}
+
+/// Exports borrowed immutable flows without cloning their payloads.
+pub fn export_har_refs<'a>(
+    flows: impl IntoIterator<Item = &'a Flow>,
+    creator_version: &str,
+) -> Value {
+    let entries: Vec<Value> = flows.into_iter().map(export_entry).collect();
     serde_json::json!({
         "log": {
             "version": "1.2",

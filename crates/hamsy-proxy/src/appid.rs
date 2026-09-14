@@ -28,6 +28,69 @@
 use std::net::SocketAddr;
 use std::time::Instant;
 
+/// A connection-scoped attribution result. Traffic never waits for the lookup;
+/// recorded flows receive a metadata update when it completes.
+#[derive(Clone, Debug)]
+pub struct AppResolution(tokio::sync::watch::Receiver<Option<Option<String>>>);
+
+impl AppResolution {
+    pub(crate) fn start(client: SocketAddr) -> Self {
+        static LOOKUPS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        // Saturation only drops optional metadata, never traffic. Bound both
+        // concurrent fallback children and lookup tasks waiting on the scan gate.
+        let permit = LOOKUPS
+            .get_or_init(|| tokio::sync::Semaphore::new(128))
+            .try_acquire();
+        if let Ok(permit) = permit {
+            tokio::spawn(async move {
+                let _permit = permit;
+                let app = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    resolve_client_app(client),
+                )
+                .await
+                .unwrap_or(None);
+                let _ = tx.send(Some(app));
+            });
+        } else {
+            let _ = tx.send(Some(None));
+        }
+        Self(rx)
+    }
+
+    /// Called after the initial flow event, so a late result cannot be
+    /// overwritten by the initial unattributed summary. Uses the exact flow
+    /// ID instead of a port lookup (ports can be reused after disconnect).
+    pub(crate) fn attach(&self, ctx: &crate::config::ProxyContext, id: hamsy_core::FlowId) {
+        self.attach_to(ctx.flows.clone(), ctx.events.clone(), id);
+    }
+
+    fn attach_to(
+        &self,
+        flows: std::sync::Arc<hamsy_core::FlowStore>,
+        events: tokio::sync::broadcast::Sender<hamsy_core::ServerEvent>,
+        id: hamsy_core::FlowId,
+    ) {
+        let mut rx = self.0.clone();
+        tokio::spawn(async move {
+            let result = loop {
+                if let Some(result) = rx.borrow_and_update().clone() {
+                    break result;
+                }
+                if rx.changed().await.is_err() {
+                    return;
+                }
+            };
+            if let Some(app) = result {
+                if let Some(flow) = flows.update(id, |flow| flow.summary.app = Some(app)) {
+                    let _ = events.send(hamsy_core::ServerEvent::Flow { flow });
+                }
+            }
+        });
+    }
+}
+
 /// Resolves `client` to the display name of the local application that
 /// owns that socket, best-effort.
 ///
@@ -164,14 +227,14 @@ mod macos {
     /// caller decides a rescan is needed gets here first and does the scan;
     /// everyone else waits, then (re-checking the same freshness condition)
     /// finds it was just refreshed and skips straight past their own scan.
-    fn scan_gate() -> &'static tokio::sync::Mutex<()> {
-        static GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-        GATE.get_or_init(|| tokio::sync::Mutex::new(()))
+    fn scan_gate() -> &'static std::sync::Arc<tokio::sync::Mutex<()>> {
+        static GATE: OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+        GATE.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
     }
 
     pub(super) async fn resolve_port(port: u16, accepted_at: Instant) -> Option<String> {
         if let Some(pid) = pid_for_port(port, accepted_at).await {
-            if let Some(app) = app_for_pid(pid) {
+            if let Ok(Some(app)) = tokio::task::spawn_blocking(move || app_for_pid(pid)).await {
                 return Some(app);
             }
         }
@@ -195,14 +258,18 @@ mod macos {
         // `rescan` guarantees that, on return, the cache is fresh for
         // `accepted_at` (or the scan failed, in which case there's nothing
         // to look up either way).
-        cache().lock().port_to_pid.get(&port).copied()
+        let guard = cache().lock();
+        guard
+            .is_fresh_for(accepted_at)
+            .then(|| guard.port_to_pid.get(&port).copied())
+            .flatten()
     }
 
     /// Performs a blocking full-system scan and installs its result,
     /// unless another caller already did so (proven fresh for
     /// `accepted_at`) while we were waiting for the single-flight gate.
     async fn rescan(accepted_at: Instant) {
-        let _permit = scan_gate().lock().await;
+        let permit = scan_gate().clone().lock_owned().await;
         if cache().lock().is_fresh_for(accepted_at) {
             return; // someone else already scanned after we were accepted.
         }
@@ -212,7 +279,13 @@ mod macos {
         // `accepted_at` was captured even earlier - is guaranteed visible
         // to it.
         let started = Instant::now();
-        if let Ok(Ok(map)) = tokio::task::spawn_blocking(scan_tcp_ports).await {
+        let _ = tokio::task::spawn_blocking(move || {
+            // Keep single-flight ownership through publication, including
+            // when the async lookup is canceled.
+            let _permit = permit;
+            let Ok(map) = scan_tcp_ports() else {
+                return;
+            };
             let mut guard = cache().lock();
             // A full replacement (not a merge) so a port whose owner
             // changed - or that closed - since the last scan can't
@@ -223,7 +296,8 @@ mod macos {
                 map
             };
             guard.scan_started_at = Some(started);
-        }
+        })
+        .await;
     }
 
     fn app_for_pid(pid: u32) -> Option<String> {
@@ -247,9 +321,13 @@ mod macos {
     /// count) - always run this under `spawn_blocking`, never on an async
     /// executor thread.
     fn scan_tcp_ports() -> Result<HashMap<u16, u32>, String> {
+        let deadline = Instant::now() + std::time::Duration::from_millis(500);
         let pids = pids_by_type(ProcFilter::All).map_err(|e| e.to_string())?;
         let mut map = HashMap::new();
         for pid in pids {
+            if Instant::now() >= deadline {
+                return Err("process scan timed out".into());
+            }
             let ipid = pid as i32;
             let Ok(info) = pidinfo::<BSDInfo>(ipid, 0) else {
                 continue;
@@ -258,6 +336,9 @@ mod macos {
                 continue;
             };
             for fd in fds {
+                if Instant::now() >= deadline {
+                    return Err("process scan timed out".into());
+                }
                 if !matches!(ProcFDType::from(fd.proc_fdtype), ProcFDType::Socket) {
                     continue;
                 }
@@ -289,6 +370,7 @@ mod macos {
         let filter = format!("-iTCP@127.0.0.1:{port}");
         let output = tokio::process::Command::new("lsof")
             .args(["-nP", &filter, "-Fpc"])
+            .kill_on_drop(true)
             .output()
             .await
             .ok()?;
@@ -306,6 +388,61 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_attribution_does_not_block_flow_and_backfills_exact_id() {
+        use hamsy_core::{BodyPayload, Flow, FlowStore, RequestRecord, ServerEvent};
+        let flows = std::sync::Arc::new(FlowStore::new(10));
+        let (events, mut event_rx) = tokio::sync::broadcast::channel(10);
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let resolution = AppResolution(rx);
+        let id = uuid::Uuid::new_v4();
+        flows.insert(Flow::new_request(
+            id,
+            1,
+            0,
+            "GET",
+            "http",
+            "example.com",
+            80,
+            "/",
+            "http://example.com/",
+            "HTTP/1.1",
+            "127.0.0.1:12345",
+            RequestRecord {
+                method: "GET".into(),
+                url: "http://example.com/".into(),
+                http_version: "HTTP/1.1".into(),
+                headers: vec![],
+                body: BodyPayload::default(),
+                query: vec![],
+            },
+        ));
+        resolution.attach_to(flows.clone(), events, id);
+        // Metadata is still pending; flow processing and updates remain available.
+        flows.update(id, |f| f.summary.status = Some(200));
+        assert_eq!(flows.get(id).unwrap().summary.app, None);
+        tx.send(Some(Some("Safari".into()))).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            ServerEvent::Flow { flow } => {
+                assert_eq!(flow.id, id);
+                assert_eq!(flow.app.as_deref(), Some("Safari"));
+                assert_eq!(flow.status, Some(200));
+            }
+            _ => panic!("expected flow update"),
+        }
+        // Already resolved results also reach later requests on this connection.
+        let (events, mut event_rx) = tokio::sync::broadcast::channel(10);
+        resolution.attach_to(flows.clone(), events, id);
+        tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn chrome_helper_path_uses_first_app_component() {

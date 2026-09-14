@@ -11,6 +11,28 @@ use hyper::{Request, Response};
 
 use hamsy_core::{Action, BodyKind, Matcher, PayloadEncoding, Settings};
 
+// Network EOF may precede best-effort background capture completion.
+async fn completed_flows(proxy: &common::TestProxy) -> Vec<hamsy_core::FlowSummary> {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let flows = proxy.ctx.flows.list(&Default::default());
+            if !flows.is_empty()
+                && flows.iter().all(|flow| {
+                    matches!(
+                        flow.state,
+                        hamsy_core::FlowState::Complete | hamsy_core::FlowState::Error
+                    )
+                })
+            {
+                return flows;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background capture completion")
+}
+
 /// 1. Plain HTTP GET through the proxy (absolute-form request, non-`CONNECT`).
 #[tokio::test]
 async fn plain_http_get_through_proxy() {
@@ -30,7 +52,7 @@ async fn plain_http_get_through_proxy() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.expect("body"), "hello world");
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     assert_eq!(flows.len(), 1);
     assert_eq!(flows[0].status, Some(200));
     assert_eq!(flows[0].scheme, "http");
@@ -58,7 +80,7 @@ async fn https_get_through_mitm() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.expect("body"), "secure hello");
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     assert_eq!(flows.len(), 1);
     assert_eq!(flows[0].status, Some(200));
     assert_eq!(flows[0].scheme, "https");
@@ -157,7 +179,7 @@ async fn mock_response_short_circuits_before_upstream() {
         "origin should never have been contacted"
     );
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     assert_eq!(flows.len(), 1);
     assert!(flows[0].from_cache);
 }
@@ -191,7 +213,7 @@ async fn block_rule_returns_403() {
         .expect("request");
     assert_eq!(resp.status(), 403);
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     assert_eq!(flows.len(), 1);
     assert_eq!(flows[0].status, Some(403));
     assert!(flows[0].modified);
@@ -266,7 +288,7 @@ async fn redirect_action_retargets_to_different_origin() {
     // upstream (the rewrite target), while `flow.original_request` keeps
     // the client's pre-rule snapshot - both used to collapse onto the same
     // pre-rule record, silently losing the rewrite from captured data.
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     assert_eq!(flows.len(), 1);
     let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
     let rewritten_url = format!("http://localhost:{}/", origin_b.port());
@@ -334,7 +356,7 @@ async fn gzip_response_decoded_in_flow_but_delivered_intact() {
         "client must receive the exact gzipped bytes, untouched"
     );
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
     let payload = flow.response.expect("response recorded").body;
     assert_eq!(payload.kind, BodyKind::Text);
@@ -373,7 +395,7 @@ async fn oversized_response_truncated_in_flow_but_delivered_whole() {
         "client must receive the whole, uncorrupted body"
     );
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let flows = completed_flows(&proxy).await;
     let flow = proxy.ctx.flows.get(flows[0].id).expect("flow");
     let payload = flow.response.expect("response recorded").body;
     assert_eq!(payload.kind, BodyKind::Truncated);
@@ -445,7 +467,18 @@ async fn client_app_is_resolved_for_real_loopback_connection() {
         .expect("request");
     assert_eq!(resp.status(), 200);
 
-    let flows = proxy.ctx.flows.list(&Default::default());
+    let _ = resp.bytes().await.expect("response body");
+    let flows = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let flows = proxy.ctx.flows.list(&Default::default());
+            if flows.first().is_some_and(|flow| flow.app.is_some()) {
+                break flows;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background application attribution");
     assert_eq!(flows.len(), 1);
     assert!(
         flows[0].app.is_some(),

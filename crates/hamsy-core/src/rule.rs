@@ -680,6 +680,7 @@ fn matches_request(
     headers: &[HeaderPair],
     body: Option<&[u8]>,
     resource_type: ResourceType,
+    probe_body: bool,
 ) -> bool {
     let m = &rule.matcher;
     matches_url(
@@ -691,11 +692,12 @@ fn matches_request(
         && matches_host_port(m, &compiled.host_globs, url)
         && (m.resource_types.is_empty() || m.resource_types.contains(&resource_type))
         && matches_all_header_conds(&m.request_headers, &compiled.req_header_regex, headers)
-        && body_cond_matches(
-            m.request_body.as_ref(),
-            compiled.req_body_regex.as_ref(),
-            body,
-        )
+        && (probe_body
+            || body_cond_matches(
+                m.request_body.as_ref(),
+                compiled.req_body_regex.as_ref(),
+                body,
+            ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -710,20 +712,30 @@ fn matches_response(
     status: u16,
     resp_headers: &[HeaderPair],
     resp_body: Option<&[u8]>,
+    probe_body: bool,
 ) -> bool {
-    matches_request(rule, compiled, method, url, headers, body, resource_type)
-        && (rule.matcher.status_codes.is_empty()
-            || compiled.status_matchers.iter().any(|sm| sm.matches(status)))
+    matches_request(
+        rule,
+        compiled,
+        method,
+        url,
+        headers,
+        body,
+        resource_type,
+        false,
+    ) && (rule.matcher.status_codes.is_empty()
+        || compiled.status_matchers.iter().any(|sm| sm.matches(status)))
         && matches_all_header_conds(
             &rule.matcher.response_headers,
             &compiled.resp_header_regex,
             resp_headers,
         )
-        && body_cond_matches(
-            rule.matcher.response_body.as_ref(),
-            compiled.resp_body_regex.as_ref(),
-            resp_body,
-        )
+        && (probe_body
+            || body_cond_matches(
+                rule.matcher.response_body.as_ref(),
+                compiled.resp_body_regex.as_ref(),
+                resp_body,
+            ))
 }
 
 /// Substitutes `$1`..`$9` in `template` with capture groups from `captures`.
@@ -1143,6 +1155,16 @@ impl RuleSet {
     /// [`Action::Block`] or [`Action::MockResponse`] short-circuits any
     /// remaining (lower-priority) rules in this phase.
     pub fn apply_request(&self, ctx: RequestCtx) -> RequestOutcome {
+        self.apply_request_inner(ctx, false).0
+    }
+
+    /// Probe reachable rules in their execution order. Metadata mutations are
+    /// simulated by the same engine; stop before the first required body.
+    pub fn needs_request_body(&self, ctx: RequestCtx) -> bool {
+        self.apply_request_inner(ctx, true).1
+    }
+
+    fn apply_request_inner(&self, ctx: RequestCtx, probe: bool) -> (RequestOutcome, bool) {
         let mut method = ctx.method.to_string();
         let mut url = ctx.url.clone();
         let mut headers = ctx.headers.to_vec();
@@ -1150,6 +1172,7 @@ impl RuleSet {
 
         let mut matched = Vec::new();
         let mut modified = false;
+        let mut needs_body = false;
         let mut blocked = None;
         let mut mocked = None;
         let mut delay_ms: u64 = 0;
@@ -1164,8 +1187,23 @@ impl RuleSet {
                 &headers,
                 body.as_deref(),
                 ctx.resource_type,
+                probe,
             ) {
                 continue;
+            }
+            if probe
+                && (rule.matcher.request_body.is_some()
+                    || rule.actions.iter().any(|a| {
+                        matches!(
+                            a,
+                            Action::SetRequestBody { .. }
+                                | Action::ReplaceInRequestBody { .. }
+                                | Action::JsonPatchRequest { .. }
+                        )
+                    }))
+            {
+                needs_body = true;
+                break;
             }
             matched.push(rule.id.clone());
 
@@ -1324,18 +1362,42 @@ impl RuleSet {
             }
         }
 
-        RequestOutcome {
-            method,
-            url: url.to_string(),
-            headers,
-            body,
-            matched,
-            modified,
-            blocked,
-            mocked,
-            delay_ms,
-            throttle_bps,
+        // A later request rewrite can make an earlier response rule's request
+        // body predicate reachable when the response phase re-evaluates it.
+        if probe && !needs_body && blocked.is_none() && mocked.is_none() {
+            needs_body = self
+                .rules
+                .iter()
+                .zip(&self.compiled)
+                .any(|(rule, compiled)| {
+                    rule.matcher.request_body.is_some()
+                        && matches_request(
+                            rule,
+                            compiled,
+                            &method,
+                            &url,
+                            &headers,
+                            None,
+                            ctx.resource_type,
+                            true,
+                        )
+                });
         }
+        (
+            RequestOutcome {
+                method,
+                url: url.to_string(),
+                headers,
+                body,
+                matched,
+                modified,
+                blocked,
+                mocked,
+                delay_ms,
+                throttle_bps,
+            },
+            needs_body,
+        )
     }
 
     /// Runs the response phase: re-evaluates each rule's full matcher
@@ -1348,6 +1410,15 @@ impl RuleSet {
     /// [`ResponseOutcome`] (a response already exists by this phase), so it
     /// only affects short-circuiting here, not the returned fields.
     pub fn apply_response(&self, ctx: ResponseCtx) -> ResponseOutcome {
+        self.apply_response_inner(ctx, false).0
+    }
+
+    /// Uses the actual request plus response metadata and preserves rule order.
+    pub fn needs_response_body(&self, ctx: ResponseCtx) -> bool {
+        self.apply_response_inner(ctx, true).1
+    }
+
+    fn apply_response_inner(&self, ctx: ResponseCtx, probe: bool) -> (ResponseOutcome, bool) {
         let mut status = ctx.status;
         let mut headers = ctx.resp_headers.to_vec();
         let mut body: Option<Vec<u8>> = ctx.resp_body.map(|b| b.to_vec());
@@ -1357,6 +1428,7 @@ impl RuleSet {
         let mut delay_ms: u64 = 0;
         let mut throttle_bps: Option<u64> = None;
         let mut short_circuit = false;
+        let mut needs_body = false;
 
         for (rule, compiled) in self.rules.iter().zip(self.compiled.iter()) {
             if !matches_response(
@@ -1370,8 +1442,23 @@ impl RuleSet {
                 status,
                 &headers,
                 body.as_deref(),
+                probe,
             ) {
                 continue;
+            }
+            if probe
+                && (rule.matcher.response_body.is_some()
+                    || rule.actions.iter().any(|a| {
+                        matches!(
+                            a,
+                            Action::SetResponseBody { .. }
+                                | Action::ReplaceInResponseBody { .. }
+                                | Action::JsonPatchResponse { .. }
+                        )
+                    }))
+            {
+                needs_body = true;
+                break;
             }
             matched.push(rule.id.clone());
 
@@ -1465,15 +1552,18 @@ impl RuleSet {
             }
         }
 
-        ResponseOutcome {
-            status,
-            headers,
-            body,
-            matched,
-            modified,
-            delay_ms,
-            throttle_bps,
-        }
+        (
+            ResponseOutcome {
+                status,
+                headers,
+                body,
+                matched,
+                modified,
+                delay_ms,
+                throttle_bps,
+            },
+            needs_body,
+        )
     }
 }
 

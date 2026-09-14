@@ -19,7 +19,7 @@ const MAX_DECODE_OUTPUT: usize = 128 * 1024 * 1024;
 /// Decodes an HTTP body according to its `Content-Encoding` header value.
 ///
 /// `content_encoding` may be a comma-separated list (e.g. `"gzip, br"`), in
-/// which case each token is applied in order. An unrecognized token is
+/// which case decoding reverses the order in which the codings were applied. An unrecognized token is
 /// treated as a no-op rather than an error, since we would rather show the
 /// (possibly still-encoded) bytes than fail the whole capture.
 ///
@@ -37,12 +37,23 @@ pub fn decode_body(
     };
     let mut data = bytes.to_vec();
     let mut truncated = false;
-    for token in encoding.split(',') {
+    let codings: Vec<_> = encoding
+        .split(',')
+        .filter(|token| !token.trim().is_empty())
+        .collect();
+    for (index, token) in codings.iter().rev().enumerate() {
         let token = token.trim().to_ascii_lowercase();
         if token.is_empty() {
             continue;
         }
-        let (decoded, hit_cap) = decode_single(&data, &token, max_output)?;
+        // Intermediate compressed representations need their own safety cap;
+        // the display cap applies only to the final plaintext stage.
+        let limit = if index + 1 == codings.len() {
+            max_output
+        } else {
+            MAX_DECODE_OUTPUT
+        };
+        let (decoded, hit_cap) = decode_single(&data, &token, limit)?;
         data = decoded;
         // A later stage would just be decoding a truncated (and thus almost
         // certainly invalid) compressed stream; stop rather than compound
@@ -210,20 +221,24 @@ pub fn is_textual_mime(mime: &str) -> bool {
 /// either the MIME type is textual or the bytes contain no binary control
 /// characters; otherwise it is stored as base64. Content longer than
 /// `max_bytes` (post-decode) is truncated, with `size` reporting the decoded
-/// length -- capped at [`MAX_DECODE_OUTPUT`] for a decompression bomb, since
-/// decoding itself refuses to materialize more than that regardless of
-/// `max_bytes`.
+/// length when complete. For truncated compressed content, size is a lower
+/// bound: decoding stops at the capture limit instead of expanding the entire
+/// response just to count bytes.
 pub fn to_payload(
     bytes: &[u8],
     content_type: Option<&str>,
     content_encoding: Option<&str>,
     max_bytes: usize,
 ) -> BodyPayload {
-    let (decoded, decode_truncated) = decode_body(bytes, content_encoding, MAX_DECODE_OUTPUT)
-        .unwrap_or_else(|_| (bytes.to_vec(), false));
+    let (decoded, decode_truncated) = decode_body(
+        bytes,
+        content_encoding,
+        max_bytes.saturating_add(3).min(MAX_DECODE_OUTPUT),
+    )
+    .unwrap_or_else(|_| (bytes.to_vec(), false));
     let encoding = content_encoding.map(str::to_string);
 
-    if decoded.is_empty() {
+    if decoded.is_empty() && !decode_truncated {
         return BodyPayload {
             kind: BodyKind::None,
             data: String::new(),
@@ -234,7 +249,11 @@ pub fn to_payload(
     }
 
     let size = decoded.len() as u64;
-    let is_text = std::str::from_utf8(&decoded).is_ok()
+    let valid_text = match std::str::from_utf8(&decoded) {
+        Ok(_) => true,
+        Err(e) => decode_truncated && e.error_len().is_none(),
+    };
+    let is_text = valid_text
         && (content_type.map(is_textual_mime).unwrap_or(false) || !has_control_bytes(&decoded));
 
     if decoded.len() <= max_bytes && !decode_truncated {
@@ -354,14 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn comma_list_applies_in_order() {
+    fn comma_list_decodes_in_reverse_wire_order() {
         let original = b"layered payload".to_vec();
         let gzipped = encode_body(&original, "gzip").unwrap();
-        let brotli_then_gzip = encode_body(&gzipped, "br").unwrap();
-        // Content-Encoding: br, gzip means br was applied last on the wire;
-        // decoding in the listed order (br, then gzip) reverses that.
+        let gzip_then_brotli = encode_body(&gzipped, "br").unwrap();
+        // gzip was applied first, then br; decoding must undo br first.
         let (decoded, truncated) =
-            decode_body(&brotli_then_gzip, Some("br, gzip"), NO_PRACTICAL_LIMIT).unwrap();
+            decode_body(&gzip_then_brotli, Some("gzip, br"), NO_PRACTICAL_LIMIT).unwrap();
         assert_eq!(decoded, original);
         assert!(!truncated);
     }
@@ -444,5 +462,17 @@ mod tests {
         let out = pretty_json("{\"a\":1}").unwrap();
         assert!(out.contains('\n'));
         assert!(pretty_json("not json").is_none());
+    }
+    #[test]
+    fn compressed_capture_preserves_utf8_prefix_and_layer_order() {
+        for encoding in ["gzip", "br", "gzip, br"] {
+            let mut wire = "héllo".as_bytes().to_vec();
+            for coding in encoding.split(", ") {
+                wire = encode_body(&wire, coding).unwrap();
+            }
+            let payload = to_payload(&wire, Some("text/plain"), Some(encoding), 2);
+            assert_eq!(payload.data, "h", "{encoding}");
+            assert!(payload.truncated);
+        }
     }
 }

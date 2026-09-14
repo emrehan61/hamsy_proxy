@@ -17,14 +17,10 @@
 //!
 //! # Connection pooling
 //!
-//! A real (if simple) idle-connection pool is implemented below: senders
-//! are checked out of a `parking_lot::Mutex<HashMap<PoolKey, Vec<_>>>`,
-//! health-checked (`is_closed()`) on checkout, and expired after a 90s idle
-//! timeout. Both HTTP/1.1 and HTTP/2 senders use the same
-//! checkout-use-checkin cycle (exclusive use per checkout); this means an
-//! HTTP/2 connection is not multiplexed across concurrent requests the way
-//! a maximally-efficient h2 client would, but it is correct, simple, and
-//! still allows concurrency via multiple pooled connections per key.
+//! HTTP/1.1 senders are checked out exclusively until the response drains.
+//! HTTP/2 senders remain shared in the pool; each checkout owns a stream
+//! permit until its response completes or is dropped. ALPN preferences and
+//! chained-proxy routes are part of the key, including for HTTP/1.1 fallbacks.
 //!
 //! Each [`Sender`] carries the peer address it was dialed to (see
 //! [`Sender::addr`]), resolved once at dial time and never recomputed. That
@@ -47,6 +43,7 @@ use parking_lot::Mutex;
 use rustls_pki_types::ServerName;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::error::{ProxyError, Result};
@@ -59,10 +56,12 @@ const OVERALL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long an idle pooled connection is kept before it's discarded instead
 /// of being reused.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-/// Maximum idle connections retained per pool key (destination + protocol).
+/// Maximum pooled connections retained per destination and ALPN/route policy.
 /// Bounds one very chatty host's bucket from growing without limit between
 /// sweeps; excess connections are dropped oldest-first.
 const MAX_IDLE_PER_KEY: usize = 8;
+/// Local upper bound; hyper also honors the peer SETTINGS limit.
+const MAX_H2_STREAMS: usize = 100;
 
 /// Which HTTP version a [`Sender`] (and thus a pooled connection) speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -95,6 +94,9 @@ enum SenderKind {
 pub struct Sender {
     kind: SenderKind,
     addr: String,
+    pool_key: Option<PoolKey>,
+    h2_slots: Option<Arc<Semaphore>>,
+    stream_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Sender {
@@ -138,7 +140,8 @@ struct PoolKey {
     https: bool,
     host: String,
     port: u16,
-    version: HttpVersion,
+    mirror_h2: bool,
+    upstream_proxy: Option<String>,
 }
 
 struct PooledConn {
@@ -146,7 +149,7 @@ struct PooledConn {
     idle_since: Instant,
 }
 
-/// A simple idle-connection pool keyed by destination + protocol.
+/// Idle H1 and shared H2 connections keyed by destination and ALPN/route policy.
 struct Pool {
     conns: Mutex<HashMap<PoolKey, Vec<PooledConn>>>,
 }
@@ -158,22 +161,70 @@ impl Pool {
         }
     }
 
-    /// Pops a healthy, non-expired connection for `key`, if any. Expired or
-    /// closed connections encountered along the way are dropped.
-    fn checkout(&self, key: &PoolKey) -> Option<Sender> {
-        let mut conns = self.conns.lock();
-        let bucket = conns.get_mut(key)?;
-        let now = Instant::now();
-        while let Some(pooled) = bucket.pop() {
-            if pooled.sender.is_closed() {
-                continue;
+    /// H1 is removed exclusively; H2 is cloned while its pool handle stays
+    /// available. Waiting for capacity never holds the pool lock.
+    async fn checkout(&self, key: &PoolKey) -> Option<Sender> {
+        let mut sender = {
+            let mut conns = self.conns.lock();
+            let bucket = conns.get_mut(key)?;
+            let now = Instant::now();
+            bucket.retain(|p| {
+                !p.sender.is_closed()
+                    && (p
+                        .sender
+                        .h2_slots
+                        .as_ref()
+                        .is_some_and(|s| s.available_permits() < MAX_H2_STREAMS)
+                        || now.saturating_duration_since(p.idle_since) <= IDLE_TIMEOUT)
+            });
+            // Prefer capacity already available on any connection, rather than
+            // queueing behind a saturated last-inserted H2 connection.
+            let index = bucket
+                .iter()
+                .rposition(|p| {
+                    p.sender
+                        .h2_slots
+                        .as_ref()
+                        .is_none_or(|slots| slots.available_permits() > 0)
+                })
+                .or_else(|| bucket.len().checked_sub(1))?;
+            let pooled = &mut bucket[index];
+            if let SenderKind::Http2(handle) = &pooled.sender.kind {
+                pooled.idle_since = now;
+                Sender {
+                    kind: SenderKind::Http2(handle.clone()),
+                    addr: pooled.sender.addr.clone(),
+                    pool_key: pooled.sender.pool_key.clone(),
+                    h2_slots: pooled.sender.h2_slots.clone(),
+                    stream_permit: None,
+                }
+            } else {
+                bucket.swap_remove(index).sender
             }
-            if now.saturating_duration_since(pooled.idle_since) > IDLE_TIMEOUT {
-                continue;
+        };
+        if let Some(slots) = &sender.h2_slots {
+            sender.stream_permit = Some(slots.clone().acquire_owned().await.ok()?);
+            if sender.is_closed() {
+                return None;
             }
-            return Some(pooled.sender);
         }
-        None
+        Some(sender)
+    }
+
+    /// Publish a fresh H2 connection before its first response finishes.
+    fn share_h2(&self, key: PoolKey, sender: &Sender) {
+        if let SenderKind::Http2(handle) = &sender.kind {
+            self.checkin(
+                key,
+                Sender {
+                    kind: SenderKind::Http2(handle.clone()),
+                    addr: sender.addr.clone(),
+                    pool_key: sender.pool_key.clone(),
+                    h2_slots: sender.h2_slots.clone(),
+                    stream_permit: None,
+                },
+            );
+        }
     }
 
     /// Returns `sender` to the pool under `key`, unless it's already closed.
@@ -190,7 +241,8 @@ impl Pool {
     /// Also caps each bucket at `MAX_IDLE_PER_KEY`, oldest-first, so one
     /// frequently-revisited host can't grow its bucket without bound between
     /// sweeps.
-    fn checkin(&self, key: PoolKey, sender: Sender) {
+    fn checkin(&self, key: PoolKey, mut sender: Sender) {
+        sender.pool_key = Some(key.clone());
         if sender.is_closed() {
             return;
         }
@@ -199,7 +251,12 @@ impl Pool {
         conns.retain(|_, bucket| {
             bucket.retain(|pooled| {
                 !pooled.sender.is_closed()
-                    && now.saturating_duration_since(pooled.idle_since) <= IDLE_TIMEOUT
+                    && (pooled
+                        .sender
+                        .h2_slots
+                        .as_ref()
+                        .is_some_and(|s| s.available_permits() < MAX_H2_STREAMS)
+                        || now.saturating_duration_since(pooled.idle_since) <= IDLE_TIMEOUT)
             });
             !bucket.is_empty()
         });
@@ -318,14 +375,11 @@ impl Connector {
             https: is_https,
             host: host.to_string(),
             port,
-            version: if mirror_h2 {
-                HttpVersion::Http2
-            } else {
-                HttpVersion::Http1
-            },
+            mirror_h2: is_https && mirror_h2,
+            upstream_proxy: upstream_proxy.map(str::to_owned),
         };
 
-        if let Some(sender) = self.pool.checkout(&key) {
+        if let Some(sender) = self.pool.checkout(&key).await {
             let version = sender.version();
             let server_addr = sender.addr().to_string();
             return Ok(Obtained {
@@ -367,7 +421,9 @@ impl Connector {
             let ssl_ms = ssl_start.elapsed().as_secs_f64() * 1000.0;
             let negotiated_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(b"h2");
             let io = TokioIo::new(tls_stream);
-            let (sender, version) = handshake(io, negotiated_h2, server_addr.clone()).await?;
+            let (mut sender, version) = handshake(io, negotiated_h2, server_addr.clone()).await?;
+            sender.pool_key = Some(key.clone());
+            self.pool.share_h2(key, &sender);
             Ok(Obtained {
                 sender,
                 version,
@@ -378,7 +434,8 @@ impl Connector {
             })
         } else {
             let io = TokioIo::new(tcp);
-            let (sender, version) = handshake(io, false, server_addr.clone()).await?;
+            let (mut sender, version) = handshake(io, false, server_addr.clone()).await?;
+            sender.pool_key = Some(key);
             Ok(Obtained {
                 sender,
                 version,
@@ -392,14 +449,30 @@ impl Connector {
 
     /// Returns `sender` to the pool for future reuse, unless it's already
     /// closed. Keyed identically to [`Connector::obtain`]'s lookup.
-    pub fn release(&self, scheme: &str, host: &str, port: u16, sender: Sender) {
-        let key = PoolKey {
-            https: scheme.eq_ignore_ascii_case("https"),
-            host: host.to_string(),
-            port,
-            version: sender.version(),
-        };
-        self.pool.checkin(key, sender);
+    pub fn release(&self, _scheme: &str, _host: &str, _port: u16, mut sender: Sender) {
+        if sender.version() == HttpVersion::Http2 {
+            // The shared pool handle already exists. Dropping the lease releases
+            // stream capacity, including when the response was cancelled.
+            if let Some(key) = &sender.pool_key {
+                if let Some(bucket) = self.pool.conns.lock().get_mut(key) {
+                    for pooled in bucket {
+                        if pooled
+                            .sender
+                            .h2_slots
+                            .as_ref()
+                            .zip(sender.h2_slots.as_ref())
+                            .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
+                        {
+                            pooled.idle_since = Instant::now();
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(key) = sender.pool_key.take() {
+            self.pool.checkin(key, sender);
+        }
     }
 }
 
@@ -411,6 +484,11 @@ where
     T: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
     if want_h2 {
+        let slots = Arc::new(Semaphore::new(MAX_H2_STREAMS));
+        let permit = slots
+            .clone()
+            .try_acquire_owned()
+            .expect("fresh stream budget");
         let (sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), io)
             .await
             .map_err(|e| ProxyError::UpstreamConnect(format!("http2 handshake failed: {e}")))?;
@@ -423,6 +501,9 @@ where
             Sender {
                 kind: SenderKind::Http2(sender),
                 addr,
+                pool_key: None,
+                h2_slots: Some(slots),
+                stream_permit: Some(permit),
             },
             HttpVersion::Http2,
         ))
@@ -439,6 +520,9 @@ where
             Sender {
                 kind: SenderKind::Http1(sender),
                 addr,
+                pool_key: None,
+                h2_slots: None,
+                stream_permit: None,
             },
             HttpVersion::Http1,
         ))
@@ -529,7 +613,8 @@ async fn tunnel_connect_through_proxy(tcp: &mut TcpStream, host: &str, port: u16
 /// `None`) - never on early abort (a client disconnecting mid-response, an
 /// upstream error, ...), since a partially-drained HTTP/1.1 connection
 /// can't safely be reused for another request. On early drop, the `Sender`
-/// (and the connection it owns) is simply dropped instead of being pooled.
+/// is simply dropped instead of being pooled. For HTTP/2 this releases only
+/// the stream permit; the shared connection remains reusable.
 pub struct ReleaseOnComplete<B> {
     inner: B,
     release: Option<(Arc<Connector>, bool, String, u16, Sender)>,
@@ -545,10 +630,26 @@ impl<B> ReleaseOnComplete<B> {
         host: String,
         port: u16,
         sender: Sender,
-    ) -> Self {
-        ReleaseOnComplete {
+    ) -> Self
+    where
+        B: Body,
+    {
+        let complete = inner.is_end_stream();
+        let mut wrapped = ReleaseOnComplete {
             inner,
             release: Some((connector, https, host, port, sender)),
+        };
+        // HEAD/204/empty bodies can be discarded without ever being polled.
+        if complete {
+            wrapped.finish();
+        }
+        wrapped
+    }
+
+    fn finish(&mut self) {
+        if let Some((connector, https, host, port, sender)) = self.release.take() {
+            let scheme = if https { "https" } else { "http" };
+            connector.release(scheme, &host, port, sender);
         }
     }
 }
@@ -566,11 +667,10 @@ where
     ) -> Poll<Option<std::result::Result<Frame<Bytes>, Self::Error>>> {
         let this = self.get_mut();
         let poll = Pin::new(&mut this.inner).poll_frame(cx);
-        if let Poll::Ready(None) = &poll {
-            if let Some((connector, https, host, port, sender)) = this.release.take() {
-                let scheme = if https { "https" } else { "http" };
-                connector.release(scheme, &host, port, sender);
-            }
+        if matches!(&poll, Poll::Ready(None))
+            || (matches!(&poll, Poll::Ready(Some(Ok(_)))) && this.inner.is_end_stream())
+        {
+            this.finish();
         }
         poll
     }
@@ -603,6 +703,249 @@ fn parse_proxy_url(raw: &str) -> Result<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use http_body_util::{BodyExt, Full};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn origin(
+        h2: bool,
+    ) -> (
+        Connector,
+        u16,
+        Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let der = cert.cert.der().clone();
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![der.clone()],
+                rustls_pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()).into(),
+            )
+            .unwrap();
+        config.alpn_protocols = vec![if h2 {
+            b"h2".to_vec()
+        } else {
+            b"http/1.1".to_vec()
+        }];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let count = connections.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (tcp, _) = listener.accept().await.unwrap();
+                count.fetch_add(1, Ordering::SeqCst);
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let tls = acceptor.accept(tcp).await.unwrap();
+                    let service = hyper::service::service_fn(|_: Request<Incoming>| async {
+                        Ok::<_, std::convert::Infallible>(Response::new(Full::new(
+                            Bytes::from_static(b"hello"),
+                        )))
+                    });
+                    if h2 {
+                        let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                            .serve_connection(TokioIo::new(tls), service)
+                            .await;
+                    } else {
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(tls), service)
+                            .await;
+                    }
+                });
+            }
+        });
+        (
+            Connector::with_extra_roots(&[der]).unwrap(),
+            port,
+            connections,
+            task,
+        )
+    }
+
+    fn request(port: u16) -> Request<BoxBody> {
+        Request::builder()
+            .uri(format!("https://localhost:{port}/"))
+            .body(
+                Full::new(Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn alpn_fallback_reuses_h1_for_h2_preference() {
+        let (connector, port, count, task) = origin(false).await;
+        for _ in 0..3 {
+            let mut obtained = connector
+                .obtain("https", "localhost", port, true, None)
+                .await
+                .unwrap();
+            assert_eq!(obtained.version, HttpVersion::Http1);
+            obtained
+                .sender
+                .send_request(request(port))
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap();
+            connector.release("https", "localhost", port, obtained.sender);
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        // A different route must not silently reuse the direct connection.
+        assert!(connector
+            .obtain("https", "localhost", port, true, Some("invalid proxy URL"))
+            .await
+            .is_err());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn h2_shares_connection_before_previous_response_is_released() {
+        let (connector, port, count, task) = origin(true).await;
+        let mut first = connector
+            .obtain("https", "localhost", port, true, None)
+            .await
+            .unwrap();
+        let response = first.sender.send_request(request(port)).await.unwrap();
+        // Keep both first response and first lease alive while a second stream runs.
+        let mut second = connector
+            .obtain("https", "localhost", port, true, None)
+            .await
+            .unwrap();
+        assert_eq!(second.version, HttpVersion::Http2);
+        let body = second
+            .sender
+            .send_request(request(port))
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(body.to_bytes(), Bytes::from_static(b"hello"));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        drop(response);
+        drop(first);
+        connector.release("https", "localhost", port, second.sender);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn h2_stream_budget_waits_and_recovers_after_cancellation() {
+        let (connector, port, count, task) = origin(true).await;
+        let mut leases = Vec::new();
+        for _ in 0..MAX_H2_STREAMS {
+            leases.push(
+                connector
+                    .obtain("https", "localhost", port, true, None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert!(tokio::time::timeout(
+            Duration::from_millis(30),
+            connector.obtain("https", "localhost", port, true, None)
+        )
+        .await
+        .is_err());
+        leases.pop();
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(1),
+            connector.obtain("https", "localhost", port, true, None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(recovered.connect_ms, 0.0);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn h2_selects_available_connection_before_saturated_one() {
+        let (connector, port, _, task) = origin(true).await;
+        let first = connector
+            .obtain("https", "localhost", port, true, None)
+            .await
+            .unwrap();
+        let key = first.sender.pool_key.clone().unwrap();
+        // Temporarily remove the first handle to create a second real connection.
+        let first_bucket = connector.pool.conns.lock().remove(&key).unwrap();
+        let mut leases = Vec::new();
+        for _ in 0..MAX_H2_STREAMS {
+            leases.push(
+                connector
+                    .obtain("https", "localhost", port, true, None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        {
+            let mut conns = connector.pool.conns.lock();
+            let saturated = conns.remove(&key).unwrap();
+            let mut combined = first_bucket;
+            combined.extend(saturated);
+            conns.insert(key, combined);
+        }
+        let next = tokio::time::timeout(
+            Duration::from_secs(1),
+            connector.obtain("https", "localhost", port, true, None),
+        )
+        .await
+        .expect("must use available older connection")
+        .unwrap();
+        assert!(Arc::ptr_eq(
+            next.sender.h2_slots.as_ref().unwrap(),
+            first.sender.h2_slots.as_ref().unwrap()
+        ));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn empty_response_returns_h1_without_body_poll() {
+        let (connector, port, count, task) = origin(false).await;
+        let connector = Arc::new(connector);
+        let mut first = connector
+            .obtain("https", "localhost", port, false, None)
+            .await
+            .unwrap();
+        let mut head = request(port);
+        *head.method_mut() = hyper::Method::HEAD;
+        let response = first.sender.send_request(head).await.unwrap();
+        assert!(response.body().is_end_stream());
+        let wrapped = ReleaseOnComplete::new(
+            response.into_body(),
+            connector.clone(),
+            true,
+            "localhost".into(),
+            port,
+            first.sender,
+        );
+        drop(wrapped); // hyper need not poll an already-ended body.
+        let mut second = connector
+            .obtain("https", "localhost", port, false, None)
+            .await
+            .unwrap();
+        second
+            .sender
+            .send_request(request(port))
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
 
     #[test]
     fn parse_proxy_url_defaults_port() {

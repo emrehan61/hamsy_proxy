@@ -43,6 +43,7 @@ pub fn handle_connect(
     mut req: Request<Incoming>,
     client_addr: SocketAddr,
     app: Option<String>,
+    app_resolution: Option<crate::appid::AppResolution>,
 ) -> Pin<Box<dyn std::future::Future<Output = Response<BoxBody>> + Send>> {
     Box::pin(async move {
         let (host, port) = match parse_authority(&req) {
@@ -65,7 +66,7 @@ pub fn handle_connect(
             match upgrade_fut.await {
                 Ok(upgraded) => {
                     let io = TokioIo::new(upgraded);
-                    handle_tunnel(ctx, io, host, port, client_addr, app).await;
+                    handle_tunnel(ctx, io, host, port, client_addr, app, app_resolution).await;
                 }
                 Err(err) => {
                     tracing::debug!(%err, "CONNECT upgrade failed");
@@ -105,6 +106,7 @@ async fn handle_tunnel<IO>(
     port: u16,
     client_addr: SocketAddr,
     app: Option<String>,
+    app_resolution: Option<crate::appid::AppResolution>,
 ) where
     IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -131,6 +133,7 @@ async fn handle_tunnel<IO>(
                 tls: None,
                 mirror_h2: false,
                 app,
+                app_resolution,
             };
             server::serve_h1(ctx, TokioIo::new(rewind), conn_info).await;
         } else if let Err(err) = raw_tunnel(rewind, &host, port).await {
@@ -141,7 +144,7 @@ async fn handle_tunnel<IO>(
 
     // TLS ClientHello. Passthrough (blind tunnel) vs MITM.
     if !ctx.should_intercept(&host) {
-        run_passthrough_flow(&ctx, rewind, &host, port, client_addr, app).await;
+        run_passthrough_flow(&ctx, rewind, &host, port, client_addr, app, app_resolution).await;
         return;
     }
 
@@ -183,6 +186,7 @@ async fn handle_tunnel<IO>(
         tls: Some(tls_info),
         mirror_h2: negotiated_h2,
         app,
+        app_resolution,
     };
 
     if negotiated_h2 {
@@ -202,6 +206,7 @@ async fn run_passthrough_flow<S>(
     port: u16,
     client_addr: SocketAddr,
     app: Option<String>,
+    app_resolution: Option<crate::appid::AppResolution>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -252,6 +257,10 @@ async fn run_passthrough_flow<S>(
     let _ = ctx.events.send(ServerEvent::Flow {
         flow: flow.summary(),
     });
+
+    if let Some(resolution) = &app_resolution {
+        resolution.attach(ctx, flow_id);
+    }
 
     let result = raw_tunnel(client, host, port).await;
     let finished_at = now_ms();
