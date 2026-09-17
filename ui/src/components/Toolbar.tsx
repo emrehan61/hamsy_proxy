@@ -21,6 +21,8 @@ export interface ToolbarProps {
   hasSelection: boolean;
   /** Optional so existing `<Toolbar/>` call sites without HAR import stay unaffected — the button only renders when this is provided. */
   onImportHar?: () => void;
+  searchOpen?: boolean;
+  onToggleSearch?: () => void;
 }
 
 function statusLabel(status: WsStatus): string {
@@ -182,6 +184,11 @@ const Toolbar: Component<ToolbarProps> = (props) => {
 
       <div class="toolbar__divider" aria-hidden="true" />
 
+      <Show when={props.onToggleSearch}>
+        <Button variant={props.searchOpen ? "primary" : "ghost"} size="sm" icon="search" onClick={() => props.onToggleSearch?.()}>
+          {props.searchOpen ? "Show requests" : "Search session"}
+        </Button>
+      </Show>
       <ExportHarMenu
         onAll={props.onExportHarAll}
         onSelected={props.onExportHarSelected}

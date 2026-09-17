@@ -7,6 +7,7 @@ import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from
 import { useSearchParams } from "@solidjs/router";
 import "../styles/har.css";
 import type { Flow, FlowSummary } from "../lib/types";
+import type { HarSearchMatch } from "../lib/harSearch";
 import { clearFlows as clearFlowsApi, getHar, listFlows, replayFlow } from "../lib/api";
 import { triggerDownload } from "../lib/download";
 import { pushToast } from "../stores/ui";
@@ -23,6 +24,7 @@ import {
   seenHosts,
   selectFlow,
   selectedId,
+  setFlowDetail,
 } from "../stores/flows";
 import { activeSessionId, loadSessionFromDb, restoreSessionsFromDb, setActiveSession } from "../stores/harSessions";
 import { filterFlows } from "../lib/filter";
@@ -34,6 +36,7 @@ import Toolbar from "../components/Toolbar";
 import EmptyState, { type EmptyStateProps } from "../components/EmptyState";
 import SessionTabs, { importHarFileList } from "../components/SessionTabs";
 import HarSessionView from "../components/HarSessionView";
+import SessionSearch from "../components/SessionSearch";
 import Icon from "../components/Icon";
 import { apiState } from "../stores/systemProxy";
 
@@ -115,6 +118,15 @@ const Traffic: Component = () => {
   const [host, setHost] = createSignal("");
   const [excludedHosts, setExcludedHosts] = createSignal<string[]>([]);
   const [apps, setApps] = createSignal<string[]>([]);
+  const [searchOpen, setSearchOpen] = createSignal(false);
+  const [searchSelection, setSearchSelection] = createSignal<HarSearchMatch>();
+
+  const openSearchResult = (match: HarSearchMatch, flow: Flow) => {
+    setFlowDetail(flow.id, flow);
+    selectFlow(flow.id);
+    setSearchSelection(match);
+    setSearchOpen(false);
+  };
 
   const onQueryChange = (v: string) => setQuery(v);
 
@@ -329,7 +341,7 @@ const Traffic: Component = () => {
       return;
     }
 
-    if (inTextInput || activeSessionId() !== null) return;
+    if (inTextInput || activeSessionId() !== null || searchOpen()) return;
 
     if (e.key === "j") {
       flowTableApi?.moveSelection(1);
@@ -452,6 +464,8 @@ const Traffic: Component = () => {
           flowCount={flowCount()}
           hasSelection={selectedId() !== null}
           onImportHar={onImportHarClick}
+          searchOpen={searchOpen()}
+          onToggleSearch={() => setSearchOpen((open) => !open)}
         />
         <div class="traffic-page__body">
           <SplitPane
@@ -485,23 +499,27 @@ const Traffic: Component = () => {
                   />
                 </Show>
                 <div class="traffic-page__table">
-                  <Show when={flowCount() > 0} fallback={<EmptyState {...noFlowsEmptyState()} />}>
-                    <Show
-                      when={filteredFlows().length > 0}
-                      fallback={<div class="traffic-page__no-match">No flows match your filters.</div>}
-                    >
-                      <FlowTable
-                        flows={filteredFlows()}
-                        selectedId={selectedId()}
-                        onSelect={selectFlow}
-                        onReady={handleFlowTableReady}
-                      />
+                  <SessionSearch flows={allFlows()} filteredFlows={filteredFlows()} active={searchOpen()} onSelect={openSearchResult} />
+                  <Show when={!searchOpen()}>
+                    <Show when={flowCount() > 0} fallback={<EmptyState {...noFlowsEmptyState()} />}>
+                      <Show
+                        when={filteredFlows().length > 0}
+                        fallback={<div class="traffic-page__no-match">No flows match your filters.</div>}
+                      >
+                        <FlowTable
+                          flows={filteredFlows()}
+                          selectedId={selectedId()}
+                          onSelect={selectFlow}
+                          onReady={handleFlowTableReady}
+                          revealSelected
+                        />
+                      </Show>
                     </Show>
                   </Show>
                 </div>
               </div>
             }
-            second={<FlowDetail flow={selectedFlowDetail()} />}
+            second={<FlowDetail flow={selectedFlowDetail()} revealTab={searchSelection()} />}
           />
         </div>
       </Show>
