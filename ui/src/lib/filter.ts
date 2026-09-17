@@ -2,7 +2,7 @@
 // the WS-fed flows store) and the read-only HAR session viewer (over a
 // static, already-loaded `Flow[]`) — one implementation keeps their filter
 // semantics (search query, method/status/resource-type chips, "modified
-// only", host) from ever silently drifting apart between the two views.
+// only", host inclusion/exclusion) from silently drifting between views.
 
 import type { FlowSummary } from "./types";
 import { statusClassOf } from "./format";
@@ -14,6 +14,7 @@ export interface FlowFilterState {
   resourceTypes: string[];
   onlyModified: boolean;
   host: string;
+  excludedHosts: string[];
   apps: string[];
 }
 
@@ -21,6 +22,7 @@ export interface FlowFilterState {
 // here, this must stay one loop for 50k-row perf.
 export function filterFlows<T extends FlowSummary>(flows: T[], f: FlowFilterState): T[] {
   const q = f.query.trim().toLowerCase();
+  const excludedHosts = new Set(f.excludedHosts);
   const result: T[] = [];
   for (const flow of flows) {
     if (f.methods.length > 0 && !f.methods.includes(flow.method)) continue;
@@ -33,6 +35,7 @@ export function filterFlows<T extends FlowSummary>(flows: T[], f: FlowFilterStat
     if (f.resourceTypes.length > 0 && !f.resourceTypes.includes(flow.resourceType)) continue;
     if (f.onlyModified && !flow.modified) continue;
     if (f.host && flow.host !== f.host) continue;
+    if (excludedHosts.has(flow.host)) continue;
     if (f.apps.length > 0 && !f.apps.includes(flow.app ?? "Unknown")) continue;
     if (q) {
       const haystack = `${flow.url} ${flow.host} ${flow.method} ${flow.status ?? ""}`.toLowerCase();

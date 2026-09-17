@@ -1,6 +1,6 @@
 // Filter controls above the flow table: debounced text search, chip
 // multi-selects for method/status-class/resource-type, a modified-only
-// toggle, and a host select.
+// toggle, and host inclusion/exclusion controls.
 
 import type { Component } from "solid-js";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
@@ -24,6 +24,8 @@ export interface FilterBarProps {
   host: string;
   onHostChange: (v: string) => void;
   hosts: string[];
+  excludedHosts: string[];
+  onExcludedHostsChange: (v: string[]) => void;
   apps: string[];
   selectedApps: string[];
   onSelectedAppsChange: (v: string[]) => void;
@@ -51,12 +53,15 @@ function toggleValue<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
 
-// `apps` is expected pre-sorted by the caller (FilterBar passes
-// `sortedApps()`) — this component must not re-sort.
-const AppFilterDropdown: Component<{
-  apps: string[];
+// Options are pre-sorted by the caller to keep their order stable.
+const MultiSelectFilterDropdown: Component<{
+  options: string[];
   selected: string[];
   onChange: (v: string[]) => void;
+  label: string;
+  selectedLabel: (selected: string[]) => string;
+  clearLabel: string;
+  ariaLabel: string;
 }> = (props) => {
   const [open, setOpen] = createSignal(false);
   let containerRef: HTMLDivElement | undefined;
@@ -79,12 +84,7 @@ const AppFilterDropdown: Component<{
     });
   });
 
-  const label = () => {
-    const n = props.selected.length;
-    if (n === 0) return "All apps";
-    if (n === 1) return props.selected[0];
-    return `${n} apps`;
-  };
+  const label = () => props.selected.length === 0 ? props.label : props.selectedLabel(props.selected);
 
   return (
     <div class="filter-bar__app-dropdown" ref={containerRef}>
@@ -93,13 +93,14 @@ const AppFilterDropdown: Component<{
         class={`filter-bar__app-trigger${props.selected.length > 0 ? " filter-bar__app-trigger--active" : ""}`}
         aria-haspopup="listbox"
         aria-expanded={open()}
+        aria-label={props.ariaLabel}
         onClick={() => setOpen((v) => !v)}
       >
         <span class="filter-bar__app-trigger-label">{label()}</span>
         <Icon name="chevron-down" size={14} class="filter-bar__app-trigger-icon" />
       </button>
       <Show when={open()}>
-        <div class="filter-bar__app-panel" role="listbox" aria-multiselectable="true" aria-label="Filter by app">
+        <div class="filter-bar__app-panel" role="listbox" aria-multiselectable="true" aria-label={props.ariaLabel}>
           <button
             type="button"
             role="option"
@@ -112,26 +113,26 @@ const AppFilterDropdown: Component<{
                 <Icon name="check" size={13} />
               </Show>
             </span>
-            <span class="filter-bar__app-option-label">All apps</span>
+            <span class="filter-bar__app-option-label">{props.clearLabel}</span>
           </button>
-          <For each={props.apps}>
-            {(app) => {
-              const checked = () => props.selected.includes(app);
+          <For each={props.options}>
+            {(option) => {
+              const checked = () => props.selected.includes(option);
               return (
                 <button
                   type="button"
                   role="option"
                   aria-selected={checked()}
                   class={`filter-bar__app-option${checked() ? " filter-bar__app-option--selected" : ""}`}
-                  title={app}
-                  onClick={() => props.onChange(toggleValue(props.selected, app))}
+                  title={option}
+                  onClick={() => props.onChange(toggleValue(props.selected, option))}
                 >
                   <span class="filter-bar__app-option-check" aria-hidden="true">
                     <Show when={checked()}>
                       <Icon name="check" size={13} />
                     </Show>
                   </span>
-                  <span class="filter-bar__app-option-label">{app}</span>
+                  <span class="filter-bar__app-option-label">{option}</span>
                 </button>
               );
             }}
@@ -175,6 +176,7 @@ const FilterBar: Component<FilterBarProps> = (props) => {
   // new apps are detected, so without sorting the row would reshuffle
   // under the user's cursor every time an unseen app shows up.
   const sortedApps = createMemo(() => [...props.apps].sort((a, b) => a.localeCompare(b)));
+  const sortedHosts = createMemo(() => [...new Set([...props.hosts, ...props.excludedHosts])].sort((a, b) => a.localeCompare(b)));
 
   return (
     <div class="filter-bar">
@@ -233,12 +235,29 @@ const FilterBar: Component<FilterBarProps> = (props) => {
       </div>
 
       <Show when={sortedApps().length > 0}>
-        <AppFilterDropdown apps={sortedApps()} selected={props.selectedApps} onChange={props.onSelectedAppsChange} />
+        <MultiSelectFilterDropdown
+          options={sortedApps()}
+          selected={props.selectedApps}
+          onChange={props.onSelectedAppsChange}
+          label="All apps"
+          selectedLabel={(selected) => selected.length === 1 ? selected[0]! : `${selected.length} apps`}
+          clearLabel="All apps"
+          ariaLabel="Filter by app"
+        />
       </Show>
 
       <Toggle checked={props.onlyModified} onChange={props.onOnlyModifiedChange} label="Modified only" />
 
       <Select value={props.host} onChange={props.onHostChange} options={hostOptions()} class="filter-bar__host" />
+      <MultiSelectFilterDropdown
+        options={sortedHosts()}
+        selected={props.excludedHosts}
+        onChange={props.onExcludedHostsChange}
+        label="Exclude hosts"
+        selectedLabel={(selected) => `Exclude hosts (${selected.length})`}
+        clearLabel="No excluded hosts"
+        ariaLabel="Exclude hosts"
+      />
     </div>
   );
 };

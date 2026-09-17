@@ -412,6 +412,10 @@ The original rule-rewritten request is filed in the Traffic list under the CDN U
 
 ## HAR export/import
 
+In an imported HAR tab, click **Search HAR** to search URLs, headers, query parameters, request/response text bodies (including base64-encoded text), and WebSocket messages. Turn on **Regex** for regular expressions or **Match case** for case-sensitive matching. Results show the first match in every matching field; click one to reveal its request and open the corresponding detail tab. The filters above also apply to these results.
+
+Use **Exclude hosts** beside **All hosts** to hide one or more hosts in either live traffic or an imported HAR. Select **No excluded hosts** to clear exclusions. Exclusions also apply to filtered HAR exports.
+
 - From the UI: the Traffic page's export buttons, or Settings → Data → Export/Import HAR.
 - Directly: `GET /api/har` (optionally `?ids=a,b` to export a subset) returns a HAR 1.2 document as a file download; `POST /api/har/import` accepts a HAR 1.2 document and returns `{"imported": n}`.
 

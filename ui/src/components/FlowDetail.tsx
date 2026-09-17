@@ -3,6 +3,7 @@
 import type { Component } from "solid-js";
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal } from "solid-js";
 import type { BodyPayload, Flow, FlowSummary, HeaderPair, Timings } from "../lib/types";
+import type { SearchTab } from "../lib/harSearch";
 import { LARGE_TEXT_THRESHOLD_BYTES, formatBytes, formatDateShort, formatDuration, formatTimestamp, methodColor, statusColor } from "../lib/format";
 import { triggerDownload } from "../lib/download";
 import { MAX_WS_MESSAGES_PER_FLOW } from "../stores/flows";
@@ -16,6 +17,7 @@ import Button from "./Button";
 
 export interface FlowDetailProps {
   flow: Flow | undefined;
+  revealTab?: { tab: SearchTab };
   /**
    * Optional lighter-weight fallback while the full `Flow` is still
    * loading. Not used below — the loading/empty state (`flow === undefined`
@@ -319,6 +321,10 @@ const WebSocketTab: Component<{ flow: Flow }> = (props) => {
 
 const FlowDetail: Component<FlowDetailProps> = (props) => {
   const [active, setActive] = createSignal("overview");
+  createEffect(() => {
+    const target = props.revealTab;
+    if (target) setActive(target.tab);
+  });
 
   const tabs = createMemo<TabItem[]>(() => {
     const base: TabItem[] = [

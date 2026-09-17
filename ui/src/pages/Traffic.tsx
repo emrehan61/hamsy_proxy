@@ -113,6 +113,7 @@ const Traffic: Component = () => {
   const [resourceTypes, setResourceTypes] = createSignal<string[]>([]);
   const [onlyModified, setOnlyModified] = createSignal(false);
   const [host, setHost] = createSignal("");
+  const [excludedHosts, setExcludedHosts] = createSignal<string[]>([]);
   const [apps, setApps] = createSignal<string[]>([]);
 
   const onQueryChange = (v: string) => setQuery(v);
@@ -140,6 +141,7 @@ const Traffic: Component = () => {
       resourceTypes: resourceTypes(),
       onlyModified: onlyModified(),
       host: host(),
+      excludedHosts: excludedHosts(),
       apps: apps(),
     }),
   );
@@ -474,6 +476,8 @@ const Traffic: Component = () => {
                     host={host()}
                     onHostChange={setHost}
                     hosts={seenHosts()}
+                    excludedHosts={excludedHosts()}
+                    onExcludedHostsChange={setExcludedHosts}
                     apps={seenApps()}
                     selectedApps={apps()}
                     onSelectedAppsChange={setApps}

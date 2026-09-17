@@ -53,6 +53,8 @@ export interface FlowTableProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onReady?: (api: FlowTableApi) => void;
+  /** Reveal a selection made outside the table (e.g. a HAR search result). */
+  revealSelected?: boolean;
 }
 
 function defaultColumnWidths(): Record<string, number> {
@@ -159,6 +161,10 @@ const FlowTable: Component<FlowTableProps> = (props) => {
 
   onMount(() => {
     props.onReady?.({ moveSelection });
+    if (props.revealSelected) {
+      const index = indexOfSelected();
+      if (index >= 0) virtualizer.scrollToIndex(index, { align: "center" });
+    }
   });
 
   const onKeyDown = (e: KeyboardEvent) => {

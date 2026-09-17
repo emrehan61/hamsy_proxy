@@ -16,6 +16,7 @@ import { Show, createMemo, createSignal } from "solid-js";
 import type { Flow } from "../lib/types";
 import { flowsToHar } from "../lib/har";
 import { filterFlows } from "../lib/filter";
+import type { HarSearchMatch } from "../lib/harSearch";
 import { triggerDownload } from "../lib/download";
 import { closeSession, harSelectedFlowId, selectHarFlow, sessions } from "../stores/harSessions";
 import FilterBar from "./FilterBar";
@@ -24,6 +25,7 @@ import FlowDetail from "./FlowDetail";
 import SplitPane from "./SplitPane";
 import EmptyState from "./EmptyState";
 import Button from "./Button";
+import HarSearch from "./HarSearch";
 
 export interface HarSessionViewProps {
   sessionId: string;
@@ -47,7 +49,16 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
   const [resourceTypes, setResourceTypes] = createSignal<string[]>([]);
   const [onlyModified, setOnlyModified] = createSignal(false);
   const [host, setHost] = createSignal("");
+  const [excludedHosts, setExcludedHosts] = createSignal<string[]>([]);
   const [apps, setApps] = createSignal<string[]>([]);
+  const [searchOpen, setSearchOpen] = createSignal(false);
+  const [searchSelection, setSearchSelection] = createSignal<HarSearchMatch>();
+
+  const openSearchResult = (match: HarSearchMatch) => {
+    selectHarFlow(props.sessionId, match.flowId);
+    setSearchSelection(match);
+    setSearchOpen(false);
+  };
 
   const filteredFlows = createMemo<Flow[]>(() => {
     const s = loadedSession();
@@ -59,6 +70,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
       resourceTypes: resourceTypes(),
       onlyModified: onlyModified(),
       host: host(),
+      excludedHosts: excludedHosts(),
       apps: apps(),
     });
   });
@@ -70,6 +82,7 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
     resourceTypes().length > 0 ||
     onlyModified() ||
     host() !== "" ||
+    excludedHosts().length > 0 ||
     apps().length > 0;
 
   // Unique hosts across the session's flows, for the FilterBar host <Select>.
@@ -138,6 +151,9 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
             </span>
             <span class="har-session-view__count mono">{s().flows.length} flows</span>
             <div class="toolbar__spacer" />
+            <Button variant={searchOpen() ? "primary" : "ghost"} size="sm" icon="search" onClick={() => setSearchOpen((open) => !open)}>
+              {searchOpen() ? "Show requests" : "Search HAR"}
+            </Button>
             <Button variant="ghost" size="sm" icon="download" onClick={onExportHar}>
               Export HAR
             </Button>
@@ -174,26 +190,32 @@ const HarSessionView: Component<HarSessionViewProps> = (props) => {
                       onOnlyModifiedChange={setOnlyModified}
                       host={host()}
                       onHostChange={setHost}
+                      excludedHosts={excludedHosts()}
+                      onExcludedHostsChange={setExcludedHosts}
                       hosts={hosts()}
                       apps={sessionApps()}
                       selectedApps={apps()}
                       onSelectedAppsChange={setApps}
                     />
                     <div class="har-session-view__table">
-                      <Show
-                        when={filteredFlows().length > 0}
-                        fallback={<div class="har-session-view__no-match">No flows match your filters.</div>}
-                      >
-                        <FlowTable
-                          flows={filteredFlows()}
-                          selectedId={harSelectedFlowId(props.sessionId)}
-                          onSelect={(id) => selectHarFlow(props.sessionId, id)}
-                        />
+                      <HarSearch flows={s().flows} filteredFlows={filteredFlows()} active={searchOpen()} onSelect={openSearchResult} />
+                      <Show when={!searchOpen()}>
+                        <Show
+                          when={filteredFlows().length > 0}
+                          fallback={<div class="har-session-view__no-match">No flows match your filters.</div>}
+                        >
+                          <FlowTable
+                            flows={filteredFlows()}
+                            selectedId={harSelectedFlowId(props.sessionId)}
+                            onSelect={(id) => selectHarFlow(props.sessionId, id)}
+                            revealSelected
+                          />
+                        </Show>
                       </Show>
                     </div>
                   </div>
                 }
-                second={<FlowDetail flow={selectedFlow()} />}
+                second={<FlowDetail flow={selectedFlow()} revealTab={searchSelection()} />}
               />
             </div>
           </Show>
