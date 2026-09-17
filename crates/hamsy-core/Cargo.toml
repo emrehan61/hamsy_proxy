@@ -26,3 +26,10 @@ percent-encoding = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+
+[features]
+schema = ["dep:schemars"]
+
+[dependencies.schemars]
+version = "1"
+optional = true

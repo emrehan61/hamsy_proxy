@@ -17,6 +17,31 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 <!-- TODO: capture a real screenshot of the Traffic page and save it to docs/images/traffic.png, then restore an image link here -->
 
+## MCP beta (w-mcp-beta)
+
+This branch builds **0.5.0-beta.1**, with an agent interface bundled in the same
+`hamsy` binary. Download your platform's artifact from the **Release** workflow
+run for `w-mcp-beta`, extract the `.tar.gz`, and use that binary explicitly.
+Branch pushes build artifacts; they do not publish a stable GitHub release.
+No Rust, Node, Python, model account, or source checkout is needed to use it.
+
+```sh
+hamsy run --manual --no-open --bind 127.0.0.1
+# In another terminal: print configuration for your MCP client
+hamsy mcp --print-config
+```
+
+Add the generated executable/arguments to your MCP client. The default connection
+can inspect traffic, settings and rules, read bundled instructions, and export
+redacted HAR summaries. For rule changes, pause/resume and real request replay,
+use `hamsy mcp --allow-writes --print-config`. Both connections operate on the same
+running app and web UI. See the [bundled agent guide](docs/AGENT_GUIDE.md) for
+setup, tools, limits, privacy behavior and troubleshooting.
+
+Agents without MCP can use `hamsy agent-guide`, `hamsy agent tools`, and
+`hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'`.
+`hamsy update` still follows stable releases; install beta artifacts explicitly.
+
 ## Contents
 
 - [What it does](#what-it-does)

@@ -24,6 +24,7 @@ pub enum FlowState {
 /// Classification of the kind of resource a flow represents, used for
 /// filtering and icon selection in the UI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum ResourceType {
     /// A top-level HTML document.
@@ -115,6 +116,7 @@ impl ResourceType {
 /// header names and original ordering are preserved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HeaderPair {
     /// Header (or query parameter) name.
     pub name: String,

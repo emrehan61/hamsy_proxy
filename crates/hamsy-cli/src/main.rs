@@ -6,6 +6,7 @@
 
 mod cert;
 mod hooks;
+mod mcp;
 mod rules;
 mod run;
 mod shutdown;
@@ -43,6 +44,12 @@ struct Cli {
 enum Command {
     /// Run the proxy and web UI (the default when no subcommand is given).
     Run(run::RunArgs),
+    /// Serve the bundled MCP beta over stdin/stdout.
+    Mcp(mcp::McpArgs),
+    /// Discover and call agent tools using JSON without an MCP client.
+    Agent(mcp::AgentArgs),
+    /// Print the agent guide embedded in this release.
+    AgentGuide,
     /// Manage the MITM root certificate authority.
     Cert {
         #[command(subcommand)]
@@ -82,7 +89,10 @@ fn init_tracing(verbosity: u8) {
             _ => "trace",
         })
     });
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 /// Chains onto whatever panic hook was previously installed (so the
@@ -139,6 +149,16 @@ fn main() {
             Ok(rt) => rt.block_on(run::run(args)),
             Err(e) => Err(e.into()),
         },
+        Command::Mcp(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(mcp::run(args))),
+        Command::Agent(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(mcp::agent(args))),
+        Command::AgentGuide => {
+            println!("{}", mcp::GUIDE);
+            Ok(())
+        }
         Command::Cert { command } => cert::dispatch(command),
         Command::Rules { command } => rules::dispatch(command),
         Command::Proxy { command } => sysproxy_cmd::dispatch(command),

@@ -23,6 +23,7 @@ fn default_200() -> u16 {
 }
 
 /// How a [`Matcher`]'s `url_value` should be compared against a request URL.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum UrlOp {
@@ -44,6 +45,7 @@ pub enum UrlOp {
 }
 
 /// Comparison operator for a [`HeaderCond`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum HeaderOp {
@@ -60,6 +62,7 @@ pub enum HeaderOp {
 }
 
 /// A single header condition within a [`Matcher`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeaderCond {
@@ -72,6 +75,7 @@ pub struct HeaderCond {
 }
 
 /// Comparison operator for a [`BodyCond`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BodyCondOp {
@@ -85,6 +89,7 @@ pub enum BodyCondOp {
 
 /// A body condition within a [`Matcher`], evaluated against the decoded
 /// (post content-encoding) body text.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BodyCond {
@@ -101,6 +106,7 @@ pub struct BodyCond {
 /// request phase. `status_codes`, `response_headers`, and `response_body`
 /// are only checked in the response phase; see [`RuleSet::apply_request`]
 /// and [`RuleSet::apply_response`] for the exact semantics.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Matcher {
@@ -140,6 +146,7 @@ pub struct Matcher {
 
 /// How a payload string embedded in a [`Rule`] JSON document should be
 /// interpreted before use.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum PayloadEncoding {
@@ -151,6 +158,7 @@ pub enum PayloadEncoding {
 }
 
 /// The kind of mutation a [`JsonOp`] performs.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum JsonOpKind {
@@ -166,6 +174,7 @@ pub enum JsonOpKind {
 
 /// A single JSON Patch-like operation used by [`Action::JsonPatchRequest`]
 /// and [`Action::JsonPatchResponse`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonOp {
@@ -184,6 +193,7 @@ pub struct JsonOp {
 /// the phase-classification doc comments on [`RuleSet::apply_request`] and
 /// [`RuleSet::apply_response`] for exactly which variants run in which
 /// phase.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -352,6 +362,7 @@ pub enum Action {
 
 /// A named, orderable rule combining a [`Matcher`] with a list of
 /// [`Action`]s to apply when it matches.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rule {
@@ -388,6 +399,7 @@ pub struct Rule {
 ///
 /// The offending rule is skipped entirely — it never matches or applies —
 /// but compilation of the rest of the [`RuleSet`] proceeds normally.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleError {

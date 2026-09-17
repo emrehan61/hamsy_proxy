@@ -52,6 +52,9 @@ const Setup: Component = () => {
   const [setupInfo, { refetch: refetchSetupInfo }] = createResource(getSetupInfo);
   const [state, { refetch: refetchState }] = createResource(getState);
 
+  const [agentAccess, setAgentAccess] = createSignal("inspect");
+  const agentCommand = () => `hamsy mcp --api-url http://127.0.0.1:${state()?.uiPort ?? 9081}${agentAccess() === "control" ? " --allow-writes" : ""} --print-config`;
+
   const [proxyTab, setProxyTab] = createSignal<PlatformTab>("macos");
   const [trustTab, setTrustTab] = createSignal<PlatformTab>("macos");
   const [baselineFlowCount, setBaselineFlowCount] = createSignal<number | null>(null);
@@ -258,6 +261,39 @@ const Setup: Component = () => {
                   <span class="setup-page__note">Total flows captured: {state()?.flowCount ?? "—"}</span>
                 </div>
                 <Show when={checkResult()}>{(msg) => <p class="setup-page__result">{msg()}</p>}</Show>
+              </div>
+            </section>
+
+            <section class="setup-step" id="ai-agents">
+              <div class="setup-step__number">AI</div>
+              <div class="setup-step__content">
+                <h2>Connect an AI agent · Beta</h2>
+                <p>Let your agent inspect this capture, learn how Hamsy works, and help debug requests.</p>
+                <Tabs
+                  tabs={[{ id: "inspect", label: "Inspection only" }, { id: "control", label: "Allow changes" }]}
+                  active={agentAccess()}
+                  onChange={setAgentAccess}
+                >
+                  <p class="setup-page__note">
+                    {agentAccess() === "control"
+                      ? "Includes rule changes, capture pause/resume, and replay. Replaying sends the request again and can change upstream data."
+                      : "Read traffic, settings, rules, and built-in instructions. The agent connection cannot change capture or rules."}
+                  </p>
+                </Tabs>
+                <ol class="setup-instructions">
+                  <li>Run this command on the computer running Hamsy.</li>
+                  <li>Add the generated connection settings to your agent app's MCP configuration, then reconnect it.</li>
+                  <li>Ask your agent: “Use Hamsy to find failing requests and explain the responses.”</li>
+                </ol>
+                <pre class="setup-page__code setup-page__agent-command mono">{agentCommand()}</pre>
+                <Button variant="default" size="sm" icon="copy" onClick={() => void copy(agentCommand(), "agent setup command")}>
+                  Copy setup command
+                </Button>
+                <p class="setup-page__note">
+                  Keep Hamsy running. This connects to live traffic; imported HAR tabs are not included.
+                  Known credentials are masked and bodies are omitted until requested.
+                  For the full guide, run <code>hamsy agent-guide</code>.
+                </p>
               </div>
             </section>
 
