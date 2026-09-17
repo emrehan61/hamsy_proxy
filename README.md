@@ -443,6 +443,8 @@ See [HAR opening implementation and verification](docs/HAR_OPENING.md) for the s
 
 In an imported HAR tab, click **Search HAR** to search URLs, headers, query parameters, request/response text bodies (including base64-encoded text), and WebSocket messages. Turn on **Regex** for regular expressions or **Match case** for case-sensitive matching. Results show the first match in every matching field; click one to reveal its request and open the corresponding detail tab. The filters above also apply to these results.
 
+In the current session, click **Search session** for the same full-content search, including **Regex** and **Match case**. It loads a snapshot of the captured requests, including their headers, bodies, and WebSocket messages. Click **Refresh** to include newer traffic or updated responses. Filters also apply, and clicking a match opens the corresponding request and detail tab.
+
 Use **Exclude hosts** beside **All hosts** to hide one or more hosts in either live traffic or an imported HAR. Select **No excluded hosts** to clear exclusions. Exclusions also apply to filtered HAR exports.
 
 - From the UI: the Traffic page's export buttons, or Settings → Data → Export/Import HAR.
