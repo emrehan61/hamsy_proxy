@@ -78,8 +78,21 @@ jobs:
       - name: Build hamsy-cli
         run: cargo build --locked --release --features embed-ui -p hamsy-cli --target ${{ matrix.target }}
 
+      - name: Build HAR desktop integration
+        run: bash packaging/build-desktop.sh "target/${{ matrix.target }}/release/packaging"
+
+      - name: Check HAR desktop integration
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python3 packaging/test-desktop.py --macos-payload "target/${{ matrix.target }}/release/packaging"
+          else
+            python3 packaging/test-desktop.py
+          fi
+
       - name: Package tarball
-        run: tar czf "hamsy-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" hamsy
+        # Keep hamsy at archive root for existing binary-only self-updaters.
+        run: tar czf "hamsy-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" hamsy packaging
 
       - uses: actions/upload-artifact@v4
         with:

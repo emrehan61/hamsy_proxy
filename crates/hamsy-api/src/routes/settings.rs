@@ -81,6 +81,11 @@ pub async fn system_proxy(
     State(state): State<ApiState>,
     Json(body): Json<SystemProxyBody>,
 ) -> Result<Json<Value>, ApiError> {
+    if state.viewer_only() {
+        return Err(ApiError::NotImplemented(
+            "HAR viewer cannot control the system proxy".into(),
+        ));
+    }
     if body.enabled {
         let settings = state.settings();
         sysproxy_state::acquire(

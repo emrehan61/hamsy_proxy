@@ -6,6 +6,8 @@ All JSON uses `camelCase` field names, with no exceptions — including the fiel
 
 The server is `hamsy-api`'s `axum::Router` (`hamsy_api::router`), served by `hamsy run` on the configured UI port (default `9081`), or standalone with a `NoopReplay`/`StubCert` backend. There is **no authentication** on any of this — see the Security note in the top-level `README.md`.
 
+`hamsy open` runs a separate loopback HAR viewer with a restricted read-only router. Its CLI handoff requires a private bearer token, and the browser redeems short-lived random tickets at `GET /api/har/open/{ticket}`. These routes are not added to the normal LAN capture API. Its state includes `viewerOnly: true`; normal capture state includes `viewerOnly: false`. See [HAR opening](HAR_OPENING.md) for the protocol and lifecycle.
+
 ---
 
 ## 1. Flow types
@@ -557,3 +559,32 @@ GET    /*
                         gets a JSON 404 (`ApiError::NotFound`), not this
                         SPA fallback.
 ```
+
+
+## Open sessions (MCP beta)
+
+`GET /api/sessions` lists live capture (id `live`, omitted in standalone viewer
+mode) and HAR sessions advertised by connected Hamsy browser windows. A HAR row
+contains its UUID, name, `kind: "har"`, flow count, import time, active state,
+`readOnly: true`, and the number of connected windows advertising it.
+
+Read an imported session with:
+
+- `GET /api/sessions/{uuid}/flows`: same filter query names as live flows, but
+  returns the first matching page in ascending sequence order; use `afterSeq`
+  to continue. Limit is 1–201 (the MCP bridge uses one lookahead row).
+- `GET /api/sessions/{uuid}/flows/{flow_uuid}`: bodies omitted by default;
+  `includeBodies=true` includes text bodies. Binary and WebSocket data is omitted.
+- `GET /api/sessions/{uuid}/har?ids=uuid,uuid`: 1–20 selected flows, bodies omitted.
+
+No mutation routes exist for these archives. Reading does not import anything
+into live capture. The browser must remain connected and a read can time out
+when its window is asleep or busy. Responses are bounded to 8 MiB. The MCP layer
+adds redaction, output limits, and namespaced `sessionId` values; raw REST results
+are not a substitute for its privacy filter.
+
+`GET /api/sessions/ws` is an internal browser bridge. It requires a same-origin
+handshake (the capture API also accepts the two documented Vite dev origins).
+The browser advertises session metadata and replies to correlated read-only
+requests. Registry entries are withdrawn on disconnect; heartbeats remove stale
+windows. Session data remains in the browser and IndexedDB until read on demand.

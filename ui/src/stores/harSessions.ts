@@ -1,6 +1,7 @@
 // Imported HAR session store. Each session is a read-only, client-side-only
-// snapshot of an imported `.har` file (Traffic page's per-tab data) — never
-// touches the live captured-flow store (./flows.ts) or any backend API.
+// snapshot of an imported `.har` file (Traffic page's per-tab data). The
+// read-only agent bridge can inspect open tabs on demand; imports never enter
+// the live captured-flow store (./flows.ts).
 //
 // Reactivity: session `flows` arrays can hold tens of thousands of entries,
 // and flow content never mutates after import (sessions are read-only), so

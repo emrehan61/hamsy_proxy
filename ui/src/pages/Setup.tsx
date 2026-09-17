@@ -268,7 +268,7 @@ const Setup: Component = () => {
               <div class="setup-step__number">AI</div>
               <div class="setup-step__content">
                 <h2>Connect an AI agent · Beta</h2>
-                <p>Let your agent inspect this capture, learn how Hamsy works, and help debug requests.</p>
+                <p>Let your agent inspect live capture and open HAR tabs, learn how Hamsy works, and help debug requests.</p>
                 <Tabs
                   tabs={[{ id: "inspect", label: "Inspection only" }, { id: "control", label: "Allow changes" }]}
                   active={agentAccess()}
@@ -290,7 +290,7 @@ const Setup: Component = () => {
                   Copy setup command
                 </Button>
                 <p class="setup-page__note">
-                  Keep Hamsy running. This connects to live traffic; imported HAR tabs are not included.
+                  Keep Hamsy running and HAR browser windows open. Ask the agent to list sessions, then choose a live capture or imported file. External files opened with Hamsy are included.
                   Known credentials are masked and bodies are omitted until requested.
                   For the full guide, run <code>hamsy agent-guide</code>.
                 </p>

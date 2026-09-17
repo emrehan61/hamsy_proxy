@@ -11,15 +11,18 @@
 
 import "./styles/global.css";
 import type { Component, JSX } from "solid-js";
-import { ErrorBoundary, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { ErrorBoundary, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { useLocation, useNavigate } from "@solidjs/router";
 import { getState } from "./lib/api";
 import { initSettingsSync } from "./stores/settings";
 import { initFlowsSync } from "./stores/flows";
 import { initRulesSync } from "./stores/rules";
 import { initSystemProxySync } from "./stores/systemProxy";
+import { startAgentSessions } from "./stores/agentSessions";
 import { wsClient } from "./lib/ws";
 import Sidebar from "./components/Sidebar";
 import ToastHost from "./components/Toast";
+import { appModeReady, viewerOnly } from "./stores/appMode";
 
 export interface AppProps {
   children?: JSX.Element;
@@ -33,10 +36,18 @@ const WS_OFFLINE_GRACE_MS = 4000;
 const App: Component<AppProps> = (props) => {
   const [backendReachable, setBackendReachable] = createSignal(true);
   const [wsSustainedDown, setWsSustainedDown] = createSignal(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  createEffect(() => {
+    if (viewerOnly() && location.pathname !== "/") navigate(`/${location.search}`, { replace: true });
+  });
 
   let wsDownTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
+    const stopAgentSessions = startAgentSessions();
+    onCleanup(stopAgentSessions);
     initSettingsSync();
     initFlowsSync();
     initRulesSync();
@@ -87,7 +98,9 @@ const App: Component<AppProps> = (props) => {
               </div>
             )}
           >
-            {props.children}
+            <Show when={appModeReady() && (!viewerOnly() || location.pathname === "/")}>
+              {props.children}
+            </Show>
           </ErrorBoundary>
         </div>
       </div>

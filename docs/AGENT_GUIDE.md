@@ -33,22 +33,46 @@ calls. Existing permissions in the agent's host still apply.
 
 ## Discover and inspect
 
-- Call `get_guide`, then `get_status`. Status includes the running app version,
+- Call `get_guide`, then `list_sessions`. Discovery includes the live capture,
+  HAR tabs imported in the running app, and HAR tabs opened from outside Hamsy
+  using `hamsy open file.har` or the desktop launcher. The standalone viewer can
+  be used without starting capture. It is discovered from the current Hamsy
+  profile and its identity is verified before connecting. For a viewer started
+  with a custom `--data-dir`, pass `--viewer-data-dir /absolute/path` to the MCP
+  or agent command. Printed MCP configuration preserves this profile path.
+- Each result has a `sessionId`, `name`, `kind`, and `flowCount`. Imported tabs
+  also report `active`, `openWindows`, and `readOnly: true`. IDs starting with
+  `app:` belong to the configured API; `viewer:` belongs to the standalone viewer.
+  `sources` reports each source's availability independently, so an unavailable
+  capture instance does not prevent reading the viewer.
+- Pass the exact `sessionId` to `list_flows`, `get_flow`, or `export_har`.
+  Omitting it selects `app:live`. Never infer the session from a flow ID alone:
+  an imported archive and live capture can contain the same ID.
+- Keep the Hamsy browser window open for imported HAR reads. Tabs restored from
+  IndexedDB are discovered by metadata and loaded only when requested; the
+  archive is not duplicated into the live capture. Closing a tab or its last
+  connected window removes it from discovery. Multiple windows can own the same
+  session. A sleeping or disconnected browser may require waking or reloading.
+- `get_status` describes the configured capture instance, not the selected HAR.
+  Status includes the running app version,
   bridge version, capture state, ports, flow count, and write permissions. A CA
   fingerprint indicates a CA exists; it does not prove that a client trusts it.
 - `list_flows` returns recent summaries with filters: `host`, `q`, `methods`,
   `statusClass`, `app`, `onlyModified`, `afterSeq`, and `limit` (default 50,
   maximum 200). Host is an exact name without a scheme/port. Methods is a
   comma-separated string. `statusClass: 5` means HTTP 5xx.
-- Results are the most recent matches in ascending sequence order. `limited`
+- For live capture, results are the most recent matches in ascending sequence order. `limited`
   means older matches were omitted; narrow the filters to investigate them.
   `lastSeq` can be used as `afterSeq` for a subsequent tail. This is not lossless
   pagination, and pending flows can change after they were first listed.
+- For imported HARs, results start with the first matching request in ascending
+  sequence order, including sequence zero. While `limited` is true, pass `lastSeq`
+  as `afterSeq` with the same filters and `sessionId` to read the next page.
 - `get_flow` takes a flow UUID. Bodies are omitted by default; set
   `includeBodies: true` to request text previews. `maxBodyBytes` defaults to 4096
   and can be 1–16384 per body. Binary and WebSocket payloads remain omitted.
   `agentOmitted` and `agentTruncated` describe agent-side omissions; the original
-  capture's `truncated` flag describes capture-time limits. The live UI retains
+  capture's `truncated` flag describes capture-time limits. The web UI retains
   the original data.
 - `get_settings` explains capture filters, HTTPS interception and passthrough.
   `list_rules` returns the current shared rule set.
@@ -59,7 +83,9 @@ calls. Existing permissions in the agent's host still apply.
   Use the web UI's normal HAR export for an original full capture.
 
 Tool results are limited to 256 KiB and upstream responses to 8 MiB. Narrow the
-selection or lower capture body limits if the app reports a size limit. Captured
+selection or omit bodies if the app reports a size limit. An imported detail
+with text bodies larger than 8 MiB must be read with `includeBodies: false`; the
+preview limit applies after transfer to the bridge. Captured
 flows live in a bounded in-memory store and can be evicted or disappear on restart.
 
 ## Modify and reproduce
@@ -97,7 +123,9 @@ Example `create_rule` arguments:
 proxying or disable rules. `replay_request` takes a captured flow UUID and sends
 its original request through Hamsy again, with current rules. It can repeat real
 writes, purchases or other upstream side effects, even for GET requests. Replay
-only for an explicit user-requested reproduction. A timeout does not prove that
+only for an explicit user-requested reproduction. Imported HAR sessions are
+read-only, including when the connection has `--allow-writes`; replay accepts
+only live capture. Rules and capture changes always target the configured app. A timeout does not prove that
 nothing happened; never retry a replay automatically.
 
 ## Trust and privacy
@@ -131,7 +159,14 @@ is a local stdio interface, not a remotely accessible MCP server.
   public certificate path; client-specific trust can avoid changing OS trust.
   `hamsy cert install` changes trust and may need OS approval. Certificate-pinned
   applications and built-in passthrough presets can prevent decrypted capture.
-- A missing flow may have been evicted or cleared. Re-list the live capture.
+- A missing live flow may have been evicted or cleared. Re-list the live capture.
+- A missing HAR session: reload the page after installing the beta, keep its
+  browser window open, and call `list_sessions` again. A HAR on disk or in
+  another application's UI is not visible until opened in Hamsy. This interface
+  does not search arbitrary files or inspect other programs' private sessions.
+- For a viewer version mismatch, close/restart the viewer with the installed beta
+  (`hamsy open --stop`, then `hamsy open file.har`); reload its browser page.
+  Discovery does not start or stop applications automatically.
 - A rule write returns an acknowledgement. Check the web UI or list_rules to
   verify it; invalid regular expressions/globs are rejected before submission.
 
@@ -142,8 +177,11 @@ is a local stdio interface, not a remotely accessible MCP server.
 is available as JSON commands:
 
 ```sh
+hamsy agent call list_sessions
 hamsy agent call get_status
 hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'
+# Replace app:SESSION_UUID with an exact sessionId returned by list_sessions
+hamsy agent call list_flows --arguments '{"sessionId":"app:SESSION_UUID","limit":20}'
 hamsy agent --allow-writes call set_capture --arguments '{"paused":true}'
 ```
 
@@ -152,8 +190,8 @@ diagnostics to stderr, and exit nonzero. Argument parsing/startup errors go to
 stderr. No prompts are issued. To save a redacted HAR using a shell, call
 `export_har` and extract the result's `har` property into a `.har` file.
 
-This beta supports live captures. Browser-only imported HAR tabs are not visible
-to the agent interface. No automatic client configuration installation, remote
+This beta supports live captures and open imported HAR sessions. No automatic
+client configuration installation, remote
 MCP endpoint, certificate management tool or arbitrary settings-write tool is
 included. `hamsy update` continues to follow the normal stable release channel;
 install beta artifacts explicitly to remain on the beta.

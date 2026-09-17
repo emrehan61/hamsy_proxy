@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::{SinkExt, StreamExt};
 use hamsy_api::{ApiState, ReplayHook, StubCert};
 use hamsy_core::{FlowStore, RulesStore, Settings};
 use parking_lot::RwLock;
@@ -20,6 +21,58 @@ use tokio::{
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_hamsy");
+
+type Browser =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+async fn browser(api: &str) -> Browser {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("{}/api/sessions/ws", api.replacen("http", "ws", 1))
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert("Origin", api.parse().unwrap());
+    tokio_tungstenite::connect_async(request).await.unwrap().0
+}
+async fn advertise(browser: &mut Browser, ids: &[&str]) {
+    let sessions: Vec<_> = ids.iter().map(|id| json!({"id":id, "name":"external.har", "flowCount":3, "importedAt":1, "active":true})).collect();
+    browser
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            json!({"type":"sessions", "sessions":sessions}).to_string(),
+        ))
+        .await
+        .unwrap();
+}
+async fn browser_request(browser: &mut Browser) -> Value {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let message = browser.next().await.unwrap().unwrap();
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = message {
+                return serde_json::from_str(&text).unwrap();
+            }
+            browser.flush().await.unwrap();
+        }
+    })
+    .await
+    .unwrap()
+}
+async fn reply(browser: &mut Browser, request: &Value, result: Value) {
+    browser
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            json!({"type":"reply", "requestId":request["requestId"], "result":result}).to_string(),
+        ))
+        .await
+        .unwrap();
+}
+async fn wait_sessions(client: &mut Mcp, expected: usize) -> Value {
+    for _ in 0..100 {
+        let response = client.call("list_sessions", json!({})).await;
+        let value = result(&response);
+        if value["sessions"].as_array().unwrap().len() == expected {
+            return value.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("session registration did not settle");
+}
 
 struct Mcp {
     child: Child,
@@ -154,6 +207,234 @@ fn tool_error(response: &Value) {
 }
 
 #[tokio::test]
+async fn open_sessions_route_reads_without_mixing_live_capture_or_masking_ids() {
+    let app = App::start().await;
+    let id = app.seed();
+    let session = uuid::Uuid::new_v4().to_string();
+    let selected = format!("app:{session}");
+    let mut browser = browser(&app.url).await;
+    advertise(&mut browser, &[&session]).await;
+    let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
+    let listed = wait_sessions(&mut client, 2).await;
+    assert_eq!(listed["sessions"][0]["sessionId"], "app:live");
+    assert_eq!(listed["sessions"][1]["sessionId"], selected);
+    assert_eq!(listed["sessions"][1]["readOnly"], true);
+
+    let (response, ()) = tokio::join!(
+        client.call("list_flows", json!({"sessionId":selected,"limit":2})),
+        async {
+            let request = browser_request(&mut browser).await;
+            assert_eq!(request["sessionId"], session);
+            assert_eq!(request["operation"], "list_flows");
+            assert_eq!(request["query"]["limit"], "3");
+            assert!(request["query"].get("afterSeq").is_none());
+            reply(
+                &mut browser,
+                &request,
+                json!({"flows":[{"seq":0},{"seq":1},{"seq":2}]}),
+            )
+            .await;
+        }
+    );
+    assert_eq!(result(&response)["sessionId"], selected);
+    assert_eq!(result(&response)["flows"], json!([{"seq":0},{"seq":1}]));
+    assert_eq!(result(&response)["limited"], true);
+    assert_eq!(result(&response)["lastSeq"], 1);
+
+    let (response, ()) = tokio::join!(
+        client.call(
+            "get_flow",
+            json!({"sessionId":selected,"id":id,"includeBodies":true})
+        ),
+        async {
+            let request = browser_request(&mut browser).await;
+            assert_eq!(request["operation"], "get_flow");
+            assert_eq!(request["query"]["id"], id);
+            assert_eq!(request["query"]["includeBodies"], "true");
+            reply(&mut browser, &request, json!({"id":id,"request":{"headers":[{"name":"Authorization","value":"BROWSER_SECRET"}],
+                "body":{"kind":"text","size":80,"data":"{\"sessionId\":\"CAPTURE_SECRET\",\"message\":\"from HAR\"}"}}})).await;
+        }
+    );
+    assert_eq!(result(&response)["sessionId"], selected);
+    assert!(response.to_string().contains("from HAR"));
+    assert!(!response.to_string().contains("SECRET"));
+    let (response, ()) = tokio::join!(
+        client.call("export_har", json!({"sessionId":selected,"ids":[id]})),
+        async {
+            let request = browser_request(&mut browser).await;
+            assert_eq!(request["operation"], "export_har");
+            assert_eq!(request["query"]["ids"], id);
+            reply(&mut browser, &request, json!({"log":{"entries":[{"response":{"content":{"mimeType":"text/plain","text":"SECRET"}}}]}})).await;
+        }
+    );
+    assert_eq!(result(&response)["sessionId"], selected);
+    assert!(!response.to_string().contains("SECRET"));
+    tool_error(
+        &client
+            .call("replay_request", json!({"sessionId":selected,"id":id}))
+            .await,
+    );
+    tool_error(
+        &client
+            .call(
+                "get_flow",
+                json!({"sessionId":"app:../../settings","id":id}),
+            )
+            .await,
+    );
+    assert_eq!(app.replay_count.load(Ordering::SeqCst), 0);
+    assert_eq!(app.state.flows().len(), 1);
+    // Default reads still address live traffic, even if an archive has the same flow ID.
+    let response = client
+        .call("get_flow", json!({"id":id,"includeBodies":true}))
+        .await;
+    assert_eq!(result(&response)["sessionId"], "app:live");
+    assert!(response.to_string().contains("hello"));
+    advertise(&mut browser, &[]).await;
+    wait_sessions(&mut client, 1).await;
+    tool_error(
+        &client
+            .call("get_flow", json!({"sessionId":selected,"id":id}))
+            .await,
+    );
+    browser.close(None).await.unwrap();
+    client.close().await;
+}
+
+#[tokio::test]
+async fn sessions_track_multiple_windows_disconnects_and_reject_foreign_origins() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let app = App::start().await;
+    let session = uuid::Uuid::new_v4().to_string();
+    let mut first = browser(&app.url).await;
+    let mut second = browser(&app.url).await;
+    advertise(&mut first, &[&session]).await;
+    advertise(&mut second, &[&session]).await;
+    let mut client = Mcp::start(&app.url, false, "2025-11-25").await;
+    for _ in 0..100 {
+        let value = wait_sessions(&mut client, 2).await;
+        if value["sessions"][1]["openWindows"] == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let response = client.call("list_sessions", json!({})).await;
+    assert_eq!(result(&response)["sessions"][1]["openWindows"], 2);
+    first.close(None).await.unwrap();
+    for _ in 0..100 {
+        let response = client.call("list_sessions", json!({})).await;
+        if result(&response)["sessions"][1]["openWindows"] == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let response = client.call("list_sessions", json!({})).await;
+    assert_eq!(result(&response)["sessions"][1]["openWindows"], 1);
+    let (response, ()) = tokio::join!(
+        client.call("list_flows", json!({"sessionId":format!("app:{session}")})),
+        async {
+            let _request = browser_request(&mut second).await;
+            second.close(None).await.unwrap();
+        }
+    );
+    tool_error(&response); // in-flight readers wake immediately on disconnect
+    wait_sessions(&mut client, 1).await;
+    for origin in [None, Some("https://foreign.example")] {
+        let mut request = format!("{}/api/sessions/ws", app.url.replacen("http", "ws", 1))
+            .into_client_request()
+            .unwrap();
+        if let Some(origin) = origin {
+            request
+                .headers_mut()
+                .insert("Origin", origin.parse().unwrap());
+        }
+        let error = tokio_tungstenite::connect_async(request).await.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                assert_eq!(response.status().as_u16(), 403)
+            }
+            other => panic!("unexpected failure: {other}"),
+        }
+    }
+    client.close().await;
+}
+
+#[tokio::test]
+async fn standalone_viewer_discovery_works_without_capture_and_checks_identity() {
+    let mut client = Mcp::start("http://127.0.0.1:1", false, "2025-11-25").await;
+    let mut viewer = Command::new(BIN)
+        .args(["har-viewer-serve", "--data-dir"])
+        .arg(client.home.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let file = client.home.path().join("har-viewer/service.json");
+    let discovery: Value = timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(bytes) = std::fs::read(&file) {
+                if let Ok(value) = serde_json::from_slice(&bytes) {
+                    break value;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let url = format!("http://127.0.0.1:{}", discovery["port"]);
+    let mut browser = browser(&url).await;
+    let session = uuid::Uuid::new_v4().to_string();
+    advertise(&mut browser, &[&session]).await;
+    let listed = wait_sessions(&mut client, 1).await;
+    let selected = format!("viewer:{session}");
+    assert_eq!(listed["sessions"][0]["sessionId"], selected);
+    assert!(listed["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["source"] == "app" && s["available"] == false));
+    assert!(!listed
+        .to_string()
+        .contains(discovery["token"].as_str().unwrap()));
+    let (response, ()) = tokio::join!(
+        client.call("list_flows", json!({"sessionId":selected})),
+        async {
+            let request = browser_request(&mut browser).await;
+            reply(
+                &mut browser,
+                &request,
+                json!({"flows":[{"seq":0,"url":"https://external.test/"}]}),
+            )
+            .await;
+        }
+    );
+    assert_eq!(result(&response)["sessionId"], selected);
+    assert_eq!(result(&response)["flows"][0]["seq"], 0);
+    let original = std::fs::read(&file).unwrap();
+    let mut tampered = discovery;
+    tampered["token"] = json!("wrong proof key");
+    std::fs::write(&file, serde_json::to_vec(&tampered).unwrap()).unwrap();
+    wait_sessions(&mut client, 0).await;
+    tool_error(
+        &client
+            .call("list_flows", json!({"sessionId":selected}))
+            .await,
+    );
+    std::fs::write(&file, original).unwrap();
+    wait_sessions(&mut client, 1).await;
+    assert!(!client.home.path().join("settings.json").exists());
+    assert!(!client.home.path().join("ca").exists());
+    browser.close(None).await.unwrap();
+    viewer.kill().await.unwrap();
+    viewer.wait().await.unwrap();
+    std::fs::remove_dir_all(client.home.path().join("har-viewer")).unwrap();
+    client.close().await;
+}
+
+#[tokio::test]
 async fn offline_discovery_resources_and_protocol_versions() {
     for version in ["2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"] {
         let mut client = Mcp::start("http://127.0.0.1:1", false, version).await;
@@ -163,7 +444,7 @@ async fn offline_discovery_resources_and_protocol_versions() {
             assert_eq!(response["result"]["cacheScope"], "private");
         }
         let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
         assert!(tools
             .iter()
             .all(|tool| tool["annotations"]["readOnlyHint"] == true));
@@ -385,7 +666,7 @@ async fn writes_share_live_state_and_replay_is_single_shot() {
     let flow_id = app.seed();
     let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
     let response = client.rpc("tools/list", json!({})).await;
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 13);
     let rule = json!({"name":"fixture", "match":{"urlOp":"equals", "urlValue":"https://example.test/checkout"},
         "actions":[{"type":"mockResponse","status":200,"body":"ok"}]});
     let response = client.call("create_rule", json!({"rule":rule})).await;

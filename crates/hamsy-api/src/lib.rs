@@ -12,6 +12,7 @@ pub mod error;
 pub mod hooks;
 pub mod qr;
 pub mod routes;
+pub mod sessions;
 pub mod state;
 pub mod sysproxy;
 pub mod sysproxy_state;
@@ -41,6 +42,7 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 /// serving the web UI (see [`assets`]).
 pub fn router(state: ApiState) -> Router {
     let api_routes = Router::new()
+        .merge(sessions::router())
         .route("/state", get(routes::state::get_state))
         .route(
             "/flows",

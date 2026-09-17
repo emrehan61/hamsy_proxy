@@ -23,6 +23,8 @@ url = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 rmcp = { version = "3.4", default-features = false, features = ["server", "transport-io"] }
 schemars = "1"
+libc = "0.2"
+ring = "0.17"
 
 # Not present in [workspace.dependencies]; pinned directly here.
 clap = { version = "4", features = ["derive"] }
@@ -55,3 +57,7 @@ embed-ui = ["hamsy-api/embed-ui"]
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+futures-util = "0.3"
+tokio-tungstenite = "0.24"

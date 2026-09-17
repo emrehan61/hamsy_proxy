@@ -11,6 +11,7 @@ import type { Component } from "solid-js";
 import { For } from "solid-js";
 import { A, useLocation } from "@solidjs/router";
 import Icon, { type IconName } from "./Icon";
+import { appModeReady, viewerOnly } from "../stores/appMode";
 
 interface NavEntry {
   href: string;
@@ -36,7 +37,7 @@ const Sidebar: Component = () => {
   return (
     <nav class="sidebar" aria-label="Primary">
       <img src="/favicon.ico" alt="hamsy-proxy" class="sidebar__logo" />
-      <For each={NAV_ENTRIES}>
+      <For each={viewerOnly() || !appModeReady() ? [{ href: "/", label: "HAR viewer", icon: "file" as const }] : NAV_ENTRIES}>
         {(entry) => (
           <A
             href={entry.href}

@@ -17,6 +17,7 @@ use crate::hooks::{CertHook, NoopReplay, ReplayHook, StubCert};
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 struct Inner {
+    browser_sessions: Arc<crate::sessions::BrowserSessions>,
     flows: Arc<FlowStore>,
     rules: Arc<RulesStore>,
     settings: Arc<RwLock<Settings>>,
@@ -26,6 +27,7 @@ struct Inner {
     cert_hook: Arc<dyn CertHook>,
     version: String,
     started_at: Instant,
+    viewer_only: bool,
 }
 
 /// Shared server state: flow store, rules store, live settings, the
@@ -64,6 +66,7 @@ impl ApiState {
         }
         ApiState {
             inner: Arc::new(Inner {
+                browser_sessions: Arc::default(),
                 flows,
                 rules,
                 settings,
@@ -73,6 +76,7 @@ impl ApiState {
                 cert_hook,
                 version: version.into(),
                 started_at: Instant::now(),
+                viewer_only: false,
             }),
         }
     }
@@ -100,6 +104,22 @@ impl ApiState {
             Arc::new(StubCert),
             version,
         )
+    }
+
+    /// Marks an otherwise standalone state as a read-only HAR viewer.
+    pub fn into_viewer(mut self) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("viewer state must be unshared")
+            .viewer_only = true;
+        self
+    }
+
+    pub fn viewer_only(&self) -> bool {
+        self.inner.viewer_only
+    }
+
+    pub fn browser_sessions(&self) -> &Arc<crate::sessions::BrowserSessions> {
+        &self.inner.browser_sessions
     }
 
     /// The flow store.
@@ -138,7 +158,9 @@ impl ApiState {
     /// callers are responsible for broadcasting [`ServerEvent::SettingsChanged`]
     /// when appropriate.
     pub fn save_settings(&self, settings: Settings) -> hamsy_core::Result<()> {
-        settings.save(&self.inner.settings_path)?;
+        if !self.viewer_only() {
+            settings.save(&self.inner.settings_path)?;
+        }
         self.inner.flows.set_capacity(settings.max_flows.max(1));
         self.inner
             .flows

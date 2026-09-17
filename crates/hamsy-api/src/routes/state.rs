@@ -25,14 +25,18 @@ use crate::ApiState;
 pub async fn state_snapshot(state: &ApiState) -> Value {
     let settings = state.settings();
     let proxy_port = settings.proxy_port;
-    let system_proxy_enabled =
+    let system_proxy_enabled = if state.viewer_only() {
+        false
+    } else {
         tokio::task::spawn_blocking(move || sysproxy::status_for("127.0.0.1", proxy_port))
             .await
             .unwrap_or(Ok(false))
-            .unwrap_or(false);
+            .unwrap_or(false)
+    };
 
     json!({
         "version": state.version(),
+        "viewerOnly": state.viewer_only(),
         "proxyPort": settings.proxy_port,
         "uiPort": settings.ui_port,
         "capturing": !settings.paused,
@@ -43,7 +47,7 @@ pub async fn state_snapshot(state: &ApiState) -> Value {
         "systemProxy": {
             "enabled": system_proxy_enabled,
             "platform": sysproxy::platform(),
-            "supported": sysproxy::supported(),
+            "supported": !state.viewer_only() && sysproxy::supported(),
         },
     })
 }

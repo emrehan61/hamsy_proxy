@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-api"
-version = "0.5.0-beta.1"
+version = "0.5.0-beta.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1115,18 +1115,21 @@ dependencies = [
 
 [[package]]
 name = "hamsy-cli"
-version = "0.5.0-beta.1"
+version = "0.5.0-beta.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
  "clap",
+ "futures-util",
  "hamsy-api",
  "hamsy-core",
  "hamsy-proxy",
+ "libc",
  "open",
  "parking_lot",
  "reqwest 0.12.28",
+ "ring",
  "rmcp",
  "rustls",
  "schemars",
@@ -1135,6 +1138,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -1143,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-core"
-version = "0.5.0-beta.1"
+version = "0.5.0-beta.2"
 dependencies = [
  "base64",
  "brotli",
@@ -1168,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-proxy"
-version = "0.5.0-beta.1"
+version = "0.5.0-beta.2"
 dependencies = [
  "base64",
  "bytes",
