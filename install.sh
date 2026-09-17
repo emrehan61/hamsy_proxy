@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # install.sh — build hamsy-proxy from source and put it on your PATH.
 #
-# There's no prebuilt binary to fetch (no releases, no CI yet), so this
-# script always builds from the checkout it's run from: UI first (Vite),
+# This script builds from the checkout it's run from: UI first (Vite),
 # then the Rust CLI with the UI embedded via rust-embed.
+# Use install_source.sh to install a prebuilt release instead.
 #
 # Bash-3.2-compatible on purpose (macOS ships bash 3.2 as /bin/bash): no
 # associative arrays, no ${var,,}/${var^^}, no mapfile/readarray.
@@ -124,8 +124,9 @@ Options:
   --skip-deps     Only check dependencies; never install anything
   --no-ui         Skip the UI build; build hamsy-proxy without --features embed-ui
   --no-cert       Skip trusting the CA in the OS trust store
+  --no-desktop    Skip HAR file desktop integration
   --no-path       Skip offering to add the install dir to your PATH
-  --uninstall     Remove the installed binary (optionally ~/.hamsy too)
+  --uninstall     Remove the binary and desktop integration (optionally ~/.hamsy too)
   --help, -h      Show this help and exit
 
 Run this script outside a hamsy-proxy checkout (e.g. piped via curl | bash)
@@ -142,6 +143,7 @@ SKIP_DEPS=0
 NO_UI=0
 NO_CERT=0
 NO_PATH=0
+NO_DESKTOP=0
 UNINSTALL=0
 
 while [ $# -gt 0 ]; do
@@ -165,6 +167,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-cert)
       NO_CERT=1
+      shift
+      ;;
+    --no-desktop)
+      NO_DESKTOP=1
       shift
       ;;
     --no-path)
@@ -210,6 +216,8 @@ esac
 
 do_uninstall() {
   bin_path="$PREFIX/hamsy"
+  # Guarded helper only removes the integration owned by this binary path.
+  bash "$SCRIPT_DIR/packaging/install-desktop.sh" --uninstall --binary "$bin_path" || warn "Could not remove HAR desktop integration."
 
   # Offer to remove the CA from the OS trust store while the binary that
   # knows how to do that is still here. $YES -eq 0 gates even asking, so a
@@ -462,6 +470,21 @@ if ! cp "$BUILT_BIN" "$DEST"; then
 fi
 chmod +x "$DEST"
 info "Installed $DEST"
+
+if [ "$NO_UI" -eq 1 ]; then
+  info "Skipping HAR desktop integration (--no-ui: browser viewer is not embedded)."
+elif [ "$NO_DESKTOP" -eq 1 ]; then
+  info "Skipping HAR desktop integration (--no-desktop)."
+else
+  desktop_payload="$(mktemp -d)"
+  if bash "$SCRIPT_DIR/packaging/build-desktop.sh" "$desktop_payload" &&
+     bash "$desktop_payload/install-desktop.sh" --binary "$DEST"; then
+    info "HAR desktop integration installed."
+  else
+    warn "HAR desktop integration failed; the command-line installation is available. Retry the installer or use --no-desktop."
+  fi
+  rm -rf "$desktop_payload"
+fi
 
 # ---------------------------------------------------------------------------
 # Cert setup — best-effort; hamsy itself prints manual per-OS steps on

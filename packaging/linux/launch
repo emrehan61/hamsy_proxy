@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Resolve the config relative to this installed wrapper, not the desktop's PATH.
+set -euo pipefail
+launcher_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IFS= read -r binary_path < "$launcher_dir/binary-path"
+exec "$binary_path" open -- "$@"

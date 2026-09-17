@@ -214,6 +214,7 @@ export interface PassthroughPreset {
 }
 
 export interface ApiState {
+  viewerOnly?: boolean;
   version: string;
   proxyPort: number;
   uiPort: number;

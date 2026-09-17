@@ -5,6 +5,7 @@
 //! (no IPC with a running `hamsy run` process).
 
 mod cert;
+mod har_open;
 mod hooks;
 mod rules;
 mod run;
@@ -43,6 +44,10 @@ struct Cli {
 enum Command {
     /// Run the proxy and web UI (the default when no subcommand is given).
     Run(run::RunArgs),
+    /// Open HAR files in a browser viewer without starting capture.
+    Open(har_open::OpenArgs),
+    #[command(hide = true, name = "har-viewer-serve")]
+    HarViewerServe(har_open::ServeArgs),
     /// Manage the MITM root certificate authority.
     Cert {
         #[command(subcommand)]
@@ -139,6 +144,12 @@ fn main() {
             Ok(rt) => rt.block_on(run::run(args)),
             Err(e) => Err(e.into()),
         },
+        Command::Open(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(har_open::open(args))),
+        Command::HarViewerServe(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(har_open::serve(args))),
         Command::Cert { command } => cert::dispatch(command),
         Command::Rules { command } => rules::dispatch(command),
         Command::Proxy { command } => sysproxy_cmd::dispatch(command),
@@ -148,5 +159,46 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    #[test]
+    fn open_parses_multiple_paths_and_options() {
+        let cli = Cli::try_parse_from([
+            "hamsy",
+            "open",
+            "--no-open",
+            "--data-dir",
+            "/tmp/my data",
+            "--",
+            "one file.har",
+            "-two.har",
+        ])
+        .unwrap();
+        let Some(Command::Open(args)) = cli.command else {
+            panic!("expected open command")
+        };
+        assert!(args.no_open);
+        assert_eq!(
+            args.files,
+            vec![PathBuf::from("one file.har"), PathBuf::from("-two.har")]
+        );
+        assert_eq!(args.data_dir, Some(PathBuf::from("/tmp/my data")));
+        assert!(Cli::try_parse_from(["hamsy", "open"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["hamsy", "open", "--stop"])
+                .unwrap()
+                .command,
+            Some(Command::Open(har_open::OpenArgs { stop: true, .. }))
+        ));
+        assert!(Cli::try_parse_from(["hamsy", "open", "--stop", "file.har"]).is_err());
+        assert!(Cli::try_parse_from(["hamsy", "open", "--stop", "--no-open"]).is_err());
+        assert!(Cli::try_parse_from(["hamsy", "--manual"])
+            .unwrap()
+            .command
+            .is_none());
     }
 }

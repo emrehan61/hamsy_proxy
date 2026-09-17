@@ -12,6 +12,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 - **Live web UI** — a virtualized traffic list with request/response detail, filters, copy-as-cURL, and HAR export, streamed over a WebSocket as traffic happens.
 - **Rule engine** — redirect or rewrite URLs, mock responses, add/remove/rewrite request and response headers and bodies (including JSON‑patch style edits), block requests, delay them, or throttle bandwidth.
 - **HAR export/import** — pull a session (or a filtered subset) out as a standard `.har` file, or load one back in.
+- **Open HAR files from your desktop** — `hamsy open session.har` opens a browser viewer without enabling capture; macOS and Linux installers also add an **Open With → Hamsy** launcher.
 - **iOS + Android support** — a Setup page walks a device through pointing its Wi‑Fi proxy at hamsy-proxy and trusting the CA, QR code included.
 - **Single static binary** — build once with the UI embedded and ship `hamsy` as one file.
 
@@ -45,7 +46,7 @@ Recommended — install the prebuilt binary from the latest GitHub Release, no t
 curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install_source.sh | bash
 ```
 
-Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`).
+Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. Releases containing desktop integration also install a HAR file launcher. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`, `--no-desktop`). See [Opening HAR files](#opening-har-files) for file associations and direct archive downloads.
 
 Building from source instead — pipe `install.sh` straight from GitHub:
 
@@ -148,6 +149,7 @@ Usage: hamsy [OPTIONS] [COMMAND]
 
 Commands:
   run    Run the proxy and web UI (the default when no subcommand is given)
+  open   Open HAR files in the browser without starting capture
   cert   Manage the MITM root certificate authority
   rules  Manage capture/rewrite rules
   proxy  Control the OS system HTTP/HTTPS proxy
@@ -412,6 +414,33 @@ The original rule-rewritten request is filed in the Traffic list under the CDN U
 
 ## HAR export/import
 
+### Opening HAR files
+
+```sh
+hamsy open ~/Downloads/session.har
+hamsy open -- "/path/with spaces/first.har" "/path/to/second.har"
+```
+
+`open` starts or reuses a local, background HAR viewer and opens your default browser. Each file becomes a separate imported HAR tab. It does not start the MITM proxy, install or generate a CA, change your proxy settings, or add imported traffic to a live capture. A running capture instance is independent and keeps running unchanged. `hamsy --manual` keeps its existing meaning; use `hamsy open` for this file-opening workflow.
+
+For a browser URL without launching a browser, use `hamsy open --no-open session.har`. `--data-dir DIR` selects a separate viewer profile. File arguments are read locally and handed to the browser through short-lived random tickets; no local file path is accepted by a browser API.
+
+Use `hamsy open --stop` to stop the background viewer, or include the same `--data-dir DIR` if you opened a separate profile. This leaves the normal capture process alone. An idle viewer also stops automatically after 30 minutes without browser requests. After updating Hamsy, stop and reopen a viewer that reports a version mismatch.
+
+The macOS and Linux installers install desktop integration by default. Pass `--no-desktop` to skip it; a source build with `--no-ui` also skips it. For HAR viewing alone, pass `--no-cert` to the installer because certificate trust is unnecessary.
+
+- **macOS:** choose **Hamsy** in a HAR file's **Get Info → Open with**, then **Change All** if you want it to replace Charles as the default. The installer places the launcher in your user Applications folder.
+- **Linux:** choose **Hamsy** in the file manager's **Open With** menu and select it as the default if desired. The installer registers a desktop entry and HAR MIME type for your user.
+- **Direct release archive:** extract the complete archive and follow its `packaging/README.md` instructions to install the launcher for the extracted binary. Keep that binary at the installed path, or rerun the helper after moving it.
+
+Installation makes Hamsy an available opener; it does not override your current default application. Existing `hamsy update` downloads remain compatible: the launcher delegates to the installed executable, so updating that executable updates the viewer. Rerun the installer to refresh launcher metadata or add desktop integration to an older installation. `install.sh --uninstall` removes the matching desktop integration along with the executable.
+
+The current release packages provide desktop integration for macOS and Linux. Windows file associations and installers are not included. The macOS launcher is not Developer ID signed or notarized by this repository's release workflow; downloaded copies may require approval in macOS Privacy & Security before their first launch.
+
+See [HAR opening implementation and verification](docs/HAR_OPENING.md) for the service lifecycle, packaging layout, and test plan.
+
+### Importing and exporting in the browser
+
 In an imported HAR tab, click **Search HAR** to search URLs, headers, query parameters, request/response text bodies (including base64-encoded text), and WebSocket messages. Turn on **Regex** for regular expressions or **Match case** for case-sensitive matching. Results show the first match in every matching field; click one to reveal its request and open the corresponding detail tab. The filters above also apply to these results.
 
 Use **Exclude hosts** beside **All hosts** to hide one or more hosts in either live traffic or an imported HAR. Select **No excluded hosts** to clear exclusions. Exclusions also apply to filtered HAR exports.
@@ -467,7 +496,7 @@ cargo fmt --all --check
 cd ui && pnpm typecheck
 ```
 
-`cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `hamsy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, and `cd ui && pnpm typecheck` (`tsc --noEmit`) are all clean.
+`cargo test --workspace` covers all four crates, including the HAR viewer's actual CLI/service handshake and reuse. Two signal/shutdown tests in `hamsy-cli/tests/shutdown.rs` remain opt-in via `cargo test -- --ignored`. Run `cd ui && pnpm test` for frontend HAR tests. Desktop installer checks and their staging instructions are documented in [HAR opening](docs/HAR_OPENING.md).
 
 ### Local development
 

@@ -4,7 +4,7 @@
 use axum::extract::State;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use crate::state::ApiState;
 
@@ -60,15 +60,35 @@ pub async fn asset_handler(State(state): State<ApiState>, uri: Uri) -> Response 
     let path = uri.path().trim_start_matches('/');
     let rel_path = if path.is_empty() { "index.html" } else { path };
 
-    if let Some(dir) = resolve_ui_dir() {
+    // Never join untrusted parent/root components onto a filesystem path.
+    // Reject encoded separators/dots too, even though Uri does not decode them.
+    let lower = rel_path.to_ascii_lowercase();
+    if rel_path.contains('\\')
+        || lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+        || Path::new(rel_path)
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    if let Some(dir) = resolve_ui_dir().and_then(|dir| dir.canonicalize().ok()) {
         let candidate = dir.join(rel_path);
-        if candidate.is_file() {
-            if let Ok(bytes) = tokio::fs::read(&candidate).await {
-                return asset_response(rel_path, bytes);
+        if let Ok(candidate) = candidate.canonicalize() {
+            if candidate.starts_with(&dir) && candidate.is_file() {
+                if let Ok(bytes) = tokio::fs::read(&candidate).await {
+                    return asset_response(rel_path, bytes);
+                }
             }
         }
-        if let Ok(bytes) = tokio::fs::read(dir.join("index.html")).await {
-            return html_response(bytes);
+        if let Ok(index) = dir.join("index.html").canonicalize() {
+            if index.starts_with(&dir) {
+                if let Ok(bytes) = tokio::fs::read(index).await {
+                    return html_response(bytes);
+                }
+            }
         }
     }
 
@@ -79,6 +99,9 @@ pub async fn asset_handler(State(state): State<ApiState>, uri: Uri) -> Response 
         return html_response(bytes);
     }
 
+    if state.viewer_only() {
+        return html_response(b"<!doctype html><title>Hamsy HAR viewer</title><h1>Web UI not built</h1><p>Build the UI with pnpm --dir ui build, or install a release with the bundled UI.</p>".to_vec());
+    }
     html_response(fallback_page(state.settings().proxy_port).into_bytes())
 }
 

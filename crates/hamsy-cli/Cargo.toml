@@ -17,6 +17,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+libc = "0.2"
+ring = "0.17"
 
 # Not present in [workspace.dependencies]; pinned directly here.
 clap = { version = "4", features = ["derive"] }
@@ -46,3 +51,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 
 [features]
 embed-ui = ["hamsy-api/embed-ui"]
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

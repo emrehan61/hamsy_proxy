@@ -7,7 +7,7 @@ import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from
 import { useSearchParams } from "@solidjs/router";
 import "../styles/har.css";
 import type { Flow, FlowSummary } from "../lib/types";
-import { clearFlows as clearFlowsApi, getHar, listFlows, replayFlow } from "../lib/api";
+import { ApiError, clearFlows as clearFlowsApi, getHar, getOpenHarFiles, listFlows, replayFlow } from "../lib/api";
 import { triggerDownload } from "../lib/download";
 import { pushToast } from "../stores/ui";
 import { settings, setSettings } from "../stores/settings";
@@ -24,7 +24,7 @@ import {
   selectFlow,
   selectedId,
 } from "../stores/flows";
-import { activeSessionId, loadSessionFromDb, restoreSessionsFromDb, setActiveSession } from "../stores/harSessions";
+import { activeSessionId, importHarText, loadSessionFromDb, restoreSessionsFromDb, setActiveSession } from "../stores/harSessions";
 import { filterFlows } from "../lib/filter";
 import FilterBar from "../components/FilterBar";
 import FlowTable, { type FlowTableApi } from "../components/FlowTable";
@@ -36,6 +36,7 @@ import SessionTabs, { importHarFileList } from "../components/SessionTabs";
 import HarSessionView from "../components/HarSessionView";
 import Icon from "../components/Icon";
 import { apiState } from "../stores/systemProxy";
+import { viewerOnly } from "../stores/appMode";
 
 // ---- cURL export ----
 //
@@ -278,6 +279,7 @@ const Traffic: Component = () => {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (viewerOnly()) return;
     // If FlowTable's own onKeyDown (attached directly to its focused scroll
     // container) already handled this event — it preventDefaults for
     // Arrow/j/k — skip it here rather than double-moving the selection.
@@ -387,7 +389,9 @@ const Traffic: Component = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialHarSession = searchParams.harSession;
   const hasDeepLink = typeof initialHarSession === "string" && initialHarSession.length > 0;
-  const [deepLinkPending, setDeepLinkPending] = createSignal(hasDeepLink);
+  const initialOpenHar = searchParams.openHar;
+  const hasOpenHar = initialOpenHar !== undefined;
+  const [deepLinkPending, setDeepLinkPending] = createSignal(hasDeepLink || hasOpenHar);
 
   // Mirrors activeSessionId() into the URL (replace, not push, so switching
   // tabs never floods browser history). Suppressed while a deep-linked
@@ -396,28 +400,63 @@ const Traffic: Component = () => {
   // before setActiveSession(id) has a chance to run.
   createEffect(() => {
     const id = activeSessionId();
-    if (id === null && deepLinkPending()) return;
+    if (deepLinkPending()) return;
     setSearchParams({ harSession: id ?? undefined }, { replace: true });
   });
 
+  const restoreAndOpenSessions = async () => {
+    try {
+      await restoreSessionsFromDb();
+      if (hasDeepLink) {
+        const session = await loadSessionFromDb(initialHarSession as string);
+        if (session) setActiveSession(session.id);
+        else pushToast({ level: "error", message: "HAR session not found" });
+      }
+      if (!hasOpenHar) return;
+      if (typeof initialOpenHar !== "string" || !initialOpenHar.trim()) {
+        pushToast({ level: "error", message: "Invalid HAR open link. Run hamsy open again." });
+        return;
+      }
+      try {
+        const files = await getOpenHarFiles(initialOpenHar);
+        let lastSessionId: string | undefined;
+        for (const file of files) {
+          try {
+            const session = importHarText(file.name, file.text);
+            lastSessionId = session.id;
+            pushToast({ level: "success", message: `Imported ${session.name} — ${session.flowCount} flows` });
+          } catch (err) {
+            pushToast({ level: "error", message: `Failed to import ${file.name}: ${err instanceof Error ? err.message : "invalid HAR file"}` });
+          }
+        }
+        if (lastSessionId) setActiveSession(lastSessionId);
+      } catch (err) {
+        const unavailable = err instanceof ApiError && (err.status === 404 || err.status === 410);
+        pushToast({
+          level: "error",
+          message: unavailable
+            ? "This HAR open link has expired or is unavailable. Run hamsy open again."
+            : "Could not open HAR files from this link. Check that the local viewer is running, then run hamsy open again.",
+        });
+      }
+    } finally {
+      setDeepLinkPending(false);
+    }
+  };
+
   onMount(() => {
+    // Remove the bearer ticket before fetching, so it cannot become a Referer
+    // or survive reload/back navigation. Keep the captured value only in memory.
+    if (hasOpenHar) setSearchParams({ openHar: undefined }, { replace: true });
     // The WS-pushed store (initFlowsSync, wired in App.tsx) only carries
     // live updates going forward — hydrate history once via REST.
-    listFlows()
+    if (!viewerOnly()) listFlows()
       .then((res) => ingestFlows(res.flows))
       .catch((err) => {
         console.error("hamsy-proxy: failed to load initial flows", err);
       });
 
-    void restoreSessionsFromDb();
-    if (hasDeepLink) {
-      loadSessionFromDb(initialHarSession as string)
-        .then((session) => {
-          if (session) setActiveSession(session.id);
-          else pushToast({ level: "error", message: "HAR session not found" });
-        })
-        .finally(() => setDeepLinkPending(false));
-    }
+    void restoreAndOpenSessions();
 
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
@@ -440,6 +479,14 @@ const Traffic: Component = () => {
           </Show>
         }
       >
+        <Show when={!viewerOnly()} fallback={
+          <EmptyState
+            icon="file"
+            title="Open a HAR file"
+            description="Import a HAR file or drop one here to inspect its requests and search its contents."
+            action={{ label: "Import HAR", onClick: onImportHarClick }}
+          />
+        }>
         <Toolbar
           paused={paused()}
           onTogglePause={onTogglePause}
@@ -504,6 +551,7 @@ const Traffic: Component = () => {
             second={<FlowDetail flow={selectedFlowDetail()} />}
           />
         </div>
+        </Show>
       </Show>
       <input
         ref={(el) => (harToolbarFileInputEl = el)}

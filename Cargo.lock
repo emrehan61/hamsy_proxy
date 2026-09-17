@@ -1070,14 +1070,21 @@ dependencies = [
  "hamsy-api",
  "hamsy-core",
  "hamsy-proxy",
+ "libc",
  "open",
  "parking_lot",
+ "reqwest 0.12.28",
+ "ring",
  "rustls",
  "self_update",
+ "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

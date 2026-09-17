@@ -6,6 +6,8 @@ All JSON uses `camelCase` field names, with no exceptions — including the fiel
 
 The server is `hamsy-api`'s `axum::Router` (`hamsy_api::router`), served by `hamsy run` on the configured UI port (default `9081`), or standalone with a `NoopReplay`/`StubCert` backend. There is **no authentication** on any of this — see the Security note in the top-level `README.md`.
 
+`hamsy open` runs a separate loopback HAR viewer with a restricted read-only router. Its CLI handoff requires a private bearer token, and the browser redeems short-lived random tickets at `GET /api/har/open/{ticket}`. These routes are not added to the normal LAN capture API. Its state includes `viewerOnly: true`; normal capture state includes `viewerOnly: false`. See [HAR opening](HAR_OPENING.md) for the protocol and lifecycle.
+
 ---
 
 ## 1. Flow types
