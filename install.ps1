@@ -130,6 +130,10 @@ if ($Uninstall) {
     }
     if (-not $NoDesktop) {
         $desktopScript = Join-Path $InstallDir 'packaging\windows\install-desktop.ps1'
+        $installedPath = Full (Join-Path $InstallDir 'hamsy.exe')
+        $ownedStatePath = Full ([string]$state.binary)
+        if ($ownedStatePath -ne $installedPath) { Fail 'installer state points outside its owned install path' }
+        $BinaryPath = $installedPath
         if (Test-Path -LiteralPath $desktopScript) { Invoke-Desktop $desktopScript -Remove }
     }
     $ownedBinary = Full ([string]$state.binary)

@@ -114,10 +114,36 @@ Add-Type -TypeDefinition (Get-Content -LiteralPath $SourcePath -Raw) -OutputAsse
     $sums = Join-Path $root 'sha256sums.txt'
     Set-Content -LiteralPath $sums -Value "$hash  ./$([IO.Path]::GetFileName($archive))" -Encoding ASCII
     $archiveRegistry = "$RegistryRoot-Installer"
-    & powershell.exe -NoProfile -File $InstallerPath -ArchivePath $archive -ChecksumsPath $sums -InstallDir $installDir -StateRoot (Join-Path $root 'installer-state') -StartMenuPath (Join-Path $root 'installer.lnk') -RegistryRoot $archiveRegistry
+    $installerState = Join-Path $root 'installer-state'
+    $installerMenu = Join-Path $root 'installer.lnk'
+    & powershell.exe -NoProfile -File $InstallerPath -ArchivePath $archive -ChecksumsPath $sums -InstallDir $installDir -StateRoot $installerState -StartMenuPath $installerMenu -RegistryRoot $archiveRegistry
     Assert ($LASTEXITCODE -eq 0) 'root PowerShell installer failed'
     Assert (Test-Path -LiteralPath (Join-Path $installDir 'hamsy.exe')) 'root installer did not install hamsy.exe'
-    & powershell.exe -NoProfile -File $InstallerPath -Uninstall -InstallDir $installDir -StateRoot (Join-Path $root 'installer-state') -StartMenuPath (Join-Path $root 'installer.lnk') -RegistryRoot $archiveRegistry
+
+    # A custom registration sharing the profile must survive full removal of
+    # the release installation. This also exercises stale-path cleanup after
+    # the custom binary itself has gone away.
+    $customRegistry = $archiveRegistry
+    $customState = $installerState
+    $customMenu = $installerMenu
+    $installedHelper = Join-Path $installDir 'packaging\windows\install-desktop.ps1'
+    & powershell.exe -NoProfile -File $installedHelper -BinaryPath $fakeBinary -RegistryRoot $customRegistry -StateRoot $customState -StartMenuPath $customMenu
+    Assert ($LASTEXITCODE -eq 0) 'custom registration through installed helper failed'
+    $retainedCustomHelper = Join-Path $customState 'integration\install-desktop.ps1'
+    $customProgId = "Registry::HKEY_CURRENT_USER\$customRegistry\Hamsy.Har"
+    & powershell.exe -NoProfile -File $InstallerPath -Uninstall -InstallDir $installDir -StateRoot $customState -StartMenuPath $customMenu -RegistryRoot $customRegistry
+    Assert ($LASTEXITCODE -eq 0) 'root full uninstall with custom registration failed'
+    Assert (-not (Test-Path -LiteralPath (Join-Path $installDir 'hamsy.exe'))) 'root uninstaller left owned hamsy.exe'
+    Assert ((Test-Path -LiteralPath $customProgId) -and (Test-Path -LiteralPath $customMenu)) 'root uninstall removed custom registration'
+    Remove-Item -LiteralPath $fakeBinary -Force
+    & powershell.exe -NoProfile -File $retainedCustomHelper -Uninstall -BinaryPath $fakeBinary -RegistryRoot $customRegistry -StateRoot $customState -StartMenuPath $customMenu
+    Assert ($LASTEXITCODE -eq 0) 'stale custom registration uninstall failed'
+    Assert (-not (Test-Path -LiteralPath $customProgId) -and -not (Test-Path -LiteralPath $customMenu)) 'stale custom registration remained'
+
+    # Reinstall and exercise the ordinary canonical full-uninstall path too.
+    & powershell.exe -NoProfile -File $InstallerPath -ArchivePath $archive -ChecksumsPath $sums -InstallDir $installDir -StateRoot $installerState -StartMenuPath $installerMenu -RegistryRoot $archiveRegistry
+    Assert ($LASTEXITCODE -eq 0) 'canonical reinstall failed'
+    & powershell.exe -NoProfile -File $InstallerPath -Uninstall -InstallDir $installDir -StateRoot $installerState -StartMenuPath $installerMenu -RegistryRoot $archiveRegistry
     Assert ($LASTEXITCODE -eq 0) 'root PowerShell uninstaller failed'
     Assert (-not (Test-Path -LiteralPath (Join-Path $installDir 'hamsy.exe'))) 'root uninstaller left hamsy.exe'
     Write-Output 'Windows CLI smoke, native launcher generation, Open With ownership, isolated uninstall, and release installer checks passed.'
@@ -128,5 +154,6 @@ Add-Type -TypeDefinition (Get-Content -LiteralPath $SourcePath -Raw) -OutputAsse
     }
     Remove-Item -LiteralPath $registryBase -Recurse -Force -ErrorAction SilentlyContinue
     if ($archiveRegistry) { Remove-Item -LiteralPath ("Registry::HKEY_CURRENT_USER\$archiveRegistry") -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($customRegistry) { Remove-Item -LiteralPath ("Registry::HKEY_CURRENT_USER\$customRegistry") -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
 }

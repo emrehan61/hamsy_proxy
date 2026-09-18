@@ -238,7 +238,7 @@ if ($Uninstall) {
         exit 0
     }
     if (-not [string]::IsNullOrWhiteSpace($BinaryPath)) {
-        $requested = Normalize-Path (Resolve-ExistingFile $BinaryPath 'BinaryPath')
+        $requested = Normalize-Path $BinaryPath
         if ((Normalize-Path ([string]$state.binary)) -ne $requested) {
             Write-Output 'Desktop integration belongs to another Hamsy installation; keeping it.'
             exit 0
