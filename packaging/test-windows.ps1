@@ -93,7 +93,12 @@ Add-Type -TypeDefinition (Get-Content -LiteralPath $SourcePath -Raw) -OutputAsse
     Assert ((Test-Path -LiteralPath $progId) -and (Test-Path -LiteralPath $startMenu)) 'ownership guard removed a different installation'
 
     & powershell.exe -NoProfile -File $helper -Uninstall -BinaryPath $fakeBinary -RegistryRoot $RegistryRoot -StateRoot $stateRoot -StartMenuPath $startMenu
-    Assert (-not (Test-Path -LiteralPath $progId)) 'uninstall left the owned ProgId'
+    if (Test-Path -LiteralPath $progId) {
+        Write-Output 'Registry state after uninstall:'
+        Get-ChildItem -LiteralPath $progId -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_.Name }
+        Get-ItemProperty -LiteralPath $progId -ErrorAction SilentlyContinue | Format-List * | Out-String | Write-Output
+        Fail 'uninstall left the owned ProgId'
+    }
     Assert (-not (Test-Path -LiteralPath $startMenu)) 'uninstall left the owned Start Menu shortcut'
     Assert ((Get-ItemProperty -LiteralPath $extensionKey).'(default)' -eq $default) 'uninstall changed the existing .har default'
 

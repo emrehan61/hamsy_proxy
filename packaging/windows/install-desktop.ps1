@@ -265,17 +265,17 @@ if ($Uninstall) {
     if (Test-Path -LiteralPath $shellKey) { Remove-Item -LiteralPath $shellKey -Recurse -Force -ErrorAction SilentlyContinue }
     $shellParent = Registry-Path 'Hamsy.Har\shell'
     if (Test-Path -LiteralPath $shellParent) {
-        $shellChildren = Get-ChildItem -LiteralPath $shellParent -ErrorAction SilentlyContinue
-        $shellValues = Get-ItemProperty -LiteralPath $shellParent
-        $shellExtra = @($shellValues.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' })
-        if (@($shellChildren).Count -eq 0 -and $shellExtra.Count -eq 0) { Remove-Item -LiteralPath $shellParent -Force -ErrorAction SilentlyContinue }
+        $shellKey = Get-Item -LiteralPath $shellParent
+        if ($shellKey.GetSubKeyNames().Count -eq 0 -and $shellKey.GetValueNames().Count -eq 0) {
+            Remove-Item -LiteralPath $shellParent -Force -ErrorAction SilentlyContinue
+        }
     }
     if (Test-Path -LiteralPath $iconKey) { Remove-Item -LiteralPath $iconKey -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $progIdKey) {
-        $remaining = Get-ItemProperty -LiteralPath $progIdKey
-        $children = Get-ChildItem -LiteralPath $progIdKey -ErrorAction SilentlyContinue
-        $extra = @($remaining.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' })
-        if ($extra.Count -eq 0 -and @($children).Count -eq 0) { Remove-Item -LiteralPath $progIdKey -Force }
+        $remainingKey = Get-Item -LiteralPath $progIdKey
+        if ($remainingKey.GetSubKeyNames().Count -eq 0 -and $remainingKey.GetValueNames().Count -eq 0) {
+            Remove-Item -LiteralPath $progIdKey -Force
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$state.startMenu)) {
         Remove-StartMenuShortcut ([string]$state.startMenu) ([string]$state.launcher)
