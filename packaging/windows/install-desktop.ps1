@@ -50,6 +50,10 @@ function Registry-Path([string]$Relative) {
     return "Registry::HKEY_CURRENT_USER\$RegistryRoot\$Relative"
 }
 
+function Open-WritableRegistryKey([string]$Relative) {
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$RegistryRoot\$Relative", $true)
+}
+
 function Read-RegistryValue([string]$Path, [string]$Name) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
     $property = Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction SilentlyContinue
@@ -259,7 +263,11 @@ if ($Uninstall) {
     # Remove only values/subkeys created by this installer. If a user added
     # values below the ProgId, preserving the key is safer than deleting them.
     Remove-ItemProperty -LiteralPath $progIdKey -Name 'Owner' -ErrorAction SilentlyContinue
-    Remove-ItemProperty -LiteralPath $progIdKey -Name '(default)' -ErrorAction SilentlyContinue
+    $progIdWritable = Open-WritableRegistryKey 'Hamsy.Har'
+    if ($null -ne $progIdWritable) {
+        try { $progIdWritable.DeleteValue('', $false) }
+        finally { $progIdWritable.Close() }
+    }
     if (Test-Path -LiteralPath $commandKey) { Remove-Item -LiteralPath $commandKey -Force -ErrorAction SilentlyContinue }
     $shellKey = Registry-Path 'Hamsy.Har\shell\open'
     if (Test-Path -LiteralPath $shellKey) { Remove-Item -LiteralPath $shellKey -Recurse -Force -ErrorAction SilentlyContinue }
