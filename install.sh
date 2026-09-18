@@ -1,14 +1,44 @@
 #!/usr/bin/env bash
-# install.sh — build hamsy-proxy from source and put it on your PATH.
-#
-# This script builds from the checkout it's run from: UI first (Vite),
-# then the Rust CLI with the UI embedded via rust-embed.
-# Use install_source.sh to install a prebuilt release instead.
+# install.sh — install the PREBUILT hamsy binary from a GitHub Release.
+# No Rust or Node toolchain is needed: download a release tarball, verify its
+# checksum, put `hamsy` on your PATH, and generate desktop integration locally.
+# Use --from-source (or install-from-source.sh) when a local source build is
+# explicitly wanted.
 #
 # Bash-3.2-compatible on purpose (macOS ships bash 3.2 as /bin/bash): no
 # associative arrays, no ${var,,}/${var^^}, no mapfile/readarray.
 
 set -euo pipefail
+
+# Keep source builds opt-in while allowing the normal installer to work when
+# streamed directly from a release page. A streamed install cannot carry the
+# source-build companion script, so report that case clearly instead of
+# silently falling back to a different install mode.
+source_mode=0
+source_args=()
+for source_arg in "$@"; do
+  if [ "$source_arg" = "--from-source" ]; then
+    source_mode=1
+  else
+    source_args[${#source_args[@]}]="$source_arg"
+  fi
+done
+if [ "$source_mode" -eq 1 ]; then
+  source_script="${BASH_SOURCE[0]:-}"
+  case "$source_script" in
+    '' | bash | - | /dev/stdin | /dev/fd/*) source_script="" ;;
+    *) source_script="$(cd "$(dirname "$source_script")" && pwd)/install-from-source.sh" ;;
+  esac
+  if [ -z "$source_script" ] || [ ! -f "$source_script" ]; then
+    printf '%s\n' 'error: --from-source requires a checkout containing install-from-source.sh; use install.sh for the prebuilt release installer.' >&2
+    exit 1
+  fi
+  if [ "${#source_args[@]}" -eq 0 ]; then
+    exec bash "$source_script"
+  else
+    exec bash "$source_script" "${source_args[@]}"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -47,66 +77,6 @@ die() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------------------------------------------------------------------------
-# Script location — resolve once so every path below is relative to the repo
-# checkout, not to wherever the caller happened to be sitting.
-#
-# Piped/`-c`/process-substitution invocations (curl | bash, bash -c "$(curl
-# ...)", bash <(curl ...)) leave BASH_SOURCE[0] unset — under set -u a bare
-# ${BASH_SOURCE[0]} is an unbound-variable error, so it's read via the safe
-# default expansion below, then checked against the sentinel values those
-# invocation styles are known to produce.
-# ---------------------------------------------------------------------------
-
-BOOTSTRAP_SRC="${BASH_SOURCE[0]:-}"
-case "$BOOTSTRAP_SRC" in
-  '' | bash | - | /dev/stdin | /dev/fd/*) BOOTSTRAP_SRC="" ;;
-esac
-
-if [ -n "$BOOTSTRAP_SRC" ]; then
-  # shellcheck disable=SC2164 # set -e already aborts here if cd fails; the
-  # fallback error message would just be less friendly.
-  SCRIPT_DIR="$(cd "$(dirname "$BOOTSTRAP_SRC")" && pwd)"
-fi
-
-# Bootstrap mode: either BASH_SOURCE told us nothing usable, or it pointed
-# somewhere that isn't actually a hamsy-proxy checkout (e.g. a lone install.sh
-# copied out standalone). Either way, clone the real repo and re-run from
-# there instead of guessing at paths that don't exist.
-if [ -z "$BOOTSTRAP_SRC" ] || [ ! -f "$SCRIPT_DIR/Cargo.toml" ]; then
-  have git || die "git not found. Install git, then re-run — it's needed to fetch the hamsy-proxy source for this piped/standalone install."
-
-  repo_url="${HAMSY_REPO_URL:-https://github.com/emrehan61/hamsy_proxy.git}"
-  clone_dir="$(mktemp -d)"
-  info "Fetching hamsy-proxy source into $clone_dir..."
-
-  if ! git clone --depth 1 "$repo_url" "$clone_dir"; then
-    rm -rf "$clone_dir"
-    die "Failed to clone $repo_url. Check the URL/network, or override it with HAMSY_REPO_URL."
-  fi
-
-  if [ -n "${HAMSY_REPO_REF:-}" ]; then
-    # Subshell so this doesn't change the running script's own cwd. A
-    # --depth 1 fetch of the explicit ref, then checking out FETCH_HEAD,
-    # works for branches, tags, and commit SHAs alike — unlike `git clone
-    # --branch`, which only resolves refs known at clone time.
-    if ! (cd "$clone_dir" && git fetch --depth 1 origin "$HAMSY_REPO_REF" && git checkout FETCH_HEAD); then
-      rm -rf "$clone_dir"
-      die "Failed to check out ref '$HAMSY_REPO_REF' from $repo_url."
-    fi
-  fi
-
-  if [ ! -f "$clone_dir/install.sh" ]; then
-    rm -rf "$clone_dir"
-    die "Cloned $repo_url but install.sh is missing from it."
-  fi
-
-  status=0
-  bash "$clone_dir/install.sh" "$@" || status=$?
-  rm -rf "$clone_dir"
-  exit "$status"
-fi
-
-# ---------------------------------------------------------------------------
 # Usage / flags
 # ---------------------------------------------------------------------------
 
@@ -114,36 +84,30 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [OPTIONS]
 
-Builds hamsy-proxy from source (Rust + the SolidJS UI) and installs the
-resulting binary onto your PATH. Always builds from this checkout —
-there is nothing to download.
+Installs the PREBUILT hamsy binary from a GitHub Release — no Rust or Node
+toolchain needed. Downloads and verifies the release tarball, puts `hamsy` on
+your PATH, and generates the desktop launcher on the local machine.
 
 Options:
-  --prefix DIR    Install directory (default: $HOME/.local/bin)
-  --yes, -y       Assume yes to prompts (e.g. installing Rust via rustup)
-  --skip-deps     Only check dependencies; never install anything
-  --no-ui         Skip the UI build; build hamsy-proxy without --features embed-ui
-  --no-cert       Skip trusting the CA in the OS trust store
-  --no-desktop    Skip HAR file desktop integration
-  --no-path       Skip offering to add the install dir to your PATH
-  --uninstall     Remove the binary and desktop integration (optionally ~/.hamsy too)
-  --help, -h      Show this help and exit
+  --prefix DIR      Install directory (default: $HOME/.local/bin)
+  --yes, -y         Assume yes to prompts (cert trust, PATH setup)
+  --no-cert         Skip trusting the CA in the OS trust store
+  --no-desktop      Skip HAR file desktop integration
+  --no-path         Skip offering to add the install dir to your PATH
+  --version vX.Y.Z  Install a specific release instead of the latest
+  --from-source     Build from this checkout (use install-from-source.sh)
+  --help, -h        Show this help and exit
 
-Run this script outside a hamsy-proxy checkout (e.g. piped via curl | bash)
-and it clones the repo into a temp dir and re-runs itself there, forwarding
-every flag above verbatim. Override the source with HAMSY_REPO_URL (default:
-https://github.com/emrehan61/hamsy_proxy.git) and HAMSY_REPO_REF (branch,
-tag, or commit — checked out after cloning).
+  --uninstall       Remove the binary and desktop integration (optionally data)
 EOF
 }
 
 PREFIX="$HOME/.local/bin"
 YES=0
-SKIP_DEPS=0
-NO_UI=0
 NO_CERT=0
 NO_PATH=0
 NO_DESKTOP=0
+VERSION=""
 UNINSTALL=0
 
 while [ $# -gt 0 ]; do
@@ -157,14 +121,6 @@ while [ $# -gt 0 ]; do
       YES=1
       shift
       ;;
-    --skip-deps)
-      SKIP_DEPS=1
-      shift
-      ;;
-    --no-ui)
-      NO_UI=1
-      shift
-      ;;
     --no-cert)
       NO_CERT=1
       shift
@@ -176,6 +132,11 @@ while [ $# -gt 0 ]; do
     --no-path)
       NO_PATH=1
       shift
+      ;;
+    --version)
+      [ $# -ge 2 ] || die "--version requires an argument"
+      VERSION="$2"
+      shift 2
       ;;
     --uninstall)
       UNINSTALL=1
@@ -193,35 +154,46 @@ while [ $# -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------------------
-# Platform check — refuse anything we haven't built/tested for rather than
-# fail confusingly deep inside a cargo/pnpm invocation.
+# Platform check — map uname to the exact Rust target triple used to name
+# release assets in .github/workflows/release.yml.
 # ---------------------------------------------------------------------------
+
+SUPPORTED_PLATFORMS="Darwin/arm64, Darwin/x86_64, Linux/x86_64 (or amd64), Linux/arm64 (or aarch64)"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
 case "$OS" in
-  Darwin | Linux) ;;
-  *) die "Unsupported OS: '$OS'. Supported: Darwin (macOS), Linux." ;;
+  Darwin)
+    case "$ARCH" in
+      arm64) TRIPLE="aarch64-apple-darwin" ;;
+      x86_64) TRIPLE="x86_64-apple-darwin" ;;
+      *) die "Unsupported architecture '$ARCH' on Darwin. Supported platforms: $SUPPORTED_PLATFORMS" ;;
+    esac
+    ;;
+  Linux)
+    case "$ARCH" in
+      x86_64 | amd64) TRIPLE="x86_64-unknown-linux-gnu" ;;
+      arm64 | aarch64) TRIPLE="aarch64-unknown-linux-gnu" ;;
+      *) die "Unsupported architecture '$ARCH' on Linux. Supported platforms: $SUPPORTED_PLATFORMS" ;;
+    esac
+    ;;
+  *)
+    die "Unsupported OS '$OS'. Supported platforms: $SUPPORTED_PLATFORMS"
+    ;;
 esac
-
-case "$ARCH" in
-  x86_64 | amd64 | arm64 | aarch64) ;;
-  *) die "Unsupported architecture: '$ARCH'. Supported: x86_64/amd64, arm64/aarch64." ;;
-esac
-
-# ---------------------------------------------------------------------------
-# Uninstall — short-circuits everything else below.
-# ---------------------------------------------------------------------------
 
 do_uninstall() {
   bin_path="$PREFIX/hamsy"
-  # Guarded helper only removes the integration owned by this binary path.
-  bash "$SCRIPT_DIR/packaging/install-desktop.sh" --uninstall --binary "$bin_path" || warn "Could not remove HAR desktop integration."
-
-  # Offer to remove the CA from the OS trust store while the binary that
-  # knows how to do that is still here. $YES -eq 0 gates even asking, so a
-  # bare --yes uninstall never touches the trust store.
+  case "$OS" in
+    Darwin) desktop_helper="$HOME/Library/Application Support/Hamsy/desktop/integration/install-desktop.sh" ;;
+    Linux) desktop_helper="${XDG_DATA_HOME:-$HOME/.local/share}/hamsy/desktop/integration/install-desktop.sh" ;;
+  esac
+  if [ -f "$desktop_helper" ]; then
+    bash "$desktop_helper" --uninstall --binary "$bin_path" || warn "Could not remove HAR desktop integration."
+  else
+    info "No retained HAR desktop integration found."
+  fi
   if [ -x "$bin_path" ] && [ "$YES" -eq 0 ] && [ -t 0 ]; then
     printf 'Remove the hamsy CA from your OS trust store too (%s cert uninstall)? [y/N] ' "$bin_path"
     reply=""
@@ -236,19 +208,13 @@ do_uninstall() {
         ;;
     esac
   fi
-
   if [ -e "$bin_path" ]; then
     rm -f "$bin_path"
     info "Removed $bin_path"
   else
     info "No binary found at $bin_path — nothing to remove."
   fi
-
   data_dir="${HAMSY_HOME:-$HOME/.hamsy}"
-
-  # A bare --yes never removes user data: settings/rules/CA key are too easy
-  # to lose by accident. This always asks interactively, and only ever
-  # defaults to "keep" when there's no tty to ask on.
   remove_data=0
   if [ -t 0 ]; then
     printf 'Also remove %s (settings, rules, CA cert/key)? [y/N] ' "$data_dir"
@@ -256,12 +222,10 @@ do_uninstall() {
     read -r reply || true
     case "$reply" in
       y | Y | yes | YES) remove_data=1 ;;
-      *) remove_data=0 ;;
     esac
   else
     warn "Non-interactive, no tty — keeping $data_dir. Re-run interactively to remove it."
   fi
-
   if [ "$remove_data" -eq 1 ]; then
     rm -rf "$data_dir"
     info "Removed $data_dir"
@@ -276,185 +240,87 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Dependency preflight — checked and reported as one batch, not fail-fast,
-# so a run never dies on the first missing thing without mentioning the rest.
+# Dependency preflight
 # ---------------------------------------------------------------------------
 
-REPORT=()
-PROBLEMS=0
-
-install_rust() {
-  info "Installing Rust via rustup..."
-  if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; then
-    # shellcheck disable=SC1091 # only exists after rustup just installed it
-    . "$HOME/.cargo/env"
-    PATH="$HOME/.cargo/bin:$PATH"
-    export PATH
-    return 0
-  fi
-  return 1
-}
-
-check_cargo() {
-  if have cargo; then
-    REPORT+=("  [ok]   cargo: $(cargo --version)")
-    return
-  fi
-
-  if [ "$SKIP_DEPS" -eq 1 ]; then
-    REPORT+=("  [FAIL] cargo not found. Install: https://rustup.rs")
-    PROBLEMS=$((PROBLEMS + 1))
-    return
-  fi
-
-  install_consent=0
-  if [ "$YES" -eq 1 ]; then
-    install_consent=1
-  elif [ -t 0 ]; then
-    printf 'cargo not found. Install Rust via rustup now? [y/N] '
-    reply=""
-    read -r reply || true
-    case "$reply" in
-      y | Y | yes | YES) install_consent=1 ;;
-    esac
-  fi
-
-  if [ "$install_consent" -eq 1 ] && install_rust && have cargo; then
-    REPORT+=("  [ok]   cargo: $(cargo --version) (just installed via rustup)")
-  else
-    REPORT+=("  [FAIL] cargo not found. Install: https://rustup.rs (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh)")
-    PROBLEMS=$((PROBLEMS + 1))
-  fi
-}
-
-check_node() {
-  if [ "$NO_UI" -eq 1 ]; then
-    REPORT+=("  [skip] node (--no-ui, UI build skipped)")
-    return
-  fi
-
-  if ! have node; then
-    REPORT+=("  [FAIL] node not found. Need Node >= 22. Install via nvm ('nvm install 22'), brew ('brew install node'), or your distro's package manager.")
-    PROBLEMS=$((PROBLEMS + 1))
-    return
-  fi
-
-  node_version="$(node --version)" # format: vX.Y.Z
-  node_major="${node_version#v}"
-  node_major="${node_major%%.*}"
-  case "$node_major" in
-    '' | *[!0-9]*) node_major=0 ;;
-  esac
-
-  if [ "$node_major" -ge 22 ]; then
-    REPORT+=("  [ok]   node: $node_version")
-  else
-    REPORT+=("  [FAIL] node $node_version found, need >= 22. Install via nvm ('nvm install 22'), brew ('brew install node@22' or 'brew install node'), or your distro's package manager.")
-    PROBLEMS=$((PROBLEMS + 1))
-  fi
-}
-
-check_pnpm() {
-  if [ "$NO_UI" -eq 1 ]; then
-    REPORT+=("  [skip] pnpm (--no-ui, UI build skipped)")
-    return
-  fi
-
-  pnpm_pin=""
-  if [ -f "$SCRIPT_DIR/ui/package.json" ]; then
-    pnpm_pin="$(grep -o '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@[^"]*"' "$SCRIPT_DIR/ui/package.json" 2>/dev/null | sed -E 's/.*pnpm@([^"]*)".*/\1/')"
-  fi
-
-  if [ "$SKIP_DEPS" -eq 1 ]; then
-    # Never touch corepack's config here — just confirm *something* usable
-    # already exists on PATH.
-    if have pnpm || have corepack; then
-      REPORT+=("  [ok]   pnpm: available (corepack and/or pnpm on PATH; not activated, --skip-deps)")
-    else
-      REPORT+=("  [FAIL] no pnpm and no corepack found. Install Node >=16.9 (bundles corepack) or 'npm install -g pnpm'.")
-      PROBLEMS=$((PROBLEMS + 1))
-    fi
-    return
-  fi
-
-  if have corepack; then
-    # Prefer corepack + the version pinned in ui/package.json over a
-    # hardcoded pnpm version here: the pin lives in exactly one place and
-    # this script can never drift out of sync with it.
-    corepack enable >/dev/null 2>&1 || true
-    if [ -n "$pnpm_pin" ] && (cd "$SCRIPT_DIR/ui" && corepack prepare "pnpm@$pnpm_pin" --activate >/dev/null 2>&1); then
-      pnpm_ver="$(cd "$SCRIPT_DIR/ui" && pnpm --version)"
-      REPORT+=("  [ok]   pnpm: $pnpm_ver (via corepack, pinned to $pnpm_pin)")
-      return
-    fi
-  fi
-
-  if have pnpm; then
-    # Running pnpm from inside ui/ matters here too: pnpm (or its corepack
-    # shim) walks up the directory tree looking for a packageManager field,
-    # and an ancestor package.json (e.g. in $HOME) can hijack that lookup.
-    pnpm_ver="$(cd "$SCRIPT_DIR/ui" && pnpm --version 2>/dev/null || true)"
-    if [ -n "$pnpm_ver" ]; then
-      REPORT+=("  [ok]   pnpm: $pnpm_ver (pre-existing on PATH)")
-      return
-    fi
-  fi
-
-  REPORT+=("  [FAIL] pnpm unavailable: corepack couldn't activate pnpm@${pnpm_pin:-<unknown>} and no working pnpm on PATH. Install Node >=16.9 (bundles corepack) or 'npm install -g pnpm'.")
-  PROBLEMS=$((PROBLEMS + 1))
-}
-
-check_cargo
-check_node
-check_pnpm
-
-echo
-info "Dependency check:"
-printf '%s\n' "${REPORT[@]}"
-echo
-
-if [ "$PROBLEMS" -gt 0 ]; then
-  die "Fix the dependency issues above, then re-run."
-fi
+have curl || die "curl not found. Install curl (e.g. 'brew install curl' on macOS, or your distro's package manager), then re-run."
+have tar || die "tar not found. Install tar (usually preinstalled; check your distro's package manager), then re-run."
 
 # ---------------------------------------------------------------------------
-# Build
+# Download — releases/latest/download/... for the newest release, or
+# releases/download/<tag>/... when --version pins a specific one.
 # ---------------------------------------------------------------------------
 
-if [ "$NO_UI" -eq 0 ]; then
-  info "Building UI (ui/)..."
-  (
-    # cd into ui/ rather than `pnpm --dir ui`: pnpm --dir still walks up the
-    # directory tree for package-manager detection, and an ancestor
-    # directory's own package.json/packageManager field (e.g. $HOME) can
-    # make it pick the wrong package manager. Being inside ui/ avoids that.
-    cd "$SCRIPT_DIR/ui"
-    if [ -f pnpm-lock.yaml ]; then
-      pnpm install --frozen-lockfile
-    else
-      warn "No pnpm-lock.yaml in ui/ — falling back to plain 'pnpm install'."
-      pnpm install
-    fi
-    pnpm build
-  )
+if [ -n "$VERSION" ]; then
+  RELEASE_PATH="download/$VERSION"
+  info "Installing hamsy $VERSION for $TRIPLE..."
 else
-  info "Skipping UI build (--no-ui)."
+  RELEASE_PATH="latest/download"
+  info "Installing latest hamsy release for $TRIPLE..."
 fi
 
-if [ "$NO_UI" -eq 0 ]; then
-  info "Building hamsy-proxy (release, UI embedded)..."
-  (cd "$SCRIPT_DIR" && cargo build --release --features embed-ui -p hamsy-cli)
+BASE_URL="https://github.com/emrehan61/hamsy_proxy/releases/$RELEASE_PATH"
+TARBALL_NAME="hamsy-$TRIPLE.tar.gz"
+TARBALL_URL="$BASE_URL/$TARBALL_NAME"
+SUMS_URL="$BASE_URL/sha256sums.txt"
+
+DOWNLOAD_DIR="$(mktemp -d)"
+trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
+
+# $1 = url, $2 = destination file, $3 = human label for error messages.
+# Separate from a plain `curl -fL ... || die` because a 404 (release still
+# building) deserves a different message than a generic network failure —
+# `-w '%{http_code}'` still reports the status even when `-f` makes curl
+# itself exit non-zero on that same request.
+fetch() {
+  code="$(curl -fL --proto '=https' -sS -o "$2" -w '%{http_code}' "$1" 2>"$DOWNLOAD_DIR/curl-err.log")" && return 0
+  if [ "$code" = "404" ]; then
+    die "No release found for $3 (HTTP 404) — the release may still be building. Check https://github.com/emrehan61/hamsy_proxy/releases"
+  fi
+  cat "$DOWNLOAD_DIR/curl-err.log" >&2
+  die "Failed to download $3 (HTTP ${code:-unknown})."
+}
+
+TARBALL="$DOWNLOAD_DIR/$TARBALL_NAME"
+SUMS="$DOWNLOAD_DIR/sha256sums.txt"
+
+info "Downloading $TARBALL_NAME..."
+fetch "$TARBALL_URL" "$TARBALL" "$TARBALL_NAME"
+fetch "$SUMS_URL" "$SUMS" "sha256sums.txt"
+
+# ---------------------------------------------------------------------------
+# Checksum verification — fail closed when the release publishes a checksum.
+# ---------------------------------------------------------------------------
+
+SUMS_LINE="$(grep -F "$TARBALL_NAME" "$SUMS" | head -n 1)"
+[ -n "$SUMS_LINE" ] || die "sha256sums.txt has no entry for $TARBALL_NAME — can't verify the download."
+EXPECTED_SHA="$(printf '%s\n' "$SUMS_LINE" | awk '{print $1}')"
+
+ACTUAL_SHA=""
+if have sha256sum; then
+  ACTUAL_SHA="$(sha256sum "$TARBALL" | awk '{print $1}')"
+elif have shasum; then
+  ACTUAL_SHA="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+fi
+
+if [ -z "$ACTUAL_SHA" ]; then
+  die "Neither sha256sum nor shasum found — refusing to install an unverified release."
 else
-  info "Building hamsy-proxy (release, no embedded UI)..."
-  (cd "$SCRIPT_DIR" && cargo build --release -p hamsy-cli)
+  if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+    die "Checksum mismatch for $TARBALL_NAME: expected $EXPECTED_SHA, got $ACTUAL_SHA. Download may be corrupted — try again."
+  fi
+  info "Checksum verified."
 fi
 
-BUILT_BIN="$SCRIPT_DIR/target/release/hamsy"
-[ -f "$BUILT_BIN" ] || die "Build finished but $BUILT_BIN is missing."
+# ---------------------------------------------------------------------------
+# Extract + install
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Install
-# ---------------------------------------------------------------------------
+tar xzf "$TARBALL" -C "$DOWNLOAD_DIR" hamsy || die "Failed to extract hamsy from $TARBALL_NAME."
+if [ "$NO_DESKTOP" -eq 0 ] && tar tzf "$TARBALL" | grep '^packaging/install-desktop.sh$' >/dev/null; then
+  tar xzf "$TARBALL" -C "$DOWNLOAD_DIR" packaging || die "Failed to extract desktop integration."
+fi
+[ -f "$DOWNLOAD_DIR/hamsy" ] || die "Extracted $TARBALL_NAME but the hamsy binary is missing from it."
 
 if ! mkdir -p "$PREFIX" 2>/dev/null; then
   die "Can't create $PREFIX (permission denied?). Retry with --prefix DIR somewhere writable, or fix permissions yourself — this script never invokes sudo."
@@ -465,25 +331,26 @@ if [ -e "$DEST" ]; then
   warn "Overwriting existing $DEST"
 fi
 
-if ! cp "$BUILT_BIN" "$DEST"; then
+install_tmp="$(mktemp "$PREFIX/.hamsy-install.XXXXXX" 2>/dev/null)" || die "Can't create a temporary install file in $PREFIX. Retry with --prefix DIR somewhere writable."
+if ! cp "$DOWNLOAD_DIR/hamsy" "$install_tmp"; then
+  rm -f "$install_tmp"
   die "Failed to copy binary to $DEST (permission denied?). Retry with --prefix DIR somewhere writable."
 fi
-chmod +x "$DEST"
+chmod 755 "$install_tmp"
+if ! mv -f "$install_tmp" "$DEST"; then
+  rm -f "$install_tmp"
+  die "Failed to replace binary at $DEST (permission denied?). Retry with --prefix DIR somewhere writable."
+fi
 info "Installed $DEST"
 
-if [ "$NO_UI" -eq 1 ]; then
-  info "Skipping HAR desktop integration (--no-ui: browser viewer is not embedded)."
-elif [ "$NO_DESKTOP" -eq 1 ]; then
+if [ "$NO_DESKTOP" -eq 1 ]; then
   info "Skipping HAR desktop integration (--no-desktop)."
-else
-  desktop_payload="$(mktemp -d)"
-  if bash "$SCRIPT_DIR/packaging/build-desktop.sh" "$desktop_payload" &&
-     bash "$desktop_payload/install-desktop.sh" --binary "$DEST"; then
-    info "HAR desktop integration installed."
-  else
-    warn "HAR desktop integration failed; the command-line installation is available. Retry the installer or use --no-desktop."
+elif [ -f "$DOWNLOAD_DIR/packaging/install-desktop.sh" ]; then
+  if ! bash "$DOWNLOAD_DIR/packaging/install-desktop.sh" --binary "$DEST"; then
+    warn "HAR desktop integration failed; the command-line installation is available."
   fi
-  rm -rf "$desktop_payload"
+else
+  info "This release does not include HAR desktop integration."
 fi
 
 # ---------------------------------------------------------------------------

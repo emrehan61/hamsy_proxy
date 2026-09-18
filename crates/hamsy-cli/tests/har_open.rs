@@ -1,6 +1,5 @@
 //! Runs the actual CLI/daemon handshake without launching browsers or touching
 //! certificate/system-proxy commands. Every process uses a temporary data dir.
-#![cfg(unix)]
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -11,15 +10,23 @@ use std::{
 struct Cleanup(PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if let Ok(bytes) = fs::read(self.0.join("har-viewer/service.json")) {
-            if let Ok(d) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                if let Some(pid) = d["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGTERM);
-                    }
-                }
-            }
-        }
+        let _ = Command::new(env!("CARGO_BIN_EXE_hamsy"))
+            .args(["open", "--stop", "--data-dir"])
+            .arg(&self.0)
+            .status();
+    }
+}
+
+fn terminate(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
     }
 }
 fn open(data: &Path, har: &Path) -> Output {
@@ -131,9 +138,7 @@ async fn simultaneous_launches_reuse_service_and_preserve_capture_state() {
     assert!(!data.join("har-viewer/unused-settings.json").exists());
     // Simulate an unclean exit. The lock must release without deleting the
     // remembered port so a new viewer can recover the same browser origin.
-    unsafe {
-        libc::kill(d["pid"].as_u64().unwrap() as i32, libc::SIGTERM);
-    }
+    terminate(d["pid"].as_u64().unwrap() as u32);
     for _ in 0..100 {
         if client
             .get(format!("{base}/api/state"))
@@ -172,6 +177,7 @@ fn invalid_input_does_not_start_viewer() {
     assert!(!data.exists());
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_port_impostor_never_receives_credentials_or_har() {
     use axum::{

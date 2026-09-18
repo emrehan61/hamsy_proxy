@@ -56,6 +56,105 @@ refresh_linux() {
   fi
 }
 
+# Build the macOS bundle on the user's machine. Release archives carry the
+# AppleScript and image so the wrapper is generated with the user's stock
+# macOS tools during installation.
+build_macos_app() {
+  [ -x /usr/bin/osacompile ] || die 'macOS launcher requires /usr/bin/osacompile'
+  [ -x /usr/libexec/PlistBuddy ] || die 'macOS launcher requires /usr/libexec/PlistBuddy'
+  [ -x /usr/bin/sips ] || die 'macOS launcher requires /usr/bin/sips'
+  [ -x /usr/bin/iconutil ] || die 'macOS launcher requires /usr/bin/iconutil'
+  [ -x /usr/bin/codesign ] || die 'macOS launcher requires /usr/bin/codesign'
+  [ -f "$payload_dir/macos/launcher.applescript" ] || die 'macOS launcher source missing from package'
+  [ -f "$payload_dir/hamsy.png" ] || die 'macOS launcher icon missing from package'
+
+  build_dir="$(mktemp -d "${TMPDIR:-/tmp}/hamsy-desktop.XXXXXX")"
+  cleanup_build() {
+    rc=$?
+    rm -rf "$build_dir"
+    [ -z "${stage_parent:-}" ] || rm -rf "$stage_parent"
+    [ -z "${backup_parent:-}" ] || rm -rf "$backup_parent"
+    if [ "$rc" -ne 0 ]; then
+      printf '%s\n' 'error: local macOS launcher generation failed; use hamsy open FILE.har from a terminal.' >&2
+    fi
+    exit "$rc"
+  }
+  trap cleanup_build EXIT
+  macos_app="$build_dir/Hamsy.app"
+  /usr/bin/osacompile -o "$macos_app" "$payload_dir/macos/launcher.applescript"
+  plist="$macos_app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string io.hamsy.har-launcher' "$plist"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleName Hamsy' "$plist"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleIconFile Hamsy' "$plist"
+  /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Add :LSUIElement bool true' "$plist"
+  /usr/libexec/PlistBuddy -c 'Delete :CFBundleDocumentTypes' "$plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes:0 dict' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes:0:CFBundleTypeName string HTTP Archive' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Viewer' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes:0:LSItemContentTypes array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string io.hamsy.har' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0 dict' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeIdentifier string io.hamsy.har' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeDescription string HTTP Archive' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeConformsTo array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeConformsTo:0 string public.json' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeTagSpecification dict' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Add :UTImportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension:0 string har' "$plist"
+  iconset="$build_dir/Hamsy.iconset"
+  mkdir -p "$iconset"
+  for size in 16 32 128 256 512; do
+    /usr/bin/sips -z "$size" "$size" "$payload_dir/hamsy.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    double=$((size * 2))
+    /usr/bin/sips -z "$double" "$double" "$payload_dir/hamsy.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  /usr/bin/iconutil -c icns "$iconset" -o "$macos_app/Contents/Resources/Hamsy.icns"
+  rm -rf "$iconset"
+  # Local ad-hoc signing keeps LaunchServices metadata coherent. This does
+  # not use a Developer ID, Apple account, or notarization service.
+  /usr/bin/codesign --force --sign - "$macos_app"
+}
+
+replace_macos_app() {
+  mkdir -p "$HOME/Applications"
+  stage_parent="$(mktemp -d "$HOME/Applications/.hamsy-stage.XXXXXX")" || die 'Could not create a macOS launcher staging directory'
+  stage_app="$stage_parent/Hamsy.app"
+  cp -R "$macos_app" "$stage_app" || die 'Could not stage the macOS launcher bundle'
+
+  backup_parent=""
+  backup_app=""
+  if [ -e "$app_path" ]; then
+    backup_parent="$(mktemp -d "$HOME/Applications/.hamsy-backup.XXXXXX")" || die 'Could not create a macOS launcher backup directory'
+    backup_app="$backup_parent/Hamsy.app"
+    if ! mv "$app_path" "$backup_app"; then
+      rm -rf "$backup_parent" "$stage_parent"
+      die 'Could not stage the existing macOS launcher for replacement'
+    fi
+  fi
+
+  if ! mv "$stage_app" "$app_path"; then
+    restore_failed=0
+    if [ -n "$backup_app" ] && [ -e "$backup_app" ]; then
+      if ! mv "$backup_app" "$app_path"; then
+        restore_failed=1
+      fi
+    fi
+    rm -rf "$stage_parent"
+    if [ "$restore_failed" -ne 0 ]; then
+      preserved_backup="$backup_app"
+      backup_parent=""
+      die "Could not install the staged macOS launcher; the previous launcher was preserved at $preserved_backup"
+    fi
+    rm -rf "$backup_parent"
+    die 'Could not install the staged macOS launcher; the previous launcher was restored'
+  fi
+  rm -rf "$backup_parent" "$stage_parent"
+}
+
 if [ "$uninstall" -eq 1 ]; then
   if [ "$owned" -ne 1 ]; then echo 'No Hamsy desktop integration owned by this installer.'; exit 0; fi
   if [ -n "$binary_path" ] && [ "$(cat "$state_dir/binary-path")" != "$binary_path" ]; then
@@ -97,9 +196,16 @@ if [ -e "$app_path" ]; then
   esac
 fi
 case "$platform" in
-  Darwin) [ -d "$payload_dir/macos/Hamsy.app" ] || die 'macOS launcher missing; run packaging/build-desktop.sh first' ;;
+  Darwin) [ -f "$payload_dir/macos/launcher.applescript" ] || die 'macOS launcher source missing; run packaging/build-desktop.sh first' ;;
   Linux) [ -f "$payload_dir/linux/launch" ] || die 'Linux launcher missing from package' ;;
 esac
+
+# Complete the replacement bundle before touching an existing installation.
+# A failed compiler/tool/icon/signing step therefore leaves the current app
+# usable and gives the caller a direct CLI fallback.
+if [ "$platform" = Darwin ]; then
+  build_macos_app
+fi
 
 mkdir -p "$state_dir"
 printf '%s\n' io.hamsy.har-launcher > "$marker"
@@ -115,9 +221,7 @@ if [ "$payload_dir" != "$state_dir/integration" ]; then
 fi
 case "$platform" in
   Darwin)
-    mkdir -p "$HOME/Applications"
-    if [ -e "$app_path" ]; then rm -rf "$app_path"; fi
-    cp -R "$payload_dir/macos/Hamsy.app" "$app_path"
+    replace_macos_app
     if [ "${HAMSY_DESKTOP_SKIP_REGISTER:-0}" != 1 ]; then
       /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_path" || true
     fi
@@ -144,6 +248,8 @@ Comment=Open HTTP Archive files in your browser
 Exec="$exec_path" %F
 Icon=io.hamsy.har
 Terminal=false
+# Keep the proxy CLI out of the app menu; the MIME association still exposes
+# Hamsy in HAR file managers' Open With chooser.
 NoDisplay=true
 Categories=Development;Network;
 MimeType=application/har+json;application/x-har;

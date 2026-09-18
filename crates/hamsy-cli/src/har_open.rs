@@ -14,13 +14,17 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+
+#[cfg(windows)]
+#[path = "windows_security.rs"]
+mod windows_security;
 
 const PROTOCOL: u32 = 1;
 const MAX_FILES: usize = 32;
@@ -180,15 +184,26 @@ fn validate_private_dir(dir: &Path) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn private_dir(data_dir: &Path) -> Result<PathBuf> {
+    windows_security::private_dir(data_dir)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn private_dir(_: &Path) -> Result<PathBuf> {
-    bail!("HAR desktop opening is currently supported on macOS and Linux");
+    bail!("HAR desktop opening is currently supported on macOS, Linux, and Windows");
 }
 
 fn private_file(path: &Path, append: bool) -> Result<File> {
     private_file_options(path, append, true)
 }
 
+#[cfg(windows)]
+fn private_file_options(path: &Path, append: bool, create: bool) -> Result<File> {
+    windows_security::open_private_file(path, append, create)
+}
+
+#[cfg(not(windows))]
 fn private_file_options(path: &Path, append: bool, create: bool) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(create).append(append);
@@ -317,8 +332,8 @@ async fn stop(data_dir: &Path) -> Result<()> {
     }
     #[cfg(unix)]
     validate_private_dir(&dir)?;
-    #[cfg(not(unix))]
-    bail!("HAR desktop opening is currently supported on macOS and Linux");
+    #[cfg(windows)]
+    windows_security::validate_private_dir(&dir)?;
     let Some(d) = discovery(&dir) else {
         return Ok(());
     };
@@ -366,10 +381,11 @@ pub async fn open(args: OpenArgs) -> Result<()> {
         }
     }
     if ready.is_none() {
-        let log = private_file(&dir.join("viewer.log"), true)?;
+        let mut log = private_file(&dir.join("viewer.log"), true)?;
         // Bound logs between starts. No request URLs or HAR contents are logged.
         if log.metadata()?.len() > 1024 * 1024 {
             log.set_len(0)?;
+            log.seek(std::io::SeekFrom::Start(0))?;
         }
         let mut command = Command::new(std::env::current_exe()?);
         command
@@ -391,6 +407,14 @@ pub async fn open(args: OpenArgs) -> Result<()> {
                     Ok(())
                 });
             }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Keep the detached viewer out of the caller's console. Its three
+            // standard streams are already redirected to the private log.
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = command.spawn().context("could not start the HAR viewer")?;
         for _ in 0..100 {
@@ -590,6 +614,9 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
     let mut file = private_file(&temp, false)?;
     file.write_all(&serde_json::to_vec(&d)?)?;
     file.sync_all()?;
+    #[cfg(windows)]
+    windows_security::replace_file(&temp, &dir.join("service.json"))?;
+    #[cfg(not(windows))]
     fs::rename(temp, dir.join("service.json"))?;
     let viewer = Arc::new(Viewer {
         discovery: d,
@@ -600,6 +627,12 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
     let app = router(viewer.clone(), &dir);
     // Drop the server on idle (including WebSockets); browser HAR tabs persist in
     // IndexedDB. Discovery remains to preserve the browser origin on next start.
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => (),
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
     tokio::select! {
         result = axum::serve(listener, app) => { result?; },
         _ = async {
@@ -610,7 +643,7 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
             }
         } => {},
         _ = viewer.shutdown.notified() => {},
-        _ = tokio::signal::ctrl_c() => {},
+        _ = ctrl_c => {},
     }
     drop(lock);
     Ok(())

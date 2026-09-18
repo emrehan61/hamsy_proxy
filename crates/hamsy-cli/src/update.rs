@@ -2,8 +2,9 @@
 //! Releases (github.com/emrehan61/hamsy_proxy).
 //!
 //! Release contract this relies on: tags are `v<semver>`, and each release
-//! carries assets named `hamsy-<rust-triple>.tar.gz` (a gzipped tar with the
-//! `hamsy` binary at its root) plus a `sha256sums.txt`. `self_update`'s
+//! carries Unix assets named `hamsy-<rust-triple>.tar.gz` (a gzipped tar) and
+//! Windows assets named `hamsy-<rust-triple>.zip` (a zip), each with the
+//! `hamsy` binary at its root, plus a `sha256sums.txt`. `self_update`'s
 //! default target detection (`self_update::get_target()`, backed by Cargo's
 //! `TARGET` build-script env var) returns exactly the rust triples used in
 //! those asset names, so it's left unset here rather than pinned via
@@ -106,4 +107,31 @@ fn update_check_hint() -> String {
          this platform",
         self_update::get_target(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, io::Write};
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+    #[test]
+    fn extracts_deflated_windows_archive() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("hamsy-x86_64-pc-windows-msvc.zip");
+        let mut archive = ZipWriter::new(File::create(&archive_path).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        archive.start_file("hamsy.exe", options).unwrap();
+        archive.write_all(b"windows executable fixture").unwrap();
+        archive.finish().unwrap();
+
+        let output = temp.path().join("extracted");
+        self_update::Extract::from_source(&archive_path)
+            .archive(self_update::ArchiveKind::Zip)
+            .extract_file(&output, "hamsy.exe")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(output.join("hamsy.exe")).unwrap(),
+            b"windows executable fixture"
+        );
+    }
 }

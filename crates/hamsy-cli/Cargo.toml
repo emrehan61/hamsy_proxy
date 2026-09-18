@@ -34,12 +34,15 @@ async-trait = "0.1"
 axum = { version = "0.8" }
 # `hamsy update`. Default features pull in reqwest+native-tls; swap to
 # rustls (portable, no system OpenSSL/native-tls dependency) and only the
-# archive/compression support the release workflow's `.tar.gz` assets need.
+# archive/compression support used by the release workflow's `.tar.gz` and
+# Windows `.zip` assets.
 self_update = { version = "0.44", default-features = false, features = [
     "reqwest",
     "rustls",
     "archive-tar",
+    "archive-zip",
     "compression-flate2",
+    "compression-zip-deflate",
 ] }
 # self_update's reqwest+rustls feature pulls in rustls with aws-lc-rs, while
 # hamsy-proxy pulls in rustls with ring (see hamsy-proxy/Cargo.toml). With
@@ -49,9 +52,22 @@ self_update = { version = "0.44", default-features = false, features = [
 # can install ring as the default provider explicitly in main().
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 
+[target.'cfg(windows)'.dependencies]
+# HAR viewer credentials and discovery metadata are protected with a private
+# DACL, and its detached service uses the native Windows process APIs.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
 [features]
 embed-ui = ["hamsy-api/embed-ui"]
 
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+zip = { version = "6", default-features = false, features = ["deflate", "time"] }

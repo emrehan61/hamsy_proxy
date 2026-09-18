@@ -12,7 +12,7 @@ The viewer's state identifies it with `viewerOnly: true`. Capture controls and s
 
 `hamsy open [--no-open] [--data-dir DIR] -- FILE...` accepts up to 32 files with a combined size of 64 MiB per invocation. Missing, non-regular, invalid UTF-8, invalid JSON, and invalid HAR files are rejected before starting a viewer. The source files are never modified.
 
-The viewer listens only on `127.0.0.1`. Discovery, a lifetime process lock, and the log live under `<data-dir>/har-viewer`; Unix permissions restrict the directory to its owner. The discovery record contains a protocol version, process information, loopback port, and a random authentication token. Separate CLI invocations use the lifetime lock and authenticated health check to converge on one viewer process.
+The viewer listens only on `127.0.0.1`. Discovery, a lifetime process lock, and the log live under `<data-dir>/har-viewer`; Unix permissions or Windows access controls restrict access to this private state. The discovery record contains a protocol version, process information, loopback port, and a random authentication token. Separate CLI invocations use the lifetime lock and authenticated health check to converge on one viewer process.
 
 Before disclosing its bearer credential or HAR contents, the CLI verifies an HMAC-SHA256 proof of a fresh challenge using the private discovery token. This prevents an unrelated process that has occupied a stale remembered port from impersonating the viewer. The proof also covers the protocol and application versions.
 
@@ -28,19 +28,23 @@ The viewer writes diagnostics to `<data-dir>/har-viewer/viewer.log`, without the
 
 1. Add the `open` command, private discovery and startup coordination, authenticated handoff, expiring ticket retrieval, and a viewer service with no proxy side effects.
 2. Add browser ticket import, safe URL cleanup, multi-file tabs, and viewer-only navigation.
-3. Package macOS and Linux file launchers alongside the existing root `hamsy` executable, preserving the release archive and self-updater contract.
-4. Install, refresh, and remove desktop integration from both source and prebuilt installers. Preserve user choice of the default HAR application.
+3. Package launcher sources and resources alongside the root `hamsy` executable (or `hamsy.exe` on Windows), preserving the release archive and self-updater contract.
+4. Generate, refresh, and remove desktop integration on the user's computer. Preserve user choice of the default HAR application.
 5. Verify command behavior, service reuse, invalid input, IPC access restrictions, UI imports, and staged installation/removal.
 
 ## Distribution
 
-The release workflow builds the same embedded web UI into the CLI executable. macOS runners also compile the AppleScript launcher into an application bundle; Linux packages include a desktop entry launcher and MIME registration. Each release archive keeps `hamsy` at its root so existing clients can still self-update.
+The release workflow builds the embedded web UI into a native CLI executable. macOS and Linux release tarballs keep `hamsy` at the archive root. Windows x64 releases use a ZIP with `hamsy.exe` at its root. Launcher sources and resources are included alongside the executable; an install does not rebuild the Rust engine or web UI.
+
+On macOS, installation compiles the AppleScript source into `~/Applications/Hamsy.app`, adds the icon and HAR document metadata, and applies a local ad-hoc signature for bundle integrity. On Linux, installation generates the desktop entry and installs its wrapper, icon, and MIME registration. On Windows, a PowerShell installer creates per-user desktop integration from the release resources. Windows does not require Bash or WSL.
+
+`install.sh` is the prebuilt installer for macOS and Linux. `install_source.sh` remains a compatibility entry point for that same operation. Source builds are explicit through `install-from-source.sh` or `install.sh --from-source` in a checkout. Windows uses `install.ps1`.
 
 The installation helper records the absolute executable path rather than assuming a shell PATH or a particular user's home directory. This supports custom binary prefixes. Registering Hamsy as an opener does not forcibly replace Charles or another chosen default.
 
-The launcher delegates to the canonical installed binary, so `hamsy update` continues to update the viewer implementation. Launcher resources are refreshed by rerunning the installer. Direct archive users can run the desktop helper included in the archive. Standalone Windows installers and file associations are outside this release's scope.
+The launcher delegates to the canonical installed binary, so `hamsy update` continues to update the viewer implementation. Launcher resources are refreshed by rerunning the installer. Direct archive users can run the desktop helper included in the archive. Keep the executable at its installed location, or rerun integration with the new absolute path.
 
-Public macOS distribution additionally benefits from Developer ID signing and notarization. The repository has no configured credentials for those services; the initial launcher builds do not claim to be notarized.
+No Apple Developer ID, notarization, or Windows publisher signing is configured. Local launcher creation does not turn the downloaded engine into trusted publisher-signed software: operating-system security policies may still require approval or block execution. Installers do not disable these policies or remove quarantine markers. Installing a HAR opener does not require trusting the MITM CA; certificate setup remains a separate capture concern.
 
 ## Verification checklist
 
@@ -52,7 +56,7 @@ Public macOS distribution additionally benefits from Developer ID signing and no
 - Hide and reject capture-only operations in viewer mode.
 - Build the embedded UI and launcher package, preserving the root binary for existing updaters.
 - Stage installation and removal in temporary directories, including a custom prefix, without changing the developer's file associations.
-- Verify Finder and Linux file-manager integration on each release platform before public distribution.
+- Verify Finder, Linux file-manager, and Windows Open With integration on their native platforms before public distribution.
 
 Useful local checks:
 

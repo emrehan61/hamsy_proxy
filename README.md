@@ -12,7 +12,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 - **Live web UI** — a virtualized traffic list with request/response detail, filters, copy-as-cURL, and HAR export, streamed over a WebSocket as traffic happens.
 - **Rule engine** — redirect or rewrite URLs, mock responses, add/remove/rewrite request and response headers and bodies (including JSON‑patch style edits), block requests, delay them, or throttle bandwidth.
 - **HAR export/import** — pull a session (or a filtered subset) out as a standard `.har` file, or load one back in.
-- **Open HAR files from your desktop** — `hamsy open session.har` opens a browser viewer without enabling capture; macOS and Linux installers also add an **Open With → Hamsy** launcher.
+- **Open HAR files from your desktop** — `hamsy open session.har` opens a browser viewer without enabling capture; installers generate a local launcher and register **Open With → Hamsy** for macOS, Linux, and Windows.
 - **iOS + Android support** — a Setup page walks a device through pointing its Wi‑Fi proxy at hamsy-proxy and trusting the CA, QR code included.
 - **Single static binary** — build once with the UI embedded and ship `hamsy` as one file.
 
@@ -43,34 +43,43 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 Recommended — install the prebuilt binary from the latest GitHub Release, no toolchain required:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install_source.sh | bash
-```
-
-Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. Releases containing desktop integration also install a HAR file launcher. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`, `--no-desktop`). See [Opening HAR files](#opening-har-files) for file associations and direct archive downloads.
-
-Building from source instead — pipe `install.sh` straight from GitHub:
-
-```
 curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install.sh | bash
 ```
 
-Equivalent to cloning and running `install.sh` below — same script, same result — it just clones the repo into a temp dir for you first.
+Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and installs it under `$HOME/.local/bin`. No Rust or Node toolchain is needed. The installer generates the desktop launcher locally from the release's resources: a macOS application bundle or Linux desktop entry. `install.sh --help` lists its flags, including `--prefix`, `--version vX.Y.Z`, `--no-cert`, `--no-path`, `--no-desktop`, and `--uninstall`. The old `install_source.sh` entry point remains compatible. For HAR viewing alone, use `--no-cert`; certificate trust is only needed for HTTPS capture.
 
-Or clone and run `install.sh` yourself:
+On Windows x64, download and run the PowerShell installer:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install.ps1 -OutFile install-hamsy.ps1
+.\install-hamsy.ps1
+```
+
+It verifies the Windows release ZIP, installs under `%LOCALAPPDATA%\Hamsy\bin`, and generates a HAR chooser, Start Menu shortcut, and Open With registration for the current user. No administrator privileges, Rust, Node, Bash, or WSL are needed. Options include `-Version vX.Y.Z`, `-InstallDir`, `-NoDesktop`, and `-Uninstall`. Certificate trust and system proxy settings are not changed by the Windows installer. Downloaded scripts remain subject to your PowerShell execution policy; the installer does not override it. These commands require a published release containing the corresponding platform binary and launcher resources.
+
+Building from source instead — use the explicit source installer:
+
+```
+curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install-from-source.sh | bash
+```
+
+This clones the repo into a temporary directory and builds the engine and UI locally.
+
+Or build from a checkout:
 
 ```
 git clone https://github.com/emrehan61/hamsy_proxy.git
 cd hamsy_proxy
-./install.sh
+./install.sh --from-source
 ```
 
-(SSH instead: `git@github.com:emrehan61/hamsy_proxy.git`.) The binary the build produces (and that `install.sh` installs) is `hamsy`.
+(SSH instead: `git@github.com:emrehan61/hamsy_proxy.git`.) The installed binary is named `hamsy`.
 
-Prerequisites, up front: Rust (stable), Node 22, and pnpm. `install.sh` checks for all three and helps with what it can — missing Rust gets an offer to install it via rustup (prompted, or auto-confirmed under `-y`/`--yes`); pnpm is activated automatically via `corepack enable` + `corepack prepare` (version pinned in `ui/package.json`), no prompt needed. Node is the exception: if it's missing or older than 22, `install.sh` does not install it for you — it fails with a message telling you to install Node >=22 yourself (nvm, brew, or your distro's package manager). Supported platforms are macOS and Linux — `install.sh` is a bash script that checks OS/arch and refuses anything else; on Windows, use the manual `cargo build` steps documented later in this section instead.
+Source-build prerequisites are Rust (stable), Node 22, and pnpm. `install-from-source.sh` can offer to install Rust and activate the pinned pnpm version using Corepack. Install Node >=22 yourself if it is missing. The shell installers support macOS and Linux; Windows uses `install.ps1` for prebuilt releases or the manual Cargo build below.
 
-Default install location is `$HOME/.local/bin`; it prints an `export PATH=...` line if that's not already on yours. Flags (`./install.sh --help` for the full list): `--prefix DIR` (install somewhere else), `--yes`/`-y` (skip confirmation prompts — e.g. before installing Rust via rustup), `--skip-deps` (only check dependencies, install nothing), `--no-ui` (skip the UI build, build `hamsy` without `--features embed-ui`), `--no-cert` (skip trusting the CA in the OS trust store), `--no-path` (skip offering to add the install dir to your PATH), `--uninstall` (remove the installed binary — asks before touching `~/.hamsy`, and a bare `--yes` won't answer that question for you). `install.sh` also runs `hamsy cert install` and offers to add `$PREFIX` to your PATH automatically (prompted, or automatic under `--yes`), so a fresh install needs no manual follow-up unless those steps are skipped or declined.
+The source installer retains `--prefix`, `--yes`, `--skip-deps`, `--no-ui`, `--no-cert`, `--no-path`, `--no-desktop`, and `--uninstall`. Source builds without the embedded UI omit desktop integration. The Unix installers offer certificate trust and PATH setup unless those steps are skipped; `--yes` accepts those prompts.
 
-The rest of this section is the manual build `install.sh` itself runs — useful if you're iterating on the UI or don't want the script deciding anything for you.
+The remaining steps build manually, which is useful when iterating on the UI.
 
 Prerequisites: Rust (stable — see `rust-toolchain.toml`), Node 22, and pnpm (`ui/package.json` pins `pnpm@11.18.0`).
 
@@ -427,15 +436,16 @@ For a browser URL without launching a browser, use `hamsy open --no-open session
 
 Use `hamsy open --stop` to stop the background viewer, or include the same `--data-dir DIR` if you opened a separate profile. This leaves the normal capture process alone. An idle viewer also stops automatically after 30 minutes without browser requests. After updating Hamsy, stop and reopen a viewer that reports a version mismatch.
 
-The macOS and Linux installers install desktop integration by default. Pass `--no-desktop` to skip it; a source build with `--no-ui` also skips it. For HAR viewing alone, pass `--no-cert` to the installer because certificate trust is unnecessary.
+The installers generate desktop integration locally by default. Pass `--no-desktop` on macOS/Linux or `-NoDesktop` on Windows to skip it; a source build with `--no-ui` also skips it. For HAR viewing alone, pass `--no-cert` to the Unix installer because certificate trust is unnecessary. The Windows installer never installs a CA.
 
 - **macOS:** choose **Hamsy** in a HAR file's **Get Info → Open with**, then **Change All** if you want it to replace Charles as the default. The installer places the launcher in your user Applications folder.
 - **Linux:** choose **Hamsy** in the file manager's **Open With** menu and select it as the default if desired. The installer registers a desktop entry and HAR MIME type for your user.
-- **Direct release archive:** extract the complete archive and follow its `packaging/README.md` instructions to install the launcher for the extracted binary. Keep that binary at the installed path, or rerun the helper after moving it.
+- **Windows:** use the **Hamsy** Start Menu shortcut to choose HAR files, or choose Hamsy using a HAR file's **Open with** menu. Set it as the default only if desired. The generated launcher delegates to the installed `hamsy.exe` without starting capture.
+- **Direct release archive:** extract the complete archive and follow its `packaging/README.md` instructions (`packaging/windows/README.md` on Windows) to install the launcher for the extracted binary. Keep that binary at the installed path, or rerun the helper after moving it.
 
 Installation makes Hamsy an available opener; it does not override your current default application. Existing `hamsy update` downloads remain compatible: the launcher delegates to the installed executable, so updating that executable updates the viewer. Rerun the installer to refresh launcher metadata or add desktop integration to an older installation. `install.sh --uninstall` removes the matching desktop integration along with the executable.
 
-The current release packages provide desktop integration for macOS and Linux. Windows file associations and installers are not included. The macOS launcher is not Developer ID signed or notarized by this repository's release workflow; downloaded copies may require approval in macOS Privacy & Security before their first launch.
+Release packages target macOS and Linux on x64/ARM64, and Windows on x64. They contain the native engine and launcher resources; the desktop wrapper is generated on the user's machine. No Apple Developer ID signing, notarization, or Windows publisher signing is configured. Local generation does not guarantee exemption from operating-system security checks.
 
 See [HAR opening implementation and verification](docs/HAR_OPENING.md) for the service lifecycle, packaging layout, and test plan.
 

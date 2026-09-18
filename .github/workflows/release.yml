@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -96,9 +98,128 @@ jobs:
           path: hamsy-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  build-windows:
+    name: build (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable corepack / activate pinned pnpm
+        working-directory: ui
+        shell: pwsh
+        run: |
+          corepack enable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          corepack prepare --activate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install UI deps
+        working-directory: ui
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'hamsy-pnpm-install.log'
+          pnpm install --frozen-lockfile 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = ((Get-Content -LiteralPath $log -Tail 80 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
+            Write-Output "::error title=pnpm install failed::$tail"
+            exit $code
+          }
+
+      - name: Build UI
+        working-directory: ui
+        shell: pwsh
+        run: |
+          $testLog = Join-Path $env:RUNNER_TEMP 'hamsy-ui-test.log'
+          pnpm test 2>&1 | Tee-Object -FilePath $testLog
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = ((Get-Content -LiteralPath $testLog -Tail 100 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
+            Write-Output "::error title=Windows UI tests failed::$tail"
+            exit $code
+          }
+          $buildLog = Join-Path $env:RUNNER_TEMP 'hamsy-ui-build.log'
+          pnpm build 2>&1 | Tee-Object -FilePath $buildLog
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = ((Get-Content -LiteralPath $buildLog -Tail 100 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
+            Write-Output "::error title=Windows UI build failed::$tail"
+            exit $code
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-pc-windows-msvc
+
+      - name: Test Rust workspace
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test.log'
+          cargo test --workspace --locked 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = ((Get-Content -LiteralPath $log -Tail 120 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
+            Write-Output "::error title=Windows cargo tests failed::$tail"
+            exit $code
+          }
+
+      - name: Build hamsy-cli
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-build.log'
+          cargo build --release --features embed-ui -p hamsy-cli --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = ((Get-Content -LiteralPath $log -Tail 120 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
+            Write-Output "::error title=Windows cargo build failed::$tail"
+            exit $code
+          }
+
+      - name: Check Windows installer and launcher
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'hamsy-windows-packaging.log'
+          pwsh -NoProfile -File packaging/test-windows.ps1 `
+            -BinaryPath target/x86_64-pc-windows-msvc/release/hamsy.exe `
+            -RegistryRoot "Software\Hamsy-CI-${{ github.run_id }}\Classes" 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = ((Get-Content -LiteralPath $log -Tail 80 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
+            Write-Output "::error title=Windows packaging test failed::$tail"
+            exit $code
+          }
+
+      - name: Package Windows ZIP
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'hamsy-windows-package'
+          $zip = 'hamsy-x86_64-pc-windows-msvc.zip'
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path (Join-Path $stage 'packaging') -Force | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/hamsy.exe $stage
+          Copy-Item install.ps1 $stage
+          Copy-Item packaging/windows (Join-Path $stage 'packaging') -Recurse
+          Copy-Item docs/images/logo.png (Join-Path $stage 'packaging/windows/hamsy.png')
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hamsy-x86_64-pc-windows-msvc
+          path: hamsy-x86_64-pc-windows-msvc.zip
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -114,13 +235,20 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum ./*.tar.gz > sha256sums.txt
+        shell: bash
+        run: |
+          : > sha256sums.txt
+          for archive in ./*.tar.gz ./*.zip; do
+            [ -f "$archive" ] || continue
+            sha256sum "$archive" >> sha256sums.txt
+          done
+          test -s sha256sums.txt
 
       # Tag push -> real (non-draft) release for that tag. workflow_dispatch
       # -> draft release, and only if a tag_name was given; otherwise this
       # run just builds/packages artifacts without publishing anything.
       - name: Create GitHub Release
-        if: github.event_name == 'push' || inputs.tag_name != ''
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
@@ -129,4 +257,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/sha256sums.txt

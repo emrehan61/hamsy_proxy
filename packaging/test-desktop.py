@@ -97,6 +97,15 @@ def test_linux(root):
 
 
 def test_macos(root, payload):
+    # A reusable output directory may contain the old CI-built bundle. Only a
+    # bundle bearing our ownership identifier may be removed during refresh.
+    legacy_info = payload / "macos/Hamsy.app/Contents/Info.plist"
+    legacy_info.parent.mkdir(parents=True)
+    with legacy_info.open("wb") as stream:
+        plistlib.dump({"CFBundleIdentifier": "io.hamsy.har-launcher"}, stream)
+    subprocess.run(["bash", str(ROOT / "build-desktop.sh"), str(payload)], check=True)
+    assert (payload / "macos/launcher.applescript").is_file()
+    assert not (payload / "macos/Hamsy.app").exists()
     fake_home = root / "mac home"
     fake_home.mkdir()
     env = dict(os.environ, HOME=str(fake_home), HAMSY_DESKTOP_SKIP_REGISTER="1")
@@ -113,6 +122,98 @@ def test_macos(root, payload):
     assert plist["UTImportedTypeDeclarations"][0]["UTTypeTagSpecification"]["public.filename-extension"] == ["har"]
     assert (app / "Contents/Resources/Hamsy.icns").exists()
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+
+    # An icon/compiler failure must leave the currently installed app intact.
+    # This exercises the failure after osacompile/PlistBuddy, before the final
+    # replacement copy removes the old bundle.
+    before = {
+        path.relative_to(app): path.read_bytes()
+        for path in app.rglob("*") if path.is_file()
+    }
+    icon = payload / "hamsy.png"
+    icon_bytes = icon.read_bytes()
+    icon.write_bytes(b"not a PNG")
+    run_helper(payload, env, "--binary", binary, success=False)
+    after = {
+        path.relative_to(app): path.read_bytes()
+        for path in app.rglob("*") if path.is_file()
+    }
+    assert after == before
+    icon.write_bytes(icon_bytes)
+
+    # A failure during the final same-filesystem rename must also restore the
+    # previous app. The shim fails only once, so the rollback rename succeeds.
+    mv_tools = root / "mv failure tools"
+    mv_tools.mkdir()
+    marker = root / "mv failed once"
+    (mv_tools / "mv").write_text(
+        "#!/bin/sh\n"
+        "destination=\"\"\n"
+        "for arg do destination=\"$arg\"; done\n"
+        "case \"$destination\" in\n"
+        "  */Applications/Hamsy.app)\n"
+        "    if [ ! -e \"$HAMSY_MV_FAILURE_MARKER\" ]; then\n"
+        "      /usr/bin/touch \"$HAMSY_MV_FAILURE_MARKER\"\n"
+        "      exit 1\n"
+        "    fi\n"
+        "    ;;\n"
+        "esac\n"
+        "exec /bin/mv \"$@\"\n"
+    )
+    (mv_tools / "mv").chmod(0o755)
+    atomic_failure_env = dict(
+        env,
+        PATH=f"{mv_tools}:{env['PATH']}",
+        HAMSY_MV_FAILURE_MARKER=str(marker),
+    )
+    run_helper(payload, atomic_failure_env, "--binary", binary, success=False)
+    after_rename_failure = {
+        path.relative_to(app): path.read_bytes()
+        for path in app.rglob("*") if path.is_file()
+    }
+    assert after_rename_failure == before
+
+    # If rollback itself fails, the backup must be retained and reported so a
+    # user can recover the previous launcher instead of losing it.
+    double_mv_tools = root / "double mv failure tools"
+    double_mv_tools.mkdir()
+    double_marker = root / "double mv failed"
+    (double_mv_tools / "mv").write_text(
+        "#!/bin/sh\n"
+        "destination=\"\"\n"
+        "for arg do destination=\"$arg\"; done\n"
+        "case \"$destination\" in\n"
+        "  */Applications/Hamsy.app)\n"
+        "    count=0\n"
+        "    [ -e \"$HAMSY_MV_FAILURE_MARKER\" ] && count=$(cat \"$HAMSY_MV_FAILURE_MARKER\")\n"
+        "    if [ \"$count\" -lt 2 ]; then\n"
+        "      count=$((count + 1))\n"
+        "      printf '%s\\n' \"$count\" > \"$HAMSY_MV_FAILURE_MARKER\"\n"
+        "      exit 1\n"
+        "    fi\n"
+        "    ;;\n"
+        "esac\n"
+        "exec /bin/mv \"$@\"\n"
+    )
+    (double_mv_tools / "mv").chmod(0o755)
+    double_failure_env = dict(
+        env,
+        PATH=f"{double_mv_tools}:{env['PATH']}",
+        HAMSY_MV_FAILURE_MARKER=str(double_marker),
+    )
+    result = run_helper(payload, double_failure_env, "--binary", binary, success=False)
+    preserved_line = next(
+        line for line in result.stderr.splitlines()
+        if "previous launcher was preserved at " in line
+    )
+    preserved = Path(preserved_line.rsplit(" at ", 1)[1])
+    assert preserved.is_dir()
+    preserved_files = {
+        path.relative_to(preserved): path.read_bytes()
+        for path in preserved.rglob("*") if path.is_file()
+    }
+    assert preserved_files == before
+
     run_helper(payload, env, "--binary", binary)
     run_helper(state / "integration", env, "--uninstall", "--binary", binary)
     assert not state.exists() and not app.exists()
@@ -120,7 +221,7 @@ def test_macos(root, payload):
     (app / "unrelated").write_text("keep")
     run_helper(payload, env, "--binary", binary, success=False)
     assert (app / "unrelated").read_text() == "keep"
-    print("macOS staged installation, HAR type/icon, signature, refresh, ownership, and uninstall checks passed.")
+    print("macOS staged installation, HAR type/icon, signature, atomic failure preservation, refresh, ownership, and uninstall checks passed.")
 
 
 def test_installers(root):
@@ -155,6 +256,38 @@ printf '200'
 ''')
     (tools / "curl").chmod(0o755)
     env.update(HAR_TEST_ARCHIVE=str(archive), HAR_TEST_SUMS=str(sums), HAR_TEST_BINARY=str(binary))
+    compat = subprocess.run(["bash", str(ROOT.parent / "install_source.sh"), "--help"], capture_output=True, text=True)
+    assert compat.returncode == 0 and "Usage: install.sh" in compat.stdout
+
+    dispatch = fixture / "dispatch"
+    dispatch.mkdir()
+    shutil.copy2(ROOT.parent / "install.sh", dispatch / "install.sh")
+    source_stub = dispatch / "install-from-source.sh"
+    source_stub.write_text("#!/bin/sh\nprintf 'source dispatch ok\\n'\n")
+    source_stub.chmod(0o755)
+    result = subprocess.run(["bash", str(dispatch / "install.sh"), "--from-source"], capture_output=True, text=True)
+    assert result.returncode == 0 and result.stdout == "source dispatch ok\n", (result.stdout, result.stderr)
+
+    # Checksum failures must happen before an existing binary is replaced.
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(binary, arcname="hamsy")
+    for failure, sums_line in [("missing", ""), ("corrupt", "0" * 64 + "  ./" + archive.name + "\n")]:
+        sums.write_text(sums_line)
+        case_dir = fixture / f"checksum-{failure}"
+        case_dir.mkdir()
+        destination = case_dir / "custom bin"
+        destination.mkdir()
+        existing = destination / "hamsy"
+        existing.write_text("existing binary must survive\n")
+        existing.chmod(0o755)
+        case_env = dict(env, HOME=str(case_dir), XDG_DATA_HOME=str(case_dir / "data"))
+        result = subprocess.run(
+            ["bash", str(ROOT.parent / "install.sh"), "--prefix", str(destination), "--no-cert", "--no-path", "--no-desktop"],
+            env=case_env, capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+        assert existing.read_text() == "existing binary must survive\n"
+
     for with_desktop, opt_out in [(True, False), (True, True), (False, False)]:
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(binary, arcname="hamsy")
@@ -164,17 +297,30 @@ printf '200'
         case_dir = fixture / f"prebuilt-{with_desktop}-{opt_out}"
         case_dir.mkdir()
         case_env = dict(env, HOME=str(case_dir), XDG_DATA_HOME=str(case_dir / "data"))
-        args = ["bash", str(ROOT.parent / "install_source.sh"), "--prefix", str(case_dir / "custom bin"), "--no-cert", "--no-path"]
+        args = ["bash", str(ROOT.parent / "install.sh"), "--prefix", str(case_dir / "custom bin"), "--no-cert", "--no-path"]
         if opt_out:
             args.append("--no-desktop")
         result = subprocess.run(args, env=case_env, capture_output=True, text=True)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert (case_dir / "custom bin/hamsy").exists()
         assert (case_dir / "data/applications/io.hamsy.har.desktop").exists() == (with_desktop and not opt_out)
+        if with_desktop and not opt_out:
+            user_data = case_dir / ".hamsy"
+            user_data.mkdir()
+            (user_data / "settings.toml").write_text("keep me\n")
+            uninstall = subprocess.run(
+                ["bash", str(ROOT.parent / "install.sh"), "--prefix", str(case_dir / "custom bin"), "--uninstall"],
+                env=case_env, input="", capture_output=True, text=True,
+            )
+            assert uninstall.returncode == 0, (uninstall.stdout, uninstall.stderr)
+            assert not (case_dir / "custom bin/hamsy").exists()
+            assert not (case_dir / "data/applications/io.hamsy.har.desktop").exists()
+            assert (user_data / "settings.toml").read_text() == "keep me\n"
 
     checkout = fixture / "checkout"
     checkout.mkdir()
     shutil.copy2(ROOT.parent / "install.sh", checkout)
+    shutil.copy2(ROOT.parent / "install-from-source.sh", checkout)
     shutil.copytree(ROOT, checkout / "packaging")
     (checkout / "Cargo.toml").touch()
     (checkout / "ui").mkdir()
@@ -191,7 +337,7 @@ cp "$HAR_TEST_BINARY" target/release/hamsy
         case_dir = fixture / f"source{flag}"
         case_dir.mkdir()
         case_env = dict(env, HOME=str(case_dir), XDG_DATA_HOME=str(case_dir / "data"))
-        args = ["bash", str(checkout / "install.sh"), "--prefix", str(case_dir / "custom bin"), "--no-cert", "--no-path", "--skip-deps", flag]
+        args = ["bash", str(checkout / "install.sh"), "--from-source", "--prefix", str(case_dir / "custom bin"), "--no-cert", "--no-path", "--skip-deps", flag]
         result = subprocess.run(args, env=case_env, capture_output=True, text=True)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert (case_dir / "custom bin/hamsy").exists()
