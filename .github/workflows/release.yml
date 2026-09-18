@@ -126,7 +126,11 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             $tail = ((Get-Content -LiteralPath $log -Tail 80 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            Write-Output "::error title=pnpm install failed::$tail"
+            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+              $part = [Math]::Floor($offset / 2000) + 1
+              $count = [Math]::Min(2000, $tail.Length - $offset)
+              Write-Output "::error title=pnpm install failed (part $part)::$($tail.Substring($offset, $count))"
+            }
             exit $code
           }
 
@@ -139,7 +143,11 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             $tail = ((Get-Content -LiteralPath $testLog -Tail 100 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            Write-Output "::error title=Windows UI tests failed::$tail"
+            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+              $part = [Math]::Floor($offset / 2000) + 1
+              $count = [Math]::Min(2000, $tail.Length - $offset)
+              Write-Output "::error title=Windows UI tests failed (part $part)::$($tail.Substring($offset, $count))"
+            }
             exit $code
           }
           $buildLog = Join-Path $env:RUNNER_TEMP 'hamsy-ui-build.log'
@@ -147,7 +155,11 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             $tail = ((Get-Content -LiteralPath $buildLog -Tail 100 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            Write-Output "::error title=Windows UI build failed::$tail"
+            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+              $part = [Math]::Floor($offset / 2000) + 1
+              $count = [Math]::Min(2000, $tail.Length - $offset)
+              Write-Output "::error title=Windows UI build failed (part $part)::$($tail.Substring($offset, $count))"
+            }
             exit $code
           }
 
@@ -167,7 +179,11 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             $tail = ((Get-Content -LiteralPath $log -Tail 120 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            Write-Output "::error title=Windows cargo tests failed::$tail"
+            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+              $part = [Math]::Floor($offset / 2000) + 1
+              $count = [Math]::Min(2000, $tail.Length - $offset)
+              Write-Output "::error title=Windows cargo tests failed (part $part)::$($tail.Substring($offset, $count))"
+            }
             exit $code
           }
 
@@ -179,7 +195,11 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             $tail = ((Get-Content -LiteralPath $log -Tail 120 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            Write-Output "::error title=Windows cargo build failed::$tail"
+            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+              $part = [Math]::Floor($offset / 2000) + 1
+              $count = [Math]::Min(2000, $tail.Length - $offset)
+              Write-Output "::error title=Windows cargo build failed (part $part)::$($tail.Substring($offset, $count))"
+            }
             exit $code
           }
 
@@ -193,7 +213,11 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             $tail = ((Get-Content -LiteralPath $log -Tail 80 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            Write-Output "::error title=Windows packaging test failed::$tail"
+            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+              $part = [Math]::Floor($offset / 2000) + 1
+              $count = [Math]::Min(2000, $tail.Length - $offset)
+              Write-Output "::error title=Windows packaging test failed (part $part)::$($tail.Substring($offset, $count))"
+            }
             exit $code
           }
 
