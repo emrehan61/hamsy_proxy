@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hamsy-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: build (${{ matrix.target }})
@@ -101,6 +105,7 @@ jobs:
   build-windows:
     name: build (x86_64-pc-windows-msvc)
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -175,16 +180,42 @@ jobs:
       - name: Test Rust workspace
         shell: pwsh
         run: |
-          $log = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test.log'
-          cargo test --workspace --locked 2>&1 | Tee-Object -FilePath $log
-          $code = $LASTEXITCODE
-          if ($code -ne 0) {
-            $tail = ((Get-Content -LiteralPath $log -Tail 120 | Out-String) -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A')
-            for ($offset = 0; $offset -lt $tail.Length; $offset += 2000) {
+          function Emit-Tail([string]$Title, [string[]]$Paths) {
+            $text = (($Paths | ForEach-Object { if (Test-Path -LiteralPath $_) { Get-Content -LiteralPath $_ -Tail 160 | Out-String } }) -join "`n")
+            $text = $text -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A'
+            if ([string]::IsNullOrEmpty($text)) { $text = 'no diagnostic output captured' }
+            for ($offset = 0; $offset -lt $text.Length; $offset += 2000) {
               $part = [Math]::Floor($offset / 2000) + 1
-              $count = [Math]::Min(2000, $tail.Length - $offset)
-              Write-Output "::error title=Windows cargo tests failed (part $part)::$($tail.Substring($offset, $count))"
+              $count = [Math]::Min(2000, $text.Length - $offset)
+              Write-Output "::error title=$Title (part $part)::$($text.Substring($offset, $count))"
             }
+          }
+          $stdout = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test-build.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test-build.err'
+          $compile = Start-Process -FilePath cargo.exe -ArgumentList @('test','--workspace','--locked','--no-run') -WorkingDirectory (Get-Location).Path -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          if (-not $compile.WaitForExit(1800000)) {
+            taskkill.exe /PID $compile.Id /T /F | Out-Null
+            Emit-Tail 'Windows cargo test compilation timed out' @($stdout,$stderr)
+            exit 1
+          }
+          $compile.WaitForExit()
+          $code = $compile.ExitCode
+          if ($code -ne 0) {
+            Emit-Tail 'Windows cargo test compilation failed' @($stdout,$stderr)
+            exit $code
+          }
+          $stdout = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test-run.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test-run.err'
+          $tests = Start-Process -FilePath cargo.exe -ArgumentList @('test','--workspace','--locked') -WorkingDirectory (Get-Location).Path -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          if (-not $tests.WaitForExit(180000)) {
+            taskkill.exe /PID $tests.Id /T /F | Out-Null
+            Emit-Tail 'Windows cargo tests timed out' @($stdout,$stderr)
+            exit 1
+          }
+          $tests.WaitForExit()
+          $code = $tests.ExitCode
+          if ($code -ne 0) {
+            Emit-Tail 'Windows cargo tests failed' @($stdout,$stderr)
             exit $code
           }
 
