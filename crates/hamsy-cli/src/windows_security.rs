@@ -38,15 +38,18 @@ use windows_sys::Win32::{
         TOKEN_USER,
     },
     Storage::FileSystem::{
-        CreateDirectoryW, CreateFileW, GetFileInformationByHandle, MoveFileExW,
-        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        OPEN_ALWAYS, OPEN_EXISTING,
+        CreateDirectoryW, CreateFileW, FileRenameInfoEx, GetFileInformationByHandle,
+        SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS,
+        OPEN_EXISTING,
     },
     System::{
         SystemServices::ACCESS_ALLOWED_ACE_TYPE,
         Threading::{GetCurrentProcess, OpenProcessToken},
+        WindowsProgramming::{
+            FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
+        },
     },
 };
 
@@ -54,6 +57,7 @@ const SYSTEM_SID: &str = "S-1-5-18";
 const FILE_ALL_ACCESS: u32 = 0x001F01FF;
 const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
 const READ_CONTROL: u32 = 0x0002_0000;
+const DELETE_ACCESS: u32 = 0x0001_0000;
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(std::iter::once(0)).collect()
@@ -382,7 +386,7 @@ pub fn open_private_file(path: &Path, append: bool, create: bool) -> Result<File
     let path_w = wide(path.as_os_str());
     // The log is opened at EOF below, but it is also truncated when it grows
     // past the bound, so retain ordinary write rights on the handle.
-    let access = GENERIC_READ | GENERIC_WRITE;
+    let access = GENERIC_READ | GENERIC_WRITE | DELETE_ACCESS;
     let disposition = if create { OPEN_ALWAYS } else { OPEN_EXISTING };
     let handle = unsafe {
         CreateFileW(
@@ -407,19 +411,57 @@ pub fn open_private_file(path: &Path, append: bool, create: bool) -> Result<File
     Ok(file)
 }
 
+/// Atomically replace a discovery record while readers keep their old handle.
+/// `FileRenameInfoEx` POSIX semantics are supported on Windows 10 and later.
 pub fn replace_file(from: &Path, to: &Path) -> Result<()> {
-    let from_w = wide(from.as_os_str());
-    let to_w = wide(to.as_os_str());
+    let source = open_private_file(from, false, false)?;
+    // FileRenameInfoEx with a null RootDirectory requires an absolute target.
+    let target_path = std::path::absolute(to)?;
+    let mut target = wide(target_path.as_os_str());
+    target.pop();
+    let name_bytes = target
+        .len()
+        .checked_mul(2)
+        .context("discovery path is too long")?;
+    let name_bytes_u32 = u32::try_from(name_bytes).context("discovery path is too long")?;
+    let total_size = size_of::<FILE_RENAME_INFO>()
+        .checked_add(name_bytes.saturating_sub(size_of::<u16>()))
+        .context("discovery path is too long")?;
+    // FILE_RENAME_INFO contains a HANDLE and must be naturally aligned. A
+    // byte vector is not sufficiently aligned on all allocators.
+    let words = total_size
+        .checked_add(size_of::<usize>() - 1)
+        .context("discovery path is too long")?
+        / size_of::<usize>();
+    let buffer_size = words
+        .checked_mul(size_of::<usize>())
+        .context("discovery path is too long")?;
+    let buffer_size_u32 = u32::try_from(buffer_size).context("discovery path is too long")?;
+    let mut buffer = vec![0usize; words];
+    let rename = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
+    unsafe {
+        (*rename).Anonymous.Flags =
+            FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        (*rename).RootDirectory = null_mut();
+        (*rename).FileNameLength = name_bytes_u32;
+        std::ptr::copy_nonoverlapping(
+            target.as_ptr(),
+            (*rename).FileName.as_mut_ptr(),
+            target.len(),
+        );
+    }
     if unsafe {
-        MoveFileExW(
-            from_w.as_ptr(),
-            to_w.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        SetFileInformationByHandle(
+            source.as_raw_handle() as HANDLE,
+            FileRenameInfoEx,
+            buffer.as_ptr() as *const c_void,
+            buffer_size_u32,
         )
     } == 0
     {
-        return Err(win_error("MoveFileExW"));
+        return Err(win_error("SetFileInformationByHandle(FileRenameInfoEx)"));
     }
+    drop(source);
     // A replacement must retain the same private guarantees as the original
     // discovery record, even if another process raced the destination path.
     let file = open_private_file(to, false, false)?;
@@ -430,7 +472,7 @@ pub fn replace_file(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Seek, Write};
 
     #[test]
     fn private_state_rejects_aliases_and_keeps_private_acl() {
@@ -470,8 +512,21 @@ mod tests {
         drop(next);
         replace_file(&source, &destination).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), b"new");
+        old.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut old_contents = Vec::new();
+        old.read_to_end(&mut old_contents).unwrap();
+        assert_eq!(old_contents, b"old");
         assert!(!source.exists());
         validate_private_dir(&dir).unwrap();
+
+        let source = dir.join("service-new.tmp");
+        let destination = dir.join("service-new.json");
+        let mut next = open_private_file(&source, false, true).unwrap();
+        next.write_all(b"first").unwrap();
+        next.sync_all().unwrap();
+        drop(next);
+        replace_file(&source, &destination).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"first");
     }
 
     #[test]
