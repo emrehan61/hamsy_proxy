@@ -1,20 +1,71 @@
 //! Runs the actual CLI/daemon handshake without launching browsers or touching
 //! certificate/system-proxy commands. Every process uses a temporary data dir.
 use std::{
+    ffi::OsString,
     fs,
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, Output},
-    time::Duration,
+    process::{Command, Output, Stdio},
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 struct Cleanup(PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        let _ = Command::new(env!("CARGO_BIN_EXE_hamsy"))
-            .args(["open", "--stop", "--data-dir"])
-            .arg(&self.0)
-            .status();
+        let mut args = vec![
+            OsString::from("open"),
+            OsString::from("--stop"),
+            OsString::from("--data-dir"),
+            self.0.as_os_str().to_os_string(),
+        ];
+        let _ = run_cli("cleanup stop", &mut args, Duration::from_secs(10));
     }
+}
+
+fn drain<R: Read + Send + 'static>(mut reader: R) -> JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn run_cli(label: &str, args: &mut [OsString], timeout: Duration) -> Option<Output> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hamsy"))
+        .args(args.iter())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("{label}: could not spawn CLI: {error}"));
+    let stdout = drain(child.stdout.take().unwrap());
+    let stderr = drain(child.stderr.take().unwrap());
+    let deadline = Instant::now() + timeout;
+    let mut status = None;
+    loop {
+        if status.is_none() {
+            status = child.try_wait().unwrap();
+        }
+        if status.is_some() && stdout.is_finished() && stderr.is_finished() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            if status.is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("{label}: child did not exit within {timeout:?}");
+            } else {
+                eprintln!("{label}: child exited but output pipes stayed open for {timeout:?}");
+            }
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Some(Output {
+        status: status.unwrap(),
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 fn terminate(pid: u32) {
@@ -30,20 +81,25 @@ fn terminate(pid: u32) {
     }
 }
 fn open(data: &Path, har: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_hamsy"))
-        .args(["open", "--no-open", "--data-dir"])
-        .arg(data)
-        .arg("--")
-        .arg(har)
-        .output()
-        .unwrap()
+    let mut args = vec![
+        OsString::from("open"),
+        OsString::from("--no-open"),
+        OsString::from("--data-dir"),
+        data.as_os_str().to_os_string(),
+        OsString::from("--"),
+        har.as_os_str().to_os_string(),
+    ];
+    run_cli("open", &mut args, Duration::from_secs(30))
+        .unwrap_or_else(|| panic!("open timed out while launching HAR viewer"))
 }
 fn stop(data: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_hamsy"))
-        .args(["open", "--stop", "--data-dir"])
-        .arg(data)
-        .output()
-        .unwrap()
+    let mut args = vec![
+        OsString::from("open"),
+        OsString::from("--stop"),
+        OsString::from("--data-dir"),
+        data.as_os_str().to_os_string(),
+    ];
+    run_cli("stop", &mut args, Duration::from_secs(15)).unwrap_or_else(|| panic!("stop timed out"))
 }
 fn successful_url(output: Output) -> String {
     assert!(
@@ -73,8 +129,10 @@ async fn simultaneous_launches_reuse_service_and_preserve_capture_state() {
     let _cleanup = Cleanup(data.clone());
     let data2 = data.clone();
     let har2 = har.clone();
+    eprintln!("har_open: launching concurrent open clients");
     let first = std::thread::spawn(move || open(&data2, &har2));
     let second = open(&data, &har);
+    eprintln!("har_open: concurrent clients exited");
     let url1 = successful_url(first.join().unwrap());
     let url2 = successful_url(second);
     let parsed1 = reqwest::Url::parse(&url1).unwrap();
@@ -99,6 +157,7 @@ async fn simultaneous_launches_reuse_service_and_preserve_capture_state() {
         .send()
         .await
         .unwrap();
+    eprintln!("har_open: uploaded and fetched first ticket");
     assert!(response.status().is_success());
     assert_eq!(response.headers()["cache-control"], "no-store");
     let body: serde_json::Value = response.json().await.unwrap();
@@ -139,6 +198,7 @@ async fn simultaneous_launches_reuse_service_and_preserve_capture_state() {
     // Simulate an unclean exit. The lock must release without deleting the
     // remembered port so a new viewer can recover the same browser origin.
     terminate(d["pid"].as_u64().unwrap() as u32);
+    eprintln!("har_open: terminated service for recovery");
     for _ in 0..100 {
         if client
             .get(format!("{base}/api/state"))
@@ -151,12 +211,14 @@ async fn simultaneous_launches_reuse_service_and_preserve_capture_state() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let recovered = successful_url(open(&data, &har));
+    eprintln!("har_open: recovered service");
     assert_eq!(
         reqwest::Url::parse(&recovered).unwrap().port(),
         parsed1.port()
     );
     assert_ne!(descriptor(&data)["pid"], d["pid"]);
     assert!(stop(&data).status.success());
+    eprintln!("har_open: stopped recovered service");
     assert!(client
         .get(format!("{base}/api/state"))
         .send()

@@ -206,7 +206,7 @@ jobs:
           }
           $stdout = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test-run.out'
           $stderr = Join-Path $env:RUNNER_TEMP 'hamsy-cargo-test-run.err'
-          $tests = Start-Process -FilePath cargo.exe -ArgumentList @('test','--workspace','--locked') -WorkingDirectory (Get-Location).Path -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $tests = Start-Process -FilePath cargo.exe -ArgumentList @('test','--workspace','--locked','--','--nocapture') -WorkingDirectory (Get-Location).Path -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
           if (-not $tests.WaitForExit(180000)) {
             taskkill.exe /PID $tests.Id /T /F | Out-Null
             Emit-Tail 'Windows cargo tests timed out' @($stdout,$stderr)

@@ -23,6 +23,30 @@ use std::{
 use uuid::Uuid;
 
 #[cfg(windows)]
+fn clear_standard_handle_inheritance() -> Result<()> {
+    // Redirecting the daemon's stdio does not stop CreateProcess from
+    // inheriting the opener's original capture-pipe handles. Clear inheritance
+    // on this short-lived CLI's standard handles so those pipes reach EOF as
+    // soon as the opener exits; the handles remain usable by this process.
+    use windows_sys::Win32::{
+        Foundation::{
+            GetLastError, SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+        },
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    for standard in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        let handle = unsafe { GetStdHandle(standard) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(std::io::Error::from_raw_os_error(unsafe { GetLastError() } as i32).into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 #[path = "windows_security.rs"]
 mod windows_security;
 
@@ -416,6 +440,8 @@ pub async fn open(args: OpenArgs) -> Result<()> {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
+        #[cfg(windows)]
+        clear_standard_handle_inheritance()?;
         let mut child = command.spawn().context("could not start the HAR viewer")?;
         for _ in 0..100 {
             if let Some(d) = discovery(&dir) {
