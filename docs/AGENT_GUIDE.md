@@ -45,7 +45,7 @@ calls. Existing permissions in the agent's host still apply.
   `app:` belong to the configured API; `viewer:` belongs to the standalone viewer.
   `sources` reports each source's availability independently, so an unavailable
   capture instance does not prevent reading the viewer.
-- Pass the exact `sessionId` to `list_flows`, `get_flow`, or `export_har`.
+- Pass the exact `sessionId` to `list_flows`, `get_flow`, `search_flows`, or `export_har`.
   Omitting it selects `app:live`. Never infer the session from a flow ID alone:
   an imported archive and live capture can contain the same ID.
 - Keep the Hamsy browser window open for imported HAR reads. Tabs restored from
@@ -87,6 +87,52 @@ selection or omit bodies if the app reports a size limit. An imported detail
 with text bodies larger than 8 MiB must be read with `includeBodies: false`; the
 preview limit applies after transfer to the bridge. Captured
 flows live in a bounded in-memory store and can be evicted or disappear on restart.
+
+## Full text and regex search, including live capture
+
+`search_flows` searches current retained traffic in `app:live` without needing
+an open browser, or an imported session selected from `list_sessions`. It covers
+URLs, methods/status/errors, content types, request/response headers, query
+parameters, text bodies (including base64-encoded text), and text WebSocket
+messages. Binary data and content not retained by the capture cannot be searched.
+A truncated capture can only contribute its stored prefix.
+
+Example arguments:
+
+```json
+{
+  "sessionId": "app:live",
+  "query": "timeout|connection refused|HTTP [45][0-9]{2}",
+  "regex": true,
+  "caseSensitive": false,
+  "excludedHosts": ["analytics.example.test"],
+  "limit": 50
+}
+```
+
+Literal text is the default (`regex: false`). Both modes default to ignoring
+case. Optional `host`, `methods` (comma-separated), and `statusClass` filters
+combine with `excludedHosts`. Patterns are limited to 1024 UTF-8 bytes. Live
+search uses Rust regex syntax, which excludes lookaround and backreferences;
+HAR search uses the existing browser's JavaScript regex syntax. Common patterns
+such as alternatives, groups, character classes, anchors and quantifiers work
+in both. Invalid patterns return a tool error. Complex browser searches are
+terminated after six seconds; simplify the expression if this happens.
+
+Results contain matching `flowId`, `seq`, and `fields` labels, without captured
+snippets. Use `get_flow` in the same session for a redacted detail/body preview.
+The default result limit is 50 matching requests, maximum 200. Each call scans
+at most 2000 requests; live searches also yield between requests after about
+five seconds. While `hasMore` is true, continue with `afterSeq: nextAfterSeq`,
+the same session and filters, even if the page has no matches.
+
+**Live listening:** MCP reads the running capture as it changes; it does not
+push unsolicited traffic events or keep monitoring after a tool call ends.
+Agents can repeat `list_flows` or `search_flows` while debugging. `afterSeq`
+finds newer requests, but a pending response or WebSocket message can be added
+to an older request. Repeat the search without a cursor, or reread known flow
+IDs, to catch those updates. Live search pagination is not an immutable snapshot
+across calls; cleared, evicted or restarted capture data may disappear.
 
 ## Modify and reproduce
 
@@ -179,6 +225,7 @@ is available as JSON commands:
 ```sh
 hamsy agent call list_sessions
 hamsy agent call get_status
+hamsy agent call search_flows --arguments '{"sessionId":"app:live","query":"timeout|error","regex":true}'
 hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'
 # Replace app:SESSION_UUID with an exact sessionId returned by list_sessions
 hamsy agent call list_flows --arguments '{"sessionId":"app:SESSION_UUID","limit":20}'

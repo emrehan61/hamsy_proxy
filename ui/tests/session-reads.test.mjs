@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const output = mkdtempSync(join(tmpdir(), 'hamsy-session-tests-'));
 execFileSync(process.execPath, [require.resolve('typescript/bin/tsc'), '--outDir', output,
   '--noEmit', 'false', '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'es2022',
-  '--skipLibCheck', 'src/lib/sessionReads.ts'], { cwd: new URL('..', import.meta.url) });
+  '--skipLibCheck', 'src/lib/sessionReads.ts', 'src/lib/agentSearch.ts'], { cwd: new URL('..', import.meta.url) });
 writeFileSync(join(output, 'package.json'), '{"type":"commonjs"}');
 after(() => rmSync(output, { recursive: true, force: true }));
 const { readSession } = require(join(output, 'sessionReads.js'));
@@ -64,4 +64,44 @@ test('selection never escapes the supplied session and exported bodies are empty
   assert.throws(() => read('export_har', {}));
   assert.throws(() => read('replay_request', {}));
   assert.throws(() => read('read_file', { path: '/anything' }));
+});
+
+const { searchSession } = require(join(output, 'agentSearch.js'));
+test('agent regex searches full text while returning only request IDs and field labels', () => {
+  const result = searchSession(flows, { query: 'original (request|response)', regex: true });
+  assert.equal(result.matches.length, 7);
+  assert.deepEqual(result.matches[0].fields, ['Request body', 'Response body']);
+  assert.ok(!JSON.stringify(result).includes('original'));
+  assert.equal(searchSession(flows, { query: 'ORIGINAL', caseSensitive: true }).matches.length, 0);
+  assert.equal(searchSession(flows, { query: 'ORIGINAL' }).matches.length, 7);
+  assert.throws(() => searchSession(flows, { query: '[', regex: true }));
+  assert.throws(() => searchSession(flows, { query: '' }));
+  assert.throws(() => searchSession(flows, { query: 'a', limit: 201 }));
+});
+test('agent search decodes base64 text, searches text WebSockets, and skips binary', () => {
+  const f = structuredClone(flows[0]);
+  f.response.body.kind = 'base64';
+  f.response.body.data = Buffer.from('needle café').toString('base64');
+  f.wsMessages = [{ opcode:'text', data:'needle socket' }, { opcode:'binary', data:'binaryonly' }];
+  const result = searchSession([f], { query: 'needle' });
+  assert.deepEqual(result.matches[0].fields, ['Response body','WebSocket message']);
+  assert.equal(searchSession([f], { query: 'binaryonly' }).matches.length, 0);
+  assert.equal(searchSession([f], { query: 'café' }).matches.length, 1);
+});
+test('agent search paginates from zero, applies exclusions, and advances empty scan pages', () => {
+  let afterSeq;
+  const ids = [];
+  do {
+    const result = searchSession(flows, { query: 'original', limit:2, afterSeq });
+    ids.push(...result.matches.map(m => m.flowId));
+    afterSeq = result.nextAfterSeq;
+    if (!result.hasMore) break;
+  } while (true);
+  assert.deepEqual(ids, flows.map(f => f.id));
+  assert.equal(searchSession(flows, { query:'original',excludedHosts:['EXAMPLE.TEST'] }).matches.length,0);
+  assert.equal(searchSession(flows, { query:'original',statusClass:5,methods:'post' }).matches.length,3);
+  const big = Array.from({length:2001},(_,seq) => ({...flows[0],seq}));
+  const page = searchSession(big, { query:'no match' });
+  assert.equal(page.hasMore,true); assert.equal(page.nextAfterSeq,1999); assert.equal(page.matches.length,0);
+  assert.equal(searchSession(big, { query:'no match',afterSeq:1999 }).hasMore,false);
 });

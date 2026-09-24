@@ -7,7 +7,7 @@ export interface SessionRead {
   type: "read";
   requestId: string;
   sessionId: string;
-  operation: "list_flows" | "get_flow" | "export_har";
+  operation: "list_flows" | "get_flow" | "export_har" | "search_flows";
   query: Record<string, string>;
 }
 

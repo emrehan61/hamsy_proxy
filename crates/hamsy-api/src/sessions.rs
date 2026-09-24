@@ -89,6 +89,7 @@ pub fn router() -> Router<ApiState> {
         .route("/sessions/{id}/flows", get(flows))
         .route("/sessions/{id}/flows/{flow_id}", get(flow))
         .route("/sessions/{id}/har", get(har))
+        .route("/sessions/{id}/search", get(search))
 }
 async fn list(State(state): State<ApiState>) -> Json<Value> {
     let mut sessions = state.browser_sessions().list();
@@ -131,6 +132,19 @@ async fn har(
         state
             .browser_sessions()
             .read(id, "export_har", json!(query))
+            .await?,
+    ))
+}
+
+async fn search(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        state
+            .browser_sessions()
+            .read(id, "search_flows", json!(query))
             .await?,
     ))
 }

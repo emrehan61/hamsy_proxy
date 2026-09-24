@@ -163,3 +163,34 @@ pub async fn replay(
         Err(message) => Err(ApiError::NotImplemented(message)),
     }
 }
+
+/// GET /api/flows/search?params=<JSON SearchQuery>. Snapshot existing live traffic;
+/// no browser is required, and capture updates are not held under a search lock.
+pub async fn search(
+    State(state): State<ApiState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let raw = params
+        .get("params")
+        .ok_or_else(|| ApiError::BadRequest("missing search params".into()))?;
+    if raw.len() > 32768 {
+        return Err(ApiError::BadRequest("search params too large".into()));
+    }
+    let query: hamsy_core::search::SearchQuery = serde_json::from_str(raw)?;
+    query.validate().map_err(ApiError::BadRequest)?;
+    let slot = SLOTS.try_acquire().map_err(|_| {
+        ApiError::BadGateway("search busy; try again after the current search finishes".into())
+    })?;
+    let flows = state.flows().snapshots(None);
+    let result = tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        hamsy_core::search::search_flows(flows, &query)
+    })
+    .await
+    .map_err(|_| ApiError::Internal("search failed".into()))?;
+    Ok(Json(match result {
+        Ok(value) => value,
+        Err(error) => json!({"error":error}),
+    }))
+}

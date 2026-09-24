@@ -444,7 +444,7 @@ async fn offline_discovery_resources_and_protocol_versions() {
             assert_eq!(response["result"]["cacheScope"], "private");
         }
         let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 9);
         assert!(tools
             .iter()
             .all(|tool| tool["annotations"]["readOnlyHint"] == true));
@@ -666,7 +666,7 @@ async fn writes_share_live_state_and_replay_is_single_shot() {
     let flow_id = app.seed();
     let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
     let response = client.rpc("tools/list", json!({})).await;
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 14);
     let rule = json!({"name":"fixture", "match":{"urlOp":"equals", "urlValue":"https://example.test/checkout"},
         "actions":[{"type":"mockResponse","status":200,"body":"ok"}]});
     let response = client.call("create_rule", json!({"rule":rule})).await;
@@ -849,4 +849,72 @@ async fn api_redirects_and_oversized_outputs_fail_closed() {
     assert_eq!(redirects.load(Ordering::SeqCst), 0);
     client.close().await;
     task.abort();
+}
+
+#[tokio::test]
+async fn regex_search_reads_current_live_content_and_routes_har_sessions() {
+    let app = App::start().await;
+    let first = app.seed();
+    let mut client = Mcp::start(&app.url, false, "2025-11-25").await;
+    let response = client
+        .call("search_flows", json!({"query":"hello|broken","regex":true}))
+        .await;
+    let value = result(&response);
+    assert_eq!(value["sessionId"], "app:live");
+    assert_eq!(value["matches"][0]["flowId"], first);
+    assert_eq!(
+        value["matches"][0]["fields"],
+        json!(["Request body", "Response body"])
+    );
+    assert!(!response.to_string().contains("SECRET"));
+    let last_seq = value["nextAfterSeq"].clone();
+    let second = app.seed();
+    let response = client
+        .call("search_flows", json!({"query":"hello","afterSeq":last_seq}))
+        .await;
+    assert_eq!(result(&response)["matches"][0]["flowId"], second);
+    // Re-reading without a cursor sees responses added to an earlier request.
+    app.state
+        .flows()
+        .update(uuid::Uuid::parse_str(&first).unwrap(), |f| {
+            f.response.as_mut().unwrap().body.data = "newly completed response".into()
+        });
+    let response = client
+        .call("search_flows", json!({"query":"newly completed"}))
+        .await;
+    assert_eq!(result(&response)["matches"][0]["flowId"], first);
+    let response = client
+        .call(
+            "search_flows",
+            json!({"query":"hello","excludedHosts":["EXAMPLE.TEST"]}),
+        )
+        .await;
+    assert_eq!(result(&response)["matches"], json!([]));
+    for args in [
+        json!({"query":"[","regex":true}),
+        json!({"query":""}),
+        json!({"query":"x","limit":201}),
+        json!({"query":"x","typo":true}),
+    ] {
+        tool_error(&client.call("search_flows", args).await);
+    }
+    let session = uuid::Uuid::new_v4().to_string();
+    let selected = format!("app:{session}");
+    let mut browser = browser(&app.url).await;
+    advertise(&mut browser, &[&session]).await;
+    wait_sessions(&mut client, 2).await;
+    let (response, ()) = tokio::join!(
+        client.call("search_flows", json!({"sessionId":selected,"query":"error.*timeout","regex":true,"caseSensitive":true,"excludedHosts":["ads.test"]})),
+        async {
+            let request = browser_request(&mut browser).await;
+            assert_eq!(request["operation"], "search_flows");
+            let params:Value = serde_json::from_str(request["query"]["params"].as_str().unwrap()).unwrap();
+            assert_eq!(params["regex"],true); assert_eq!(params["caseSensitive"],true); assert_eq!(params["excludedHosts"],json!(["ads.test"]));
+            reply(&mut browser, &request, json!({"matches":[{"flowId":first,"seq":0,"fields":["Response body"]}],"hasMore":false,"nextAfterSeq":0})).await;
+        }
+    );
+    assert_eq!(result(&response)["sessionId"], selected);
+    assert_eq!(result(&response)["matches"][0]["seq"], 0);
+    browser.close(None).await.unwrap();
+    client.close().await;
 }

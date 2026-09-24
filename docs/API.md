@@ -588,3 +588,19 @@ handshake (the capture API also accepts the two documented Vite dev origins).
 The browser advertises session metadata and replies to correlated read-only
 requests. Registry entries are withdrawn on disconnect; heartbeats remove stale
 windows. Session data remains in the browser and IndexedDB until read on demand.
+
+
+### Content search (0.5.0-beta.3)
+
+`GET /api/flows/search?params=<URL-encoded JSON>` searches current live snapshots.
+`GET /api/sessions/{uuid}/search?params=<URL-encoded JSON>` searches an open HAR
+through its browser worker. `params` contains `query` plus optional `regex`,
+`caseSensitive`, `limit`, `afterSeq`, `host`, `excludedHosts` (array), `methods`
+(CSV), and `statusClass`. These endpoints are read-only.
+
+Results contain `matches` (`flowId`, `seq`, `fields`), `scanned`, `nextAfterSeq`,
+`hasMore`, and `contentsOmitted: true`. Follow the cursor while `hasMore` is true,
+including empty pages. A call scans up to 2000 requests and returns up to 200
+matching requests; invalid patterns and timed-out browser searches report an
+error. No raw content snippets are returned. See the bundled agent guide for
+regex engine differences, capture limits and live polling behavior.

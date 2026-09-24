@@ -48,6 +48,7 @@ pub fn router(state: ApiState) -> Router {
             "/flows",
             get(routes::flows::list).delete(routes::flows::clear),
         )
+        .route("/flows/search", get(routes::flows::search))
         .route("/flows/{id}", get(routes::flows::get))
         .route("/flows/{id}/replay", post(routes::flows::replay))
         .route(

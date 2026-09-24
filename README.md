@@ -20,7 +20,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## MCP beta (w-mcp-beta)
 
-This branch builds **0.5.0-beta.2**, with an agent interface bundled in the same
+This branch builds **0.5.0-beta.3**, with an agent interface bundled in the same
 `hamsy` binary. Download your platform's artifact from the **Release** workflow
 run for `w-mcp-beta`, extract the `.tar.gz`, and use that binary explicitly.
 Branch pushes build artifacts; they do not publish a stable GitHub release.
@@ -41,11 +41,17 @@ running app and web UI. See the [bundled agent guide](docs/AGENT_GUIDE.md) for
 setup, tools, limits, privacy behavior and troubleshooting.
 
 Start with `list_sessions`, then pass the returned `sessionId` to `list_flows`,
-`get_flow`, or `export_har`. External HARs opened with `hamsy open file.har`
+`get_flow`, `search_flows`, or `export_har`. External HARs opened with `hamsy open file.har`
 are included through the standalone viewer, even when capture is stopped.
 Keep imported HAR browser windows open. For a custom viewer profile, add
 `--viewer-data-dir /absolute/path` when configuring the agent. Imported sessions
 are read-only and never mixed into live traffic.
+
+`search_flows` supports literal or regex search across retained text bodies,
+headers, URLs, query parameters and text WebSocket messages, for both live
+capture and open HARs. It supports case sensitivity and excluded hosts. Agents
+can read live traffic repeatedly while debugging; MCP does not automatically
+subscribe to or push future requests.
 
 Agents without MCP can use `hamsy agent-guide`, `hamsy agent tools`, and
 `hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'`.

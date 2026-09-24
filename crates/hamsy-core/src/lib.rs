@@ -34,3 +34,5 @@ pub use rule::{
 pub use rules_store::RulesStore;
 pub use settings::{data_dir, Settings};
 pub use store::{FlowQuery, FlowStore};
+
+pub mod search;
