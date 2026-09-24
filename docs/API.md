@@ -604,3 +604,14 @@ including empty pages. A call scans up to 2000 requests and returns up to 200
 matching requests; invalid patterns and timed-out browser searches report an
 error. No raw content snippets are returned. See the bundled agent guide for
 regex engine differences, capture limits and live polling behavior.
+
+
+### MCP-managed process control (0.5.0-beta.4)
+
+Only capture instances started by MCP expose `/api/mcp-runtime/health` and
+`POST /api/mcp-runtime/stop`. The former answers a bounded random challenge with
+an HMAC proof; the latter requires a private bearer credential stored in the
+profile's owner-only `mcp-runtime` directory. Normal capture instances and HAR
+viewers do not expose these routes. These endpoints are internal lifecycle
+controls, not agent traffic tools. Use `hamsy mcp --stop-app` for authenticated
+shutdown; do not kill a PID copied from stale discovery data.

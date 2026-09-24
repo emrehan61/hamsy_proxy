@@ -7,22 +7,38 @@ reference are embedded in the release binary; a source checkout is unnecessary.
 
 ## Connect
 
-1. Start the installed app: `hamsy run --manual --no-open --bind 127.0.0.1`.
-   This starts the proxy on 9080 and the UI/API on 9081 without changing the OS
-   proxy. Open http://127.0.0.1:9081 for the web UI. Route the application under
-   test through http://127.0.0.1:9080. The MCP connection itself bypasses proxies.
-2. Open Setup → Connect an AI agent in the web UI for a copyable setup command,
-   or run `hamsy mcp --print-config` and add the generated entry to the MCP client's
-   server configuration. Client configuration formats vary; use the printed
-   executable and arguments in the client's equivalent fields. An absolute
-   executable path is printed because GUI clients may have a different PATH.
-3. The client launches `hamsy mcp` as a local stdio subprocess. Do not run this
-   interactively expecting a browser or a chat prompt. Stdout is MCP-only;
-   diagnostics go to stderr. Closing the client connection exits the bridge,
-   leaving the capture instance running.
-4. Use `--api-url http://127.0.0.1:PORT` for a different UI/API port. The beta
-   accepts HTTP loopback origins only, including localhost and [::1]. It never
-   auto-starts capture, enables the system proxy, or installs a certificate.
+1. Run `hamsy mcp --print-config` using the installed beta executable. Add the
+   printed executable and arguments to your agent app's MCP configuration.
+   Client formats vary; use their equivalent command/argument fields.
+   Printing configuration does not start Hamsy or write a profile.
+2. When the agent launches `hamsy mcp`, it reuses the Hamsy instance at the
+   configured API URL, or starts the installed executable in the background.
+   No separate `hamsy run` step is needed. Startup defaults to proxy 9080
+   (or the profile's proxy port) and UI/API 9081, bound to loopback. It does not
+   open a browser, change OS proxy settings, or install certificate trust.
+   The app may create its local CA files when initializing HTTPS capture.
+3. Open http://127.0.0.1:9081 for the UI, or ask the agent to inspect `app:live`.
+   The application being tested still needs to route its traffic through
+   http://127.0.0.1:9080. Automatic app startup does not automatically route
+   every program's traffic through the proxy.
+4. The agent communicates over local stdio. Stdout is MCP-only; background app
+   logs go to the profile's private `mcp-runtime/app.log`. The app remains
+   running when an individual agent disconnects so other clients keep their
+   session. Concurrent agent connections share one background instance.
+5. Use `--api-url http://127.0.0.1:PORT`, `--proxy-port PORT`, and
+   `--data-dir /absolute/profile` for custom startup. Printed configuration
+   preserves these options. The profile defaults to `$HAMSY_HOME` or `~/.hamsy`.
+   Existing instances are reused without changing their ports or settings.
+   Another program occupying a required port produces an error; it is never
+   terminated or replaced automatically.
+6. To keep startup under your own control, generate configuration with
+   `hamsy mcp --no-auto-start --print-config`. This is also useful when inspecting
+   only standalone HARs. Guide/tool discovery still works offline in this mode.
+7. To stop only the background capture started by MCP, run
+   `hamsy mcp --stop-app`, adding the same `--data-dir` for a custom profile.
+   Shutdown checks the saved instance's identity and does not stop manually
+   launched capture or standalone HAR viewers. Stop clears that process's
+   in-memory traffic; export anything you need first.
 
 The default connection is read-only. To enable rule creation/replacement/deletion,
 capture pause/resume, and real upstream replay, generate configuration with
@@ -195,8 +211,11 @@ is a local stdio interface, not a remotely accessible MCP server.
 
 ## Troubleshoot capture
 
-- Connection refused: start Hamsy or correct `--api-url` (API port 9081, not proxy
-  port 9080). Guide and tool discovery work while the app is stopped.
+- Startup failure: inspect the profile's `mcp-runtime/app.log` and check
+  `--api-url` (UI/API port 9081) and `--proxy-port` (9080 by default). For an
+  intentionally offline connection, use `--no-auto-start`.
+- If the app is stopped while MCP remains connected, reconnect MCP to start it
+  again. The connection does not silently restart capture during a read or replay.
 - Empty traffic: check `get_status`, pause state, include/exclude filters, and
   whether the target application actually uses the proxy.
 - Localhost traffic: many clients bypass local addresses. For curl, use
@@ -218,7 +237,9 @@ is a local stdio interface, not a remotely accessible MCP server.
 
 ## Agents without MCP
 
-`hamsy agent-guide` prints this guide without connecting to anything.
+`hamsy agent-guide` prints this guide without connecting to anything. Automatic
+startup applies to `hamsy mcp`; JSON `hamsy agent` commands target an already
+running app.
 `hamsy agent tools` prints tool descriptions and JSON schemas. The same dispatcher
 is available as JSON commands:
 

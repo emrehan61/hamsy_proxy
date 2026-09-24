@@ -109,10 +109,16 @@ fn init_tracing(verbosity: u8) {
 /// run. Must not itself panic: a panicking panic hook aborts the process
 /// harder, without even printing the original message, which would make
 /// crashes strictly harder to diagnose than doing nothing here at all.
-fn install_panic_restore_hook(data_dir: PathBuf) {
+fn install_panic_restore_hook(data_dir: PathBuf, owned_only: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        match std::panic::catch_unwind(|| hamsy_api::sysproxy_state::restore_if_marked(&data_dir)) {
+        match std::panic::catch_unwind(|| {
+            if owned_only {
+                hamsy_api::sysproxy_state::restore_owned_if_marked(&data_dir)
+            } else {
+                hamsy_api::sysproxy_state::restore_if_marked(&data_dir)
+            }
+        }) {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
                 eprintln!("hamsy: failed to restore the system proxy after a panic: {err}")
@@ -146,7 +152,10 @@ fn main() {
     // subcommands (`cert`/`rules`/`proxy`) are one-shot and fully synchronous
     // -- if they panic, they haven't left anything running that needs this.
     if let Command::Run(ref args) = command {
-        install_panic_restore_hook(resolve_data_dir(args.data_dir.as_deref()));
+        install_panic_restore_hook(
+            resolve_data_dir(args.data_dir.as_deref()),
+            args.agent_managed,
+        );
     }
 
     let result = match command {

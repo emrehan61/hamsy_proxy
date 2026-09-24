@@ -281,7 +281,7 @@ const Setup: Component = () => {
                   </p>
                 </Tabs>
                 <ol class="setup-instructions">
-                  <li>Run this command on the computer running Hamsy.</li>
+                  <li>Run this command on the computer where Hamsy is installed.</li>
                   <li>Add the generated connection settings to your agent app's MCP configuration, then reconnect it.</li>
                   <li>Ask your agent: “Use Hamsy to find failing requests and explain the responses.”</li>
                 </ol>
@@ -290,7 +290,7 @@ const Setup: Component = () => {
                   Copy setup command
                 </Button>
                 <p class="setup-page__note">
-                  Keep Hamsy running and HAR browser windows open. Ask the agent to list sessions, then choose a live capture or imported file. External files opened with Hamsy are included.
+                  Hamsy starts automatically when your agent connects. Keep HAR browser windows open. Ask the agent to list sessions, then choose a live capture or imported file. External files opened with Hamsy are included.
                   Known credentials are masked and bodies are omitted until requested.
                   For the full guide, run <code>hamsy agent-guide</code>.
                 </p>

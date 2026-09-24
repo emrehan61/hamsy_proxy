@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-api"
-version = "0.5.0-beta.3"
+version = "0.5.0-beta.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-cli"
-version = "0.5.0-beta.3"
+version = "0.5.0-beta.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-core"
-version = "0.5.0-beta.3"
+version = "0.5.0-beta.4"
 dependencies = [
  "base64",
  "brotli",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "hamsy-proxy"
-version = "0.5.0-beta.3"
+version = "0.5.0-beta.4"
 dependencies = [
  "base64",
  "bytes",

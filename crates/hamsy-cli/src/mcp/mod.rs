@@ -1,6 +1,7 @@
 //! Release-bundled agent interface. MCP and the JSON CLI share one dispatcher;
-//! all operations go through the running app's API, never its on-disk stores.
+//! Traffic operations use the app API; startup manages a shared local process.
 mod privacy;
+pub(crate) mod startup;
 
 use std::{net::IpAddr, path::PathBuf, time::Duration};
 
@@ -40,6 +41,18 @@ pub struct McpArgs {
     /// Print a generic MCP client configuration and exit, without connecting.
     #[arg(long)]
     print_config: bool,
+    /// Connect only; never start the capture app automatically.
+    #[arg(long)]
+    no_auto_start: bool,
+    /// Capture profile used when automatically starting Hamsy.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// Proxy port for automatic startup (default: profile setting or 9080).
+    #[arg(long)]
+    proxy_port: Option<u16>,
+    /// Stop only the background capture instance started by MCP in this profile.
+    #[arg(long, conflicts_with = "print_config")]
+    stop_app: bool,
 }
 
 #[derive(Args, Debug)]
@@ -63,7 +76,15 @@ enum AgentCommand {
 }
 
 pub async fn run(args: McpArgs) -> Result<()> {
-    let bridge = Bridge::new(args.connection)?;
+    let data_dir = std::path::absolute(args.data_dir.unwrap_or_else(hamsy_core::data_dir))?;
+    let mut connection = args.connection;
+    if connection.viewer_data_dir.is_none() {
+        connection.viewer_data_dir = Some(data_dir.clone());
+    }
+    let bridge = Bridge::new(connection)?;
+    if args.stop_app {
+        return startup::stop(&data_dir).await;
+    }
     if args.print_config {
         let mut command_args = vec![
             "mcp".to_string(),
@@ -77,6 +98,13 @@ pub async fn run(args: McpArgs) -> Result<()> {
             "--viewer-data-dir".into(),
             bridge.viewer_data_dir.to_string_lossy().into_owned(),
         ]);
+        command_args.extend(["--data-dir".into(), data_dir.to_string_lossy().into_owned()]);
+        if args.no_auto_start {
+            command_args.push("--no-auto-start".into());
+        }
+        if let Some(port) = args.proxy_port {
+            command_args.extend(["--proxy-port".into(), port.to_string()]);
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({"mcpServers": {"hamsy": {
@@ -85,7 +113,9 @@ pub async fn run(args: McpArgs) -> Result<()> {
         );
         return Ok(());
     }
-    // Discovery and the guide work even before a capture instance is started.
+    if !args.no_auto_start {
+        startup::ensure_running(&bridge.base, &data_dir, args.proxy_port).await?;
+    }
     let service = bridge.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -315,7 +345,7 @@ impl Bridge {
                         sessions.push(session);
                     }
                 }
-                _ => sources.push(json!({"source":source,"available":false,"detail":"Cannot list sessions. Start/reload the beta app or check --api-url"})),
+                _ => sources.push(json!({"source":source,"available":false,"detail":"Cannot list sessions. Reconnect MCP, reload beta browser windows, or check --api-url"})),
             }
         }
         json!({"sessions":sessions,"sources":sources})
@@ -366,7 +396,7 @@ impl Bridge {
             request = request.json(&body);
         }
         let mut response = request.send().await.map_err(|_| anyhow::anyhow!(
-            "Cannot reach Hamsy at {}. Start `hamsy run --manual --no-open --bind 127.0.0.1`, or set --api-url to its UI/API port. A timed-out write or replay may already have executed; inspect state before retrying.", self.base))?;
+            "Cannot reach Hamsy at {}. Reconnect MCP to start the app, or check --api-url points to its UI/API port. JSON CLI calls need a running app. A timed-out write or replay may already have executed; inspect state before retrying.", self.base))?;
         let status = response.status();
         ensure!(status.is_success(), "Hamsy API returned HTTP {}. Check the ID/arguments and running app. Writes may already have executed; inspect state before retrying.", status.as_u16());
         ensure!(

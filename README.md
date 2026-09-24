@@ -20,19 +20,27 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## MCP beta (w-mcp-beta)
 
-This branch builds **0.5.0-beta.3**, with an agent interface bundled in the same
+This branch builds **0.5.0-beta.4**, with an agent interface bundled in the same
 `hamsy` binary. Download your platform's artifact from the **Release** workflow
 run for `w-mcp-beta`, extract the `.tar.gz`, and use that binary explicitly.
 Branch pushes build artifacts; they do not publish a stable GitHub release.
 No Rust, Node, Python, model account, or source checkout is needed to use it.
 
 ```sh
-hamsy run --manual --no-open --bind 127.0.0.1
-# In another terminal: print configuration for your MCP client
 hamsy mcp --print-config
 ```
 
-Add the generated executable/arguments to your MCP client. The default connection
+Add the generated executable/arguments to your MCP client. Connecting now starts
+Hamsy automatically in the background if needed, or reuses the running app. No
+separate startup command is required. The app stays running across agent
+connections. Use `hamsy mcp --stop-app` to stop the MCP-started instance.
+
+Startup uses loopback and leaves system proxy and certificate trust settings
+alone; route the application under test through the proxy to capture it.
+`--no-auto-start` disables startup; `--data-dir`, `--proxy-port`, and `--api-url`
+configure it. Printing configuration itself has no startup side effects.
+
+The default connection
 can discover live capture and open HAR sessions, inspect traffic, settings and
 rules, read bundled instructions, and export
 redacted HAR summaries. For rule changes, pause/resume and real request replay,

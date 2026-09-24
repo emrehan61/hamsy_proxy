@@ -166,7 +166,7 @@ fn private_dir(data_dir: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn validate_private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn validate_private_dir(dir: &Path) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let meta = fs::symlink_metadata(dir)?;
     if !meta.is_dir()
@@ -189,7 +189,7 @@ fn private_file(path: &Path, append: bool) -> Result<File> {
     private_file_options(path, append, true)
 }
 
-fn private_file_options(path: &Path, append: bool, create: bool) -> Result<File> {
+pub(crate) fn private_file_options(path: &Path, append: bool, create: bool) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(create).append(append);
     #[cfg(unix)]

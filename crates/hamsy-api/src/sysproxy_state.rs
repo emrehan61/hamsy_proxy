@@ -122,6 +122,16 @@ pub fn restore_if_marked(data_dir: &Path) -> Result<bool, String> {
     }
 }
 
+/// An MCP-started process must not restore another instance's recovery marker.
+/// It may still restore changes explicitly made through its own web UI.
+pub fn restore_owned_if_marked(data_dir: &Path) -> Result<bool, String> {
+    if read_marker(&marker_path(data_dir)).is_some_and(|m| m.pid == std::process::id()) {
+        restore_if_marked(data_dir)
+    } else {
+        Ok(false)
+    }
+}
+
 /// Called once at startup, before anything else touches the system
 /// proxy. If a marker is present, a previous hamsy-proxy process died without
 /// running its own shutdown path. This is the only mitigation possible

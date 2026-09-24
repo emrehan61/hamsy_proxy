@@ -83,9 +83,25 @@ struct Mcp {
 }
 impl Mcp {
     async fn start(api: &str, writes: bool, version: &str) -> Self {
+        Self::start_config(api, writes, version, None).await
+    }
+    async fn start_config(
+        api: &str,
+        writes: bool,
+        version: &str,
+        startup: Option<(&std::path::Path, u16)>,
+    ) -> Self {
         let home = tempfile::tempdir().unwrap();
         let mut cmd = Command::new(BIN);
         cmd.args(["mcp", "--api-url", api]);
+        if let Some((profile, port)) = startup {
+            cmd.arg("--data-dir")
+                .arg(profile)
+                .arg("--proxy-port")
+                .arg(port.to_string());
+        } else {
+            cmd.arg("--no-auto-start");
+        }
         if writes {
             cmd.arg("--allow-writes");
         }
@@ -917,4 +933,191 @@ async fn regex_search_reads_current_live_content_and_routes_har_sessions() {
     assert_eq!(result(&response)["matches"][0]["seq"], 0);
     browser.close(None).await.unwrap();
     client.close().await;
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+struct StopManaged(std::path::PathBuf);
+impl Drop for StopManaged {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(BIN)
+            .args(["mcp", "--stop-app", "--data-dir"])
+            .arg(&self.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+async fn stop_managed(profile: &std::path::Path) -> std::process::Output {
+    Command::new(BIN)
+        .args(["mcp", "--stop-app", "--data-dir"])
+        .arg(profile)
+        .output()
+        .await
+        .unwrap()
+}
+#[tokio::test]
+async fn auto_start_is_shared_survives_disconnect_and_preserves_profile_settings() {
+    let profile = tempfile::tempdir().unwrap();
+    let _cleanup = StopManaged(profile.path().to_owned());
+    let settings = b"{\"manualProxy\":false,\"bindAddr\":\"0.0.0.0\",\"paused\":false}";
+    let marker = br#"{"pid":1,"host":"127.0.0.1","port":9999,"snapshot":{"platform":"unknown"}}"#;
+    std::fs::write(profile.path().join("settings.json"), settings).unwrap();
+    std::fs::write(profile.path().join("sysproxy-state.json"), marker).unwrap();
+    let api = format!("http://127.0.0.1:{}", free_port());
+    let port = free_port();
+    let (mut first, mut second) = tokio::join!(
+        Mcp::start_config(&api, false, "2025-11-25", Some((profile.path(), port))),
+        Mcp::start_config(&api, false, "2025-11-25", Some((profile.path(), port)))
+    );
+    let response = first.call("get_status", json!({})).await;
+    assert_eq!(result(&response)["proxyPort"], port);
+    assert_eq!(result(&response)["capturing"], true);
+    let response = second.call("get_settings", json!({})).await;
+    assert_eq!(result(&response)["bindAddr"], "127.0.0.1");
+    assert_eq!(result(&response)["manualProxy"], true);
+    let descriptor = profile.path().join("mcp-runtime/service.json");
+    let original = std::fs::read(&descriptor).unwrap();
+    let discovery: Value = serde_json::from_slice(&original).unwrap();
+    first.close().await;
+    result(&second.call("get_status", json!({})).await);
+    assert_eq!(std::fs::read(&descriptor).unwrap(), original);
+    second.close().await;
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(http
+        .get(format!("{api}/api/state"))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    assert_eq!(
+        http.post(format!("{api}/api/mcp-runtime/stop"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        403
+    );
+    // A stale/tampered credential must never stop an unrelated listener.
+    let mut tampered = discovery;
+    tampered["token"] = json!("wrong token");
+    std::fs::write(&descriptor, serde_json::to_vec(&tampered).unwrap()).unwrap();
+    assert!(!stop_managed(profile.path()).await.status.success());
+    assert!(http
+        .get(format!("{api}/api/state"))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    std::fs::write(&descriptor, &original).unwrap();
+    assert!(stop_managed(profile.path()).await.status.success());
+    for _ in 0..100 {
+        if http.get(format!("{api}/api/state")).send().await.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(http.get(format!("{api}/api/state")).send().await.is_err());
+    assert_eq!(
+        std::fs::read(profile.path().join("settings.json")).unwrap(),
+        settings
+    );
+    assert_eq!(
+        std::fs::read(profile.path().join("sysproxy-state.json")).unwrap(),
+        marker
+    );
+    assert!(stop_managed(profile.path()).await.status.success()); // already stopped
+    let mut restarted =
+        Mcp::start_config(&api, false, "2025-11-25", Some((profile.path(), port))).await;
+    result(&restarted.call("get_status", json!({})).await);
+    assert_ne!(std::fs::read(&descriptor).unwrap(), original);
+    restarted.close().await;
+}
+#[tokio::test]
+async fn automatic_start_reuses_existing_capture_without_creating_a_profile() {
+    let app = App::start().await;
+    app.seed();
+    let profile = tempfile::tempdir().unwrap();
+    let mut client = Mcp::start_config(
+        &app.url,
+        false,
+        "2025-11-25",
+        Some((profile.path(), free_port())),
+    )
+    .await;
+    assert_eq!(
+        result(&client.call("get_status", json!({})).await)["flowCount"],
+        1
+    );
+    client.close().await;
+    assert_eq!(std::fs::read_dir(profile.path()).unwrap().count(), 0);
+    assert_eq!(app.state.flows().len(), 1);
+    assert!(stop_managed(profile.path()).await.status.success());
+    assert!(reqwest::get(format!("{}/api/state", app.url))
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+}
+#[tokio::test]
+async fn occupied_api_and_proxy_ports_fail_without_overwriting_settings() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let occupied = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().fallback(|| async { "not Hamsy" }),
+        )
+        .await
+        .unwrap();
+    });
+    let profile = tempfile::tempdir().unwrap();
+    let output = Command::new(BIN)
+        .args([
+            "mcp",
+            "--api-url",
+            &format!("http://127.0.0.1:{occupied}"),
+            "--data-dir",
+        ])
+        .arg(profile.path())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read_dir(profile.path()).unwrap().count(), 0);
+    let settings = b"{\"paused\":true}";
+    std::fs::write(profile.path().join("settings.json"), settings).unwrap();
+    let output = Command::new(BIN)
+        .args([
+            "mcp",
+            "--api-url",
+            &format!("http://127.0.0.1:{}", free_port()),
+            "--proxy-port",
+            &occupied.to_string(),
+            "--data-dir",
+        ])
+        .arg(profile.path())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("app.log"));
+    assert_eq!(
+        std::fs::read(profile.path().join("settings.json")).unwrap(),
+        settings
+    );
+    assert_eq!(std::fs::read_dir(profile.path()).unwrap().count(), 2); // settings + runtime dir; no CA
+    task.abort();
 }
