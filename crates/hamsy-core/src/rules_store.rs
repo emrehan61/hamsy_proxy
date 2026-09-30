@@ -8,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::error::{CoreError, Result};
-use crate::rule::{Rule, RuleSet};
+use crate::rule::{Rule, RulePatch, RuleSet};
 use crate::settings::atomic_write_json;
 
 /// Thread-safe store of [`Rule`]s, persisted as JSON to a fixed path and
@@ -63,6 +63,45 @@ impl RulesStore {
             .ok_or(CoreError::NotFound)?;
         rules[pos] = rule;
         self.persist(&rules)
+    }
+
+    /// Applies only supplied fields under the store lock, preserving concurrent
+    /// edits to other fields. Validation and persistence precede publication.
+    pub fn patch(&self, id: &str, patch: RulePatch) -> Result<Rule> {
+        if patch.is_empty() {
+            return Err(CoreError::InvalidRule(
+                "supply at least one field to edit".into(),
+            ));
+        }
+        let validate =
+            patch.matcher.is_some() || patch.actions.is_some() || patch.enabled == Some(true);
+        let mut rules = self.rules.write();
+        let pos = rules
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(CoreError::NotFound)?;
+        let check_name = patch.name.is_some();
+        let mut rule = rules[pos].clone();
+        patch.apply(&mut rule);
+        if check_name && rule.name.trim().is_empty() {
+            return Err(CoreError::InvalidRule("rule name must not be empty".into()));
+        }
+        if validate {
+            let mut validation = rule.clone();
+            validation.enabled = true;
+            if !RuleSet::new(vec![validation]).errors().is_empty() {
+                return Err(CoreError::InvalidRule(
+                    "invalid regex/glob conditions or actions".into(),
+                ));
+            }
+        }
+        let mut updated = rules.clone();
+        updated[pos] = rule.clone();
+        let compiled = Arc::new(RuleSet::new(updated.clone()));
+        atomic_write_json(&self.path, &updated)?;
+        *rules = updated;
+        *self.ruleset.write() = compiled;
+        Ok(rule)
     }
 
     /// Removes the rule with the given `id`, if present, and persists.
@@ -182,6 +221,72 @@ mod tests {
         let err = store.update("missing", sample_rule("missing")).unwrap_err();
         assert!(matches!(err, CoreError::NotFound));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_does_not_publish_when_validation_or_persistence_fails() {
+        let dir = std::env::temp_dir().join(format!("hamsy-patch-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("rules.json");
+        let store = RulesStore::load(&path);
+        store.create(sample_rule("r1")).unwrap();
+        let original = fs::read(&path).unwrap();
+        let invalid =
+            serde_json::from_str::<RulePatch>(r#"{"match":{"urlOp":"regex","urlValue":"["}}"#)
+                .unwrap();
+        assert!(matches!(
+            store.patch("r1", invalid),
+            Err(CoreError::InvalidRule(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&dir).unwrap();
+        fs::write(&dir, b"blocking file").unwrap();
+        assert!(store
+            .patch(
+                "r1",
+                RulePatch {
+                    enabled: Some(false),
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        assert!(store.get("r1").unwrap().enabled);
+        assert_eq!(store.ruleset().rules().len(), 1);
+        fs::remove_file(&dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_patches_preserve_other_fields_and_persist() {
+        let path = temp_path();
+        let store = Arc::new(RulesStore::load(&path));
+        store.create(sample_rule("r1")).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            for patch in [
+                RulePatch {
+                    name: Some("renamed".into()),
+                    ..Default::default()
+                },
+                RulePatch {
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+            ] {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    store.patch("r1", patch).unwrap();
+                });
+            }
+            barrier.wait();
+        });
+        let rule = RulesStore::load(&path).get("r1").unwrap();
+        assert_eq!(rule.name, "renamed");
+        assert!(!rule.enabled);
+        assert!(store.ruleset().rules().is_empty());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

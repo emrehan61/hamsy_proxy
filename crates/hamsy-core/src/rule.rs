@@ -395,6 +395,115 @@ pub struct Rule {
     pub actions: Vec<Action>,
 }
 
+/// Partial edits to an existing rule. Omitted fields stay unchanged; matching
+/// conditions and action arrays are replaced as complete values when supplied.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RulePatch {
+    /// New human-readable name.
+    #[serde(
+        default,
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub name: Option<String>,
+    /// Explicit active state; repeated assignments never flip the rule.
+    #[serde(
+        default,
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "bool"))]
+    pub enabled: Option<bool>,
+    /// Evaluation order key; lower values run first.
+    #[serde(
+        default,
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "i32"))]
+    pub priority: Option<i32>,
+    /// New UI grouping label. Null clears the label; omission preserves it.
+    #[serde(
+        default,
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group: Option<Option<String>>,
+    /// New notes. Null clears the notes; omission preserves them.
+    #[serde(
+        default,
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub notes: Option<Option<String>>,
+    /// Replace the entire matcher. Supply every condition you want to keep.
+    #[serde(
+        default,
+        rename = "match",
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Matcher"))]
+    pub matcher: Option<Matcher>,
+    /// Replace the complete ordered action array. Supply explicit payload values.
+    #[serde(
+        default,
+        deserialize_with = "patch_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<Action>"))]
+    pub actions: Option<Vec<Action>>,
+}
+
+// Distinguish an omitted field from an explicitly supplied null. Only group
+// and notes accept null; null is a type error for the other fields.
+fn patch_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl RulePatch {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.enabled.is_none()
+            && self.priority.is_none()
+            && self.group.is_none()
+            && self.notes.is_none()
+            && self.matcher.is_none()
+            && self.actions.is_none()
+    }
+
+    pub(crate) fn apply(self, rule: &mut Rule) {
+        if let Some(value) = self.name {
+            rule.name = value;
+        }
+        if let Some(value) = self.enabled {
+            rule.enabled = value;
+        }
+        if let Some(value) = self.priority {
+            rule.priority = value;
+        }
+        if let Some(value) = self.group {
+            rule.group = value;
+        }
+        if let Some(value) = self.notes {
+            rule.notes = value;
+        }
+        if let Some(value) = self.matcher {
+            rule.matcher = value;
+        }
+        if let Some(value) = self.actions {
+            rule.actions = value;
+        }
+    }
+}
+
 /// A rule that failed to compile (e.g. an invalid regex or glob pattern).
 ///
 /// The offending rule is skipped entirely — it never matches or applies —

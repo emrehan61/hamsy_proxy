@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use hamsy_core::{Rule, ServerEvent};
+use hamsy_core::{Rule, RulePatch, ServerEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -43,6 +43,18 @@ pub async fn update(
     Json(rule): Json<Rule>,
 ) -> Result<Json<Rule>, ApiError> {
     state.rules().update(&id, rule.clone())?;
+    state.broadcast(ServerEvent::RulesChanged);
+    Ok(Json(rule))
+}
+
+/// `PATCH /api/rules/:id` — updates supplied fields, preserving all others.
+/// Matcher and action array values replace the corresponding complete field.
+pub async fn patch(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(patch): Json<RulePatch>,
+) -> Result<Json<Rule>, ApiError> {
+    let rule = state.rules().patch(&id, patch)?;
     state.broadcast(ServerEvent::RulesChanged);
     Ok(Json(rule))
 }

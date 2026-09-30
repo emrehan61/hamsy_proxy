@@ -57,7 +57,9 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/rules/{id}",
-            put(routes::rules::update).delete(routes::rules::delete),
+            put(routes::rules::update)
+                .patch(routes::rules::patch)
+                .delete(routes::rules::delete),
         )
         .route("/rules/{id}/toggle", post(routes::rules::toggle))
         .route("/rules/reorder", post(routes::rules::reorder))

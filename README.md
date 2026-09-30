@@ -20,7 +20,7 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## MCP beta (w-mcp-beta)
 
-This branch builds **0.5.0-beta.4**, with an agent interface bundled in the same
+This branch builds **0.5.0-beta.5**, with an agent interface bundled in the same
 `hamsy` binary. Download your platform's artifact from the **Release** workflow
 run for `w-mcp-beta`, extract the `.tar.gz`, and use that binary explicitly.
 Branch pushes build artifacts; they do not publish a stable GitHub release.
@@ -45,7 +45,9 @@ can discover live capture and open HAR sessions, inspect traffic, settings and
 rules, read bundled instructions, and export
 redacted HAR summaries. For rule changes, pause/resume and real request replay,
 use `hamsy mcp --allow-writes --print-config`. Both connections operate on the same
-running app and web UI. See the [bundled agent guide](docs/AGENT_GUIDE.md) for
+running app and web UI. With writes enabled, agents can create rules, edit only
+selected fields with `edit_rule`, and enable/disable existing rules by ID with
+`set_rule_enabled`, preserving untouched private payloads. See the [bundled agent guide](docs/AGENT_GUIDE.md) for
 setup, tools, limits, privacy behavior and troubleshooting.
 
 Start with `list_sessions`, then pass the returned `sessionId` to `list_flows`,

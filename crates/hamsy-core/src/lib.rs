@@ -29,7 +29,7 @@ pub use passthrough_presets::Preset;
 pub use rule::{
     Action, BodyCond, BodyCondOp, HeaderCond, HeaderOp, JsonOp, JsonOpKind, Matcher,
     MockedResponse, PayloadEncoding, RequestCtx, RequestOutcome, ResponseCtx, ResponseOutcome,
-    Rule, RuleError, RuleSet, UrlOp,
+    Rule, RuleError, RulePatch, RuleSet, UrlOp,
 };
 pub use rules_store::RulesStore;
 pub use settings::{data_dir, Settings};

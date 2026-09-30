@@ -41,7 +41,8 @@ reference are embedded in the release binary; a source checkout is unnecessary.
    in-memory traffic; export anything you need first.
 
 The default connection is read-only. To enable rule creation/replacement/deletion,
-capture pause/resume, and real upstream replay, generate configuration with
+partial edits and enable/disable, capture pause/resume, and real upstream replay,
+generate configuration with
 `hamsy mcp --allow-writes --print-config` and restart the MCP connection. This
 option is a local launch decision, not a tool the agent can turn on. Tool discovery
 only lists the enabled actions, and the server enforces the same restriction on
@@ -152,9 +153,33 @@ across calls; cleared, evicted or restarted capture data may disappear.
 
 ## Modify and reproduce
 
-`create_rule` takes a complete `rule` object without an id. `update_rule` takes
-a complete replacement with its existing id. `delete_rule` takes the id. Writes
-use the running app's API so the web UI, rule engine and persisted rules agree.
+`list_rules` includes enabled and disabled rules created through either the web
+UI or an agent. Use each rule's exact `id` to change it. Rule writes require a
+connection configured with `hamsy mcp --allow-writes --print-config`; add the
+printed configuration and reconnect the agent. The write connection exposes 16
+tools (9 read tools and 7 write tools).
+
+- `create_rule` takes a complete `rule` object without an id.
+- `edit_rule` takes `id` and a `patch` containing only fields to change: `name`,
+  `enabled`, `priority`, `group`, `notes`, `match`, or `actions`. Omitted fields
+  remain exactly as stored, including hidden body content and credentials.
+  `match` replaces the entire matcher and `actions` replaces the entire ordered
+  action array; include every condition/action you want to keep when changing
+  either field. `group` and `notes` accept null to clear them. Other fields do
+  not accept null. Empty patches and invalid patterns are rejected.
+- `set_rule_enabled` takes `id` and `enabled: true` or `false`. This assigns an
+  explicit state, so repeating the same call keeps that state. Every other
+  field is preserved. Disabling can also stop an existing invalid rule;
+  enabling validates its matcher and actions.
+- `update_rule` takes a complete replacement with its existing id. Use it only
+  when you have explicit values for the entire rule; masked `list_rules` results
+  must never be used as replacement input.
+- `delete_rule` takes the id.
+
+Changes use the running app's API so the web UI, rule engine and persisted rules
+agree immediately. Edits and enable/disable require beta.5 or later for both the
+MCP binary and running app. Reconnect MCP after updating; if reusing an older
+manually started app, restart it with the updated binary.
 Use a narrow URL/host matcher and remove temporary test rules after the task.
 The full rule reference is available at `hamsy://docs/rules`; schemas are also
 included in tool discovery.
@@ -181,6 +206,24 @@ Example `create_rule` arguments:
 }
 ```
 
+For a rule returned by `list_rules` with id `rule-id`, rename it without
+resending its matcher or body payload:
+
+```json
+{"id":"rule-id","patch":{"name":"Checkout unavailable","priority":10}}
+```
+
+Disable or enable the same rule with `set_rule_enabled`:
+
+```json
+{"id":"rule-id","enabled":false}
+```
+
+Use `enabled: true` to enable it again. A response acknowledges `id`, `name`,
+`enabled`, and `applied`; it does not echo private payloads. Invalid edits leave
+stored rules unchanged. Check `list_rules` or the web UI after a timed-out write
+before deciding whether to retry.
+
 `set_capture` takes `paused: true` or `false`; pausing recording does not stop
 proxying or disable rules. `replay_request` takes a captured flow UUID and sends
 its original request through Hamsy again, with current rules. It can repeat real
@@ -203,7 +246,7 @@ best-effort redaction. Arbitrary text, custom header names and unusual credentia
 formats can still contain secrets. Request body previews only when needed. Rule
 payloads are omitted and other sensitive rule values are masked: never save a
 redacted `list_rules` result as a replacement rule. Construct the intended rule
-from explicit values instead. The bridge never reads the CA private key.
+from explicit values instead, or use `edit_rule` to preserve omitted fields. The bridge never reads the CA private key.
 
 The app's existing UI/API is unauthenticated and may bind to all network interfaces
 by default. The loopback launch above keeps local debugging local. The MCP bridge

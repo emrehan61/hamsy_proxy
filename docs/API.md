@@ -424,6 +424,16 @@ PUT    /api/rules/:id
                      -> 200 Rule
                      -> 404 if `:id` doesn't exist
 
+PATCH  /api/rules/:id
+        body: {"enabled": false} or other supplied rule fields
+              (name, enabled, priority, group, notes, match, actions)
+              Omitted fields are preserved. match/actions replace whole fields;
+              group/notes accept null to clear. id cannot be changed.
+                     -> 200 Rule; persists and broadcasts rulesChanged
+                     -> 400 for empty edits, blank names or invalid patterns
+                     -> 422 for invalid field types or unknown top-level fields
+                     -> 404 if `:id` doesn't exist
+
 DELETE /api/rules/:id
                      -> 204
                      -> 404 if `:id` doesn't exist

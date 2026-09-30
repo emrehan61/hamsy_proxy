@@ -82,6 +82,7 @@ impl IntoResponse for ApiError {
 impl From<hamsy_core::CoreError> for ApiError {
     fn from(err: hamsy_core::CoreError) -> Self {
         match err {
+            hamsy_core::CoreError::InvalidRule(detail) => ApiError::BadRequest(detail),
             hamsy_core::CoreError::NotFound => ApiError::NotFound("not found".to_string()),
             other => ApiError::Internal(other.to_string()),
         }

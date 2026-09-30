@@ -682,7 +682,7 @@ async fn writes_share_live_state_and_replay_is_single_shot() {
     let flow_id = app.seed();
     let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
     let response = client.rpc("tools/list", json!({})).await;
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 14);
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 16);
     let rule = json!({"name":"fixture", "match":{"urlOp":"equals", "urlValue":"https://example.test/checkout"},
         "actions":[{"type":"mockResponse","status":200,"body":"ok"}]});
     let response = client.call("create_rule", json!({"rule":rule})).await;
@@ -724,6 +724,145 @@ async fn writes_share_live_state_and_replay_is_single_shot() {
     assert_eq!(app.replay_count.load(Ordering::SeqCst), 1);
     result(&client.call("delete_rule", json!({"id":id})).await);
     assert!(app.state.rules().list().is_empty());
+    client.close().await;
+}
+
+#[tokio::test]
+async fn rule_edits_and_explicit_enable_preserve_current_private_values() {
+    let app = App::start().await;
+    // Simulate a current rule authored in the web UI, rather than by this agent.
+    let original = json!({"id":"ui-fixture", "name":"from UI", "group":"fixtures", "notes":"keep notes", "enabled":true,
+        "match":{"urlOp":"equals","urlValue":"https://example.test/?token=PRIVATE_TOKEN"},
+        "actions":[{"type":"mockResponse","status":201,"body":"PRIVATE_BODY","headers":[{"name":"Authorization","value":"PRIVATE_HEADER"}]}]});
+    app.state
+        .rules()
+        .create(serde_json::from_value(original).unwrap())
+        .unwrap();
+    let original = serde_json::to_value(app.state.rules().get("ui-fixture").unwrap()).unwrap();
+    let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
+    let listed = client.call("list_rules", json!({})).await;
+    assert_eq!(result(&listed)["rules"][0]["id"], "ui-fixture");
+    for secret in ["PRIVATE_TOKEN", "PRIVATE_BODY", "PRIVATE_HEADER"] {
+        assert!(!listed.to_string().contains(secret));
+    }
+    let tools = client.rpc("tools/list", json!({})).await;
+    for name in ["edit_rule", "set_rule_enabled"] {
+        let tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool["annotations"]["idempotentHint"], true);
+    }
+    result(
+        &client
+            .call(
+                "edit_rule",
+                json!({"id":"ui-fixture","patch":{"name":"renamed","priority":-5,"group":null}}),
+            )
+            .await,
+    );
+    for enabled in [false, false, true, true] {
+        let response = client
+            .call(
+                "set_rule_enabled",
+                json!({"id":"ui-fixture", "enabled":enabled}),
+            )
+            .await;
+        let ack = result(&response);
+        assert_eq!(ack["enabled"], enabled);
+        assert!(!response.to_string().contains("PRIVATE_"));
+        let current = serde_json::to_value(app.state.rules().get("ui-fixture").unwrap()).unwrap();
+        assert_eq!(current["name"], "renamed");
+        assert_eq!(current["priority"], -5);
+        assert_eq!(current["group"], Value::Null);
+        for field in ["id", "notes", "match", "actions"] {
+            assert_eq!(current[field], original[field]);
+        }
+        assert_eq!(
+            app.state.rules().ruleset().rules().len(),
+            usize::from(enabled)
+        );
+        let reloaded = RulesStore::load(&app._home.path().join("rules.json"));
+        assert_eq!(
+            serde_json::to_value(reloaded.get("ui-fixture").unwrap()).unwrap(),
+            current
+        );
+    }
+    let actions = json!([{"type":"mockResponse","status":503,"body":"new explicit body"}]);
+    result(
+        &client
+            .call(
+                "edit_rule",
+                json!({"id":"ui-fixture","patch":{"actions":actions,"notes":null}}),
+            )
+            .await,
+    );
+    let current = serde_json::to_value(app.state.rules().get("ui-fixture").unwrap()).unwrap();
+    assert_eq!(current["actions"][0]["status"], 503);
+    assert_eq!(current["actions"][0]["body"], "new explicit body");
+    assert_eq!(current["match"], original["match"]);
+    assert_eq!(current["notes"], Value::Null);
+    for patch in [
+        json!({}),
+        json!({"name":" "}),
+        json!({"id":"changed"}),
+        json!({"typo":true}),
+        json!({"actions":null}),
+        json!({"match":{"urlOp":"regex","urlValue":"["}}),
+        json!({"actions":[{"type":"mockResponse","body":"[rule payload omitted]"}]}),
+        json!({"notes":"[REDACTED]"}),
+    ] {
+        tool_error(
+            &client
+                .call("edit_rule", json!({"id":"ui-fixture","patch":patch}))
+                .await,
+        );
+        assert_eq!(
+            serde_json::to_value(app.state.rules().get("ui-fixture").unwrap()).unwrap(),
+            current
+        );
+    }
+    for (tool, args) in [
+        ("edit_rule", json!({"id":"missing","patch":{"name":"x"}})),
+        (
+            "edit_rule",
+            json!({"id":"../settings","patch":{"enabled":true}}),
+        ),
+        ("set_rule_enabled", json!({"id":"missing","enabled":true})),
+        (
+            "set_rule_enabled",
+            json!({"id":"ui-fixture","enabled":null}),
+        ),
+        (
+            "set_rule_enabled",
+            json!({"id":"ui-fixture","enabled":false,"typo":true}),
+        ),
+    ] {
+        tool_error(&client.call(tool, args).await);
+    }
+    let mut reader = Mcp::start(&app.url, false, "2025-11-25").await;
+    for (tool, args) in [
+        ("create_rule", json!({"rule":original})),
+        ("update_rule", json!({"rule":original})),
+        (
+            "edit_rule",
+            json!({"id":"ui-fixture","patch":{"name":"reader"}}),
+        ),
+        (
+            "set_rule_enabled",
+            json!({"id":"ui-fixture","enabled":false}),
+        ),
+    ] {
+        tool_error(&reader.call(tool, args).await);
+    }
+    assert_eq!(
+        serde_json::to_value(app.state.rules().get("ui-fixture").unwrap()).unwrap(),
+        current
+    );
+    reader.close().await;
     client.close().await;
 }
 
