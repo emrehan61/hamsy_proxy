@@ -703,7 +703,12 @@ impl Bridge {
                     format!("sessions/{session}/har")
                 };
                 let har = target
-                    .request(Method::GET, &path, vec![("ids", ids.join(","))], None)
+                    .request(
+                        Method::GET,
+                        &path,
+                        vec![("ids", ids.join(",")), ("includeBodies", "false".into())],
+                        None,
+                    )
                     .await?;
                 json!({"har": har, "sessionId":a.session_id.unwrap_or_else(|| "app:live".into()), "requestedCount": ids.len(), "bodiesOmitted": true, "redacted": true})
             }

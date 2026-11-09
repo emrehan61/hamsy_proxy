@@ -677,6 +677,120 @@ async fn live_reads_are_bounded_redacted_and_do_not_change_capture() {
 }
 
 #[tokio::test]
+async fn omitted_live_payloads_do_not_hit_the_bridge_response_limit() {
+    let app = App::start().await;
+    let id = app.seed();
+    let uuid = uuid::Uuid::parse_str(&id).unwrap();
+    let body_bytes = 5 * 1024 * 1024;
+    app.state.flows().update(uuid, |flow| {
+        let body = hamsy_core::BodyPayload {
+            kind: hamsy_core::BodyKind::Text,
+            data: "x".repeat(body_bytes),
+            size: body_bytes as u64,
+            ..Default::default()
+        };
+        flow.request.as_mut().unwrap().body = body.clone();
+        flow.response.as_mut().unwrap().body = body;
+        flow.original_request = flow.request.clone();
+        flow.original_response = flow.response.clone();
+        flow.ws_messages.push(hamsy_core::WsMessage {
+            direction: hamsy_core::WsDirection::Recv,
+            opcode: "text".into(),
+            timestamp: 0,
+            data: "w".repeat(9 * 1024 * 1024),
+            size: 9 * 1024 * 1024,
+        });
+    });
+    let mut client = Mcp::start(&app.url, false, "2025-11-25").await;
+    let response = client.call("get_flow", json!({"id":id})).await;
+    let flow = result(&response);
+    for key in ["request", "response", "originalRequest", "originalResponse"] {
+        assert_eq!(flow[key]["body"]["agentOmitted"], true);
+        assert_eq!(flow[key]["body"]["size"], body_bytes);
+    }
+    assert_eq!(flow["wsMessages"], json!([]));
+
+    let response = client.call("export_har", json!({"ids":[id]})).await;
+    let entry = &result(&response)["har"]["log"]["entries"][0];
+    assert_eq!(entry["request"]["bodySize"], body_bytes);
+    assert_eq!(entry["response"]["content"]["size"], body_bytes);
+    assert!(entry["request"].get("postData").is_none());
+    assert!(entry["response"]["content"].get("text").is_none());
+
+    // Opting into bodies retains the fail-closed transfer limit. Previews are
+    // redacted before shortening so partial JSON cannot bypass key redaction.
+    tool_error(
+        &client
+            .call("get_flow", json!({"id":id,"includeBodies":true}))
+            .await,
+    );
+
+    // Ordinary browser/API callers still receive original payloads by default.
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let full: Value = http
+        .get(format!("{}/api/flows/{id}", app.url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        full["request"]["body"]["data"].as_str().unwrap().len(),
+        body_bytes
+    );
+    assert_eq!(
+        full["originalResponse"]["body"]["data"]
+            .as_str()
+            .unwrap()
+            .len(),
+        body_bytes
+    );
+    assert_eq!(
+        full["wsMessages"][0]["data"].as_str().unwrap().len(),
+        9 * 1024 * 1024
+    );
+    let har: Value = http
+        .get(format!("{}/api/har?ids={id}", app.url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let entry = &har["log"]["entries"][0];
+    assert_eq!(
+        entry["request"]["postData"]["text"].as_str().unwrap().len(),
+        body_bytes
+    );
+    assert_eq!(
+        entry["response"]["content"]["text"].as_str().unwrap().len(),
+        body_bytes
+    );
+    app.state.flows().update(uuid, |flow| {
+        for body in [
+            &mut flow.request.as_mut().unwrap().body,
+            &mut flow.response.as_mut().unwrap().body,
+            &mut flow.original_request.as_mut().unwrap().body,
+            &mut flow.original_response.as_mut().unwrap().body,
+        ] {
+            body.data = r#"{"password":"PRIVATE","message":"hello"}"#.into();
+        }
+    });
+    let response = client
+        .call("get_flow", json!({"id":id,"includeBodies":true}))
+        .await;
+    let flow = result(&response);
+    assert_eq!(flow["wsMessages"], json!([]));
+    assert!(flow["request"]["body"]["data"]
+        .as_str()
+        .unwrap()
+        .contains("hello"));
+    assert!(!response.to_string().contains("PRIVATE"));
+    client.close().await;
+}
+
+#[tokio::test]
 async fn writes_share_live_state_and_replay_is_single_shot() {
     let app = App::start().await;
     let flow_id = app.seed();

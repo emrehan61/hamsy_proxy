@@ -389,6 +389,11 @@ GET    /api/flows?limit=&afterSeq=&q=&methods=&statusClass=&resourceTypes=&host=
 
 GET    /api/flows/:id
                      -> 200 Flow
+                     Bodies and WebSocket messages are included by default.
+                     `includeBodies=false` empties body data in request,
+                     response and their originals; body sizes and capture
+                     metadata are retained. Either explicit `includeBodies`
+                     value omits WebSocket messages from detail responses.
                      -> 404 if `:id` isn't a valid UUID, or is valid but
                         unknown
 
@@ -532,6 +537,9 @@ GET    /api/har?ids=a,b
                      -> 200 HAR 1.2 document (export_har), served as a file
                         download (Content-Disposition: attachment). Omit
                         `ids` to export every captured flow.
+                     Bodies are included by default. `includeBodies=false`
+                     omits request postData and response content text/encoding
+                     before serialization, retaining body sizes.
 
 POST   /api/har/import
         body: HAR 1.2 document

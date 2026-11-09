@@ -117,17 +117,44 @@ fn parse_flow_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::NotFound(format!("'{raw}' is not a valid flow id")))
 }
 
-/// `GET /api/flows/:id` — returns the full [`hamsy_core::Flow`] detail.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowDetailQuery {
+    include_bodies: Option<bool>,
+}
+
+/// `GET /api/flows/:id` — full detail unless `includeBodies=false` is explicit.
 pub async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    Query(params): Query<FlowDetailQuery>,
 ) -> Result<Json<hamsy_core::Flow>, ApiError> {
     let flow_id = parse_flow_id(&id)?;
-    state
+    let mut flow = state
         .flows()
         .get(flow_id)
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("flow {flow_id} not found")))
+        .ok_or_else(|| ApiError::NotFound(format!("flow {flow_id} not found")))?;
+    if params.include_bodies == Some(false) {
+        for body in [
+            flow.request.as_mut().map(|record| &mut record.body),
+            flow.response.as_mut().map(|record| &mut record.body),
+            flow.original_request
+                .as_mut()
+                .map(|record| &mut record.body),
+            flow.original_response
+                .as_mut()
+                .map(|record| &mut record.body),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            body.data.clear();
+        }
+    }
+    if params.include_bodies.is_some() {
+        flow.ws_messages.clear();
+    }
+    Ok(Json(flow))
 }
 
 /// `DELETE /api/flows` — clears the flow store and broadcasts

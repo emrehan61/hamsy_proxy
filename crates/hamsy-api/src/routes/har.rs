@@ -6,7 +6,7 @@ use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use hamsy_core::{export_har_refs, import_har, ServerEvent};
+use hamsy_core::{har::export_har_refs_with_bodies, import_har, ServerEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -18,6 +18,8 @@ use crate::ApiState;
 #[derive(Debug, Deserialize)]
 pub struct HarQueryParams {
     ids: Option<String>,
+    #[serde(rename = "includeBodies")]
+    include_bodies: Option<bool>,
 }
 
 /// `GET /api/har?ids=a,b` — exports the whole session (or just the given
@@ -43,7 +45,11 @@ pub async fn export(
     // doesn't stall this async worker thread.
     let version = state.version().to_string();
     let body = tokio::task::spawn_blocking(move || {
-        let har = export_har_refs(flows.iter().map(|flow| flow.as_ref()), &version);
+        let har = export_har_refs_with_bodies(
+            flows.iter().map(|flow| flow.as_ref()),
+            &version,
+            params.include_bodies.unwrap_or(true),
+        );
         serde_json::to_vec(&har)
     })
     .await

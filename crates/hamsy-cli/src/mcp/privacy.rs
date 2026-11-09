@@ -120,6 +120,30 @@ pub(super) fn sanitize(value: &mut Value, include_bodies: bool, limit: usize) {
             if obj.contains_key("mimeType") && obj.contains_key("params") {
                 obj.remove("params");
             }
+            for key in ["requestBody", "responseBody"] {
+                if let Some(value) = obj
+                    .get_mut(key)
+                    .and_then(|condition| condition.get_mut("value"))
+                {
+                    *value = json!("[rule payload omitted]");
+                }
+            }
+            let replaces_body = matches!(
+                obj.get("type").and_then(Value::as_str),
+                Some("replaceInRequestBody" | "replaceInResponseBody")
+            );
+            if matches!(
+                obj.get("type").and_then(Value::as_str),
+                Some("jsonPatchRequest" | "jsonPatchResponse")
+            ) {
+                if let Some(ops) = obj.get_mut("ops").and_then(Value::as_array_mut) {
+                    for op in ops {
+                        if let Some(value) = op.get_mut("value").filter(|value| !value.is_null()) {
+                            *value = json!("[rule payload omitted]");
+                        }
+                    }
+                }
+            }
             for (key, item) in obj.iter_mut() {
                 if sensitive(key) {
                     *item = if item.is_array() {
@@ -134,14 +158,25 @@ pub(super) fn sanitize(value: &mut Value, include_bodies: bool, limit: usize) {
                     *item = json!([]);
                     continue;
                 }
-                if matches!(key.as_str(), "body" | "replacement") && item.is_string() {
+                if (matches!(key.as_str(), "body" | "replacement")
+                    || (replaces_body && matches!(key.as_str(), "find" | "replace")))
+                    && item.is_string()
+                {
                     *item = json!("[rule payload omitted]");
                     continue;
                 }
                 if let Value::String(text) = item {
                     if matches!(
                         key.as_str(),
-                        "url" | "path" | "upstreamProxy" | "value" | "urlValue" | "redirectURL"
+                        "url"
+                            | "path"
+                            | "upstreamProxy"
+                            | "value"
+                            | "urlValue"
+                            | "redirectURL"
+                            | "to"
+                            | "find"
+                            | "replace"
                     ) {
                         *text = redact_url(text);
                     }
@@ -175,6 +210,91 @@ fn redact_body(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_serialized_rule_body_replacements_and_url_actions() {
+        use hamsy_core::{Action, JsonOp, JsonOpKind};
+
+        let mut value = serde_json::to_value(vec![
+            Action::ReplaceInRequestBody {
+                find: "PRIVATE_REQUEST_MATCH".into(),
+                replace: "PRIVATE_REQUEST_PAYLOAD".into(),
+                regex: false,
+            },
+            Action::ReplaceInResponseBody {
+                find: "PRIVATE_RESPONSE_MATCH".into(),
+                replace: "PRIVATE_RESPONSE_PAYLOAD".into(),
+                regex: true,
+            },
+            Action::Redirect {
+                to: "https://user:PRIVATE_PASSWORD@example.test/?token=PRIVATE_TOKEN&item=4".into(),
+            },
+            Action::RewriteUrl {
+                find: "https://old.test/?token=PRIVATE_OLD_TOKEN&item=4".into(),
+                replace: "https://example.test/?api_key=PRIVATE_KEY&item=4".into(),
+                regex: false,
+            },
+            Action::JsonPatchRequest {
+                ops: vec![JsonOp {
+                    op: JsonOpKind::Set,
+                    path: "password".into(),
+                    value: Some(json!("PRIVATE_PATCH_REQUEST")),
+                }],
+            },
+            Action::JsonPatchResponse {
+                ops: vec![JsonOp {
+                    op: JsonOpKind::Merge,
+                    path: "data".into(),
+                    value: Some(json!({"unrecognized": "PRIVATE_PATCH_RESPONSE"})),
+                }],
+            },
+        ])
+        .unwrap();
+
+        sanitize(&mut value, true, 4096);
+
+        assert!(!value.to_string().contains("PRIVATE_"), "{value}");
+        for action in value.as_array().unwrap().iter().take(2) {
+            assert_eq!(action["find"], "[rule payload omitted]");
+            assert_eq!(action["replace"], "[rule payload omitted]");
+        }
+        assert_eq!(value[0]["regex"], false);
+        assert_eq!(value[1]["regex"], true);
+        assert!(value[2]["to"].as_str().unwrap().contains("item=4"));
+        assert!(value[3]["find"].as_str().unwrap().contains("item=4"));
+        assert!(value[3]["replace"].as_str().unwrap().contains("item=4"));
+        assert_eq!(value[4]["ops"][0]["path"], "password");
+        assert_eq!(value[5]["ops"][0]["op"], "merge");
+        assert_eq!(value[4]["ops"][0]["value"], "[rule payload omitted]");
+        assert_eq!(value[5]["ops"][0]["value"], "[rule payload omitted]");
+    }
+
+    #[test]
+    fn omits_serialized_body_conditions_but_preserves_operators() {
+        use hamsy_core::{BodyCond, BodyCondOp, Matcher};
+
+        let mut value = serde_json::to_value(Matcher {
+            request_body: Some(BodyCond {
+                op: BodyCondOp::Contains,
+                value: "PRIVATE_REQUEST_MATCH".into(),
+            }),
+            response_body: Some(BodyCond {
+                op: BodyCondOp::Regex,
+                value: "PRIVATE_RESPONSE_MATCH".into(),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+
+        sanitize(&mut value, true, 4096);
+
+        assert!(!value.to_string().contains("PRIVATE_"), "{value}");
+        assert_eq!(value["requestBody"]["op"], "contains");
+        assert_eq!(value["responseBody"]["op"], "regex");
+        assert_eq!(value["requestBody"]["value"], "[rule payload omitted]");
+        assert_eq!(value["responseBody"]["value"], "[rule payload omitted]");
+    }
+
     #[test]
     fn redacts_nested_credentials_originals_and_har_without_touching_unrelated_values() {
         let mut value = json!({

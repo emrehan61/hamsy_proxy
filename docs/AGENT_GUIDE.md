@@ -100,9 +100,14 @@ calls. Existing permissions in the agent's host still apply.
   Use the web UI's normal HAR export for an original full capture.
 
 Tool results are limited to 256 KiB and upstream responses to 8 MiB. Narrow the
-selection or omit bodies if the app reports a size limit. An imported detail
-with text bodies larger than 8 MiB must be read with `includeBodies: false`; the
-preview limit applies after transfer to the bridge. Captured
+selection or omit bodies if the app reports a size limit. With
+`includeBodies: true`, the 8 MiB limit counts the full response before redaction:
+all retained request/response bodies and originals, including binary data, and
+other flow metadata. WebSocket messages are omitted before transfer. Use
+`includeBodies: false` for oversized flows. The
+preview limit applies after transfer so full JSON/form bodies can be redacted
+before being shortened. Default detail reads and agent HAR exports omit
+payloads before transfer. Captured
 flows live in a bounded in-memory store and can be evicted or disappear on restart.
 
 ## Full text and regex search, including live capture
