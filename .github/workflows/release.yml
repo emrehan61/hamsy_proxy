@@ -3,9 +3,13 @@ name: Release
 on:
   push:
     branches:
+      - "master"
       - "w-mcp-beta"
     tags:
       - "v*"
+  pull_request:
+    branches:
+      - "master"
   workflow_dispatch:
     inputs:
       tag_name:

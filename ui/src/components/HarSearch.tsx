@@ -1,14 +1,15 @@
 import type { Component } from "solid-js";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { createVirtualizer } from "@tanstack/solid-virtual";
-import type { Flow } from "../lib/types";
+import type { Flow, FlowSummary } from "../lib/types";
 import type { HarSearchMatch, HarSearchResult } from "../lib/harSearch";
 import TextInput from "./TextInput";
 import Toggle from "./Toggle";
 
 const HarSearch: Component<{
   flows: Flow[];
-  filteredFlows: Flow[];
+  filteredFlows: FlowSummary[];
+  label?: string;
   active: boolean;
   onSelect: (match: HarSearchMatch) => void;
 }> = (props) => {
@@ -44,7 +45,11 @@ const HarSearch: Component<{
     const id = ++searchId;
     setResult({ matches: [], requestCount: 0, error: null });
     setBusy(active && text.length > 0);
-    if (!active || text.length === 0) return;
+    if (!active) {
+      stopWorker();
+      return;
+    }
+    if (text.length === 0) return;
 
     let inFlight = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -100,9 +105,9 @@ const HarSearch: Component<{
   });
 
   return (
-    <section class="har-search" aria-label="Search HAR contents" style={{ display: props.active ? "flex" : "none" }}>
+    <section class="har-search" aria-label={props.label ?? "Search HAR contents"} style={{ display: props.active ? "flex" : "none" }}>
       <div class="har-search__controls">
-        <TextInput value={query()} onInput={setQuery} placeholder="Search all request and response contents…" aria-label="Search HAR contents" icon="search" ref={(el) => { input = el; }} />
+        <TextInput value={query()} onInput={setQuery} placeholder="Search all request and response contents…" aria-label={props.label ?? "Search HAR contents"} icon="search" ref={(el) => { input = el; }} />
         <Toggle checked={regex()} onChange={setRegex} label="Regex" />
         <Toggle checked={caseSensitive()} onChange={setCaseSensitive} label="Match case" />
       </div>

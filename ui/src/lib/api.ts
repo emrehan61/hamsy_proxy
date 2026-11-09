@@ -102,8 +102,8 @@ export function listFlows(params: FlowListParams = {}): Promise<{ flows: FlowSum
   return request<{ flows: FlowSummary[] }>(`/flows${qs}`);
 }
 
-export function getFlow(id: string): Promise<Flow> {
-  return request<Flow>(`/flows/${encodeURIComponent(id)}`);
+export function getFlow(id: string, signal?: AbortSignal): Promise<Flow> {
+  return request<Flow>(`/flows/${encodeURIComponent(id)}`, { signal, cache: "no-store" });
 }
 
 export function clearFlows(): Promise<void> {

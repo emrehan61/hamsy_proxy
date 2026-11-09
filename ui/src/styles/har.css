@@ -147,6 +147,26 @@
   min-height: 0;
 }
 
+.session-search {
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.session-search > .har-search {
+  flex: 1;
+}
+
+.session-search__snapshot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
 .har-search__controls {
   display: flex;
   flex-wrap: wrap;

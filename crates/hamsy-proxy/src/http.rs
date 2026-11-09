@@ -775,6 +775,8 @@ fn align_h2_authority_with_host(parts: &mut http::request::Parts) {
 ///   discards it) is preferred over deriving one from `url` - see
 ///   [`ensure_host_header`]'s doc for why this matters for a rewrite rule
 ///   that changed the request's host.
+///   Joins split `Cookie` fields with `; ` (RFC 9113 §8.2.3), so an HTTP/1
+///   session middleware sees every cookie rather than just the first field.
 /// - Non-HTTP/2 request onto an HTTP/2 sender: upgrades to HTTP/2 and
 ///   rewrites the URI to absolute-form, since h2 derives its
 ///   `:authority`/`:scheme` pseudo-headers from the URI itself (see
@@ -794,6 +796,7 @@ pub(crate) fn adapt_request_to_sender(
     match sender_version {
         HttpVersion::Http1 if parts.version == http::Version::HTTP_2 => {
             parts.version = http::Version::HTTP_11;
+            join_cookie_headers(&mut parts.headers);
             // Captured before the origin-form rewrite below discards it.
             // See `ensure_host_header`'s doc for why this - not `url` - is
             // the right source for the `Host` this downgrade needs.
@@ -813,6 +816,27 @@ pub(crate) fn adapt_request_to_sender(
             align_h2_authority_with_host(parts);
         }
         _ => {}
+    }
+}
+
+/// HTTP/2 permits splitting Cookie fields for compression. HTTP/1 requires
+/// those values concatenated with a semicolon and space, not a comma.
+fn join_cookie_headers(headers: &mut HeaderMap) {
+    let cookies = headers.get_all(http::header::COOKIE);
+    let mut values = cookies.iter();
+    let Some(first) = values.next() else { return };
+    let Some(second) = values.next() else { return };
+    let mut joined = first.as_bytes().to_vec();
+    let mut sensitive = first.is_sensitive();
+    for value in std::iter::once(second).chain(values) {
+        joined.extend_from_slice(b"; ");
+        joined.extend_from_slice(value.as_bytes());
+        sensitive |= value.is_sensitive();
+    }
+    // Valid header values remain valid when joined with this delimiter.
+    if let Ok(mut value) = http::HeaderValue::from_bytes(&joined) {
+        value.set_sensitive(sensitive);
+        headers.insert(http::header::COOKIE, value);
     }
 }
 
@@ -1863,6 +1887,45 @@ mod tests {
     }
 
     // ----- Bug 2: outbound request must match the actual sender's version -----
+
+    #[test]
+    fn cookie_downgrade_preserves_values_and_only_joins_request_cookies() {
+        let url = url::Url::parse("https://example.com/login").unwrap();
+        for cookie_values in [
+            vec![],
+            vec!["session=one; prefs=dark"],
+            vec!["analytics=one", "prefs=dark; locale=en", "session=two"],
+        ] {
+            for sender in [HttpVersion::Http1, HttpVersion::Http2] {
+                let (mut parts, _) = Request::builder()
+                    .uri(url.as_str())
+                    .version(http::Version::HTTP_2)
+                    .header("x-repeat", "first")
+                    .header("x-repeat", "second")
+                    .body(())
+                    .unwrap()
+                    .into_parts();
+                for cookie in &cookie_values {
+                    let mut value = http::HeaderValue::from_str(cookie).unwrap();
+                    value.set_sensitive(cookie.starts_with("session="));
+                    parts.headers.append(http::header::COOKIE, value);
+                }
+                adapt_request_to_sender(&mut parts, sender, false, &url);
+                let actual: Vec<_> = parts.headers.get_all("cookie").iter().collect();
+                if sender == HttpVersion::Http1 && !cookie_values.is_empty() {
+                    assert_eq!(actual.len(), 1);
+                    assert_eq!(actual[0].to_str().unwrap(), cookie_values.join("; "));
+                    assert!(actual[0].is_sensitive());
+                } else {
+                    assert_eq!(actual.len(), cookie_values.len());
+                    for (actual, expected) in actual.iter().zip(&cookie_values) {
+                        assert_eq!(*actual, *expected);
+                    }
+                }
+                assert_eq!(parts.headers.get_all("x-repeat").iter().count(), 2);
+            }
+        }
+    }
 
     #[test]
     fn adapt_request_to_sender_downgrades_h2_to_h1_and_sets_host() {
