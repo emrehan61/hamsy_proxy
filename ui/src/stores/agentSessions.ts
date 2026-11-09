@@ -5,6 +5,7 @@ import { activeSessionId, getHarSession, loadSessionFromDb, sessions } from "./h
 import type { Flow } from "../lib/types";
 import type { AgentSearchParams } from "../lib/agentSearch";
 import { readSession, type SessionRead } from "../lib/sessionReads";
+import { prepareContext, type ContextParams } from "../lib/agentContext";
 
 export function startAgentSessions(): () => void {
   return createRoot(dispose => {
@@ -13,8 +14,31 @@ export function startAgentSessions(): () => void {
     let disposed = false;
     let retry = 500;
     const searches = new Set<() => void>();
+    const context = (flow: Flow | undefined, params: ContextParams): Promise<unknown> => {
+      if (!flow) return Promise.resolve({ error: { code: "session_unavailable" } });
+      if (searches.size >= 2) return Promise.resolve({ error: { code: "busy" } });
+      let prepared: ReturnType<typeof prepareContext>;
+      try { prepared = prepareContext(flow, params); }
+      catch { return Promise.resolve({ error: { code: "invalid_arguments" } }); }
+      return new Promise(resolve => {
+        const worker = new Worker(new URL("../lib/agentContext.worker.ts", import.meta.url), { type: "module" });
+        const finish = (result: unknown) => {
+          clearTimeout(timeout);
+          worker.terminate();
+          searches.delete(cancel);
+          resolve(result);
+        };
+        const cancel = () => finish({ error: { code: "timeout" } });
+        const timeout = setTimeout(cancel, 6000);
+        searches.add(cancel);
+        worker.onmessage = event => finish(event.data);
+        worker.onerror = () => finish({ error: { code: "session_unavailable" } });
+        try { worker.postMessage({ prepared, params }); }
+        catch { finish({ error: { code: "session_unavailable" } }); }
+      });
+    };
     const search = (flows: Flow[], params: AgentSearchParams): Promise<unknown> => {
-      if (searches.size >= 2) return Promise.resolve({ error: "Search busy; wait for the current search to finish." });
+      if (searches.size >= 2) return Promise.resolve({ error: { code: "busy" } });
       return new Promise(resolve => {
         const worker = new Worker(new URL("../lib/agentSearch.worker.ts", import.meta.url), { type: "module" });
         const finish = (result: unknown) => {
@@ -23,16 +47,16 @@ export function startAgentSessions(): () => void {
           searches.delete(cancel);
           resolve(result);
         };
-        const cancel = () => finish({ error: "Search stopped. The window closed or the search exceeded 6 seconds; simplify the regex or narrow the search." });
+        const cancel = () => finish({ error: { code: "timeout" } });
         const timeout = setTimeout(cancel, 6000);
         searches.add(cancel);
         worker.onmessage = event => finish(event.data);
-        worker.onerror = () => finish({ error: "Search worker failed. Try a simpler regex or narrower search." });
+        worker.onerror = () => finish({ error: { code: "session_unavailable" } });
         // A lookahead entry lets the worker signal more pages without copying
         // an entire large archive into a worker for each call.
         const start = params.afterSeq == null ? 0 : flows.findIndex(f => f.seq > params.afterSeq!);
         try { worker.postMessage({ flows: start < 0 ? [] : flows.slice(start, start + 2001), params }); }
-        catch { finish({ error: "Search could not start." }); }
+        catch { finish({ error: { code: "session_unavailable" } }); }
       });
     };
 
@@ -67,6 +91,8 @@ export function startAgentSessions(): () => void {
           if (!session?.loaded || !getHarSession(request.sessionId)) throw new Error("Session unavailable");
           const result = request.operation === "search_flows"
             ? await search(session.flows, JSON.parse(request.query.params ?? "{}") as AgentSearchParams)
+            : request.operation === "get_match_context"
+              ? await context(session.flows.find(flow => flow.id === request.query.id), JSON.parse(request.query.params ?? "{}") as ContextParams)
             : readSession(session.flows, request);
           if (!getHarSession(request.sessionId)) throw new Error("Session closed");
           response = { type: "reply", requestId: request.requestId, result };

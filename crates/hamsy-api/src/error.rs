@@ -25,9 +25,39 @@ pub enum ApiError {
     /// A downstream system operation (e.g. shelling out to configure the OS
     /// system proxy) failed (502).
     BadGateway(String),
+    /// Stable machine-readable failures for agent reads and observation.
+    Coded {
+        status: StatusCode,
+        code: &'static str,
+        detail: String,
+        retryable: bool,
+        details: Option<serde_json::Value>,
+    },
 }
 
 impl ApiError {
+    pub fn coded(
+        status: StatusCode,
+        code: &'static str,
+        detail: impl Into<String>,
+        retryable: bool,
+    ) -> Self {
+        Self::Coded {
+            status,
+            code,
+            detail: detail.into(),
+            retryable,
+            details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        if let Self::Coded { details: value, .. } = &mut self {
+            *value = Some(details);
+        }
+        self
+    }
+
     fn status(&self) -> StatusCode {
         match self {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -36,6 +66,7 @@ impl ApiError {
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             ApiError::BadGateway(_) => StatusCode::BAD_GATEWAY,
+            ApiError::Coded { status, .. } => *status,
         }
     }
 
@@ -47,6 +78,15 @@ impl ApiError {
             ApiError::Internal(_) => "internal",
             ApiError::NotImplemented(_) => "not_implemented",
             ApiError::BadGateway(_) => "bad_gateway",
+            ApiError::Coded { status, .. } => match *status {
+                StatusCode::BAD_REQUEST => "bad_request",
+                StatusCode::NOT_FOUND => "not_found",
+                StatusCode::CONFLICT => "conflict",
+                StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+                StatusCode::SERVICE_UNAVAILABLE => "unavailable",
+                StatusCode::GATEWAY_TIMEOUT => "gateway_timeout",
+                _ => "bad_gateway",
+            },
         }
     }
 
@@ -58,6 +98,7 @@ impl ApiError {
             | ApiError::Internal(s)
             | ApiError::NotImplemented(s)
             | ApiError::BadGateway(s) => s,
+            ApiError::Coded { detail, .. } => detail,
         }
     }
 }
@@ -66,6 +107,10 @@ impl ApiError {
 struct ErrorBody<'a> {
     error: &'a str,
     detail: &'a str,
+    code: &'a str,
+    retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<&'a serde_json::Value>,
 }
 
 impl IntoResponse for ApiError {
@@ -74,6 +119,21 @@ impl IntoResponse for ApiError {
         let body = ErrorBody {
             error: self.category(),
             detail: self.detail(),
+            code: match &self {
+                Self::Coded { code, .. } => code,
+                _ => self.category(),
+            },
+            retryable: matches!(
+                &self,
+                Self::Coded {
+                    retryable: true,
+                    ..
+                }
+            ),
+            details: match &self {
+                Self::Coded { details, .. } => details.as_ref(),
+                _ => None,
+            },
         };
         (status, axum::Json(body)).into_response()
     }

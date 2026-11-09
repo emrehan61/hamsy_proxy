@@ -293,9 +293,20 @@ async fn health(client: &reqwest::Client, d: &Discovery) -> Option<Health> {
     Some(health)
 }
 
+#[derive(Debug)]
+pub(crate) struct ViewerVersionMismatch;
+
+impl std::fmt::Display for ViewerVersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("A different Hamsy HAR viewer version is running. Run `hamsy open --stop` (with the same --data-dir, if used), then reopen the HAR file.")
+    }
+}
+
+impl std::error::Error for ViewerVersionMismatch {}
+
 fn ensure_compatible(health: &Health) -> Result<()> {
     if health.protocol != PROTOCOL || health.version != env!("CARGO_PKG_VERSION") {
-        bail!("A different Hamsy HAR viewer version is running. Run `hamsy open --stop` (with the same --data-dir, if used), then reopen the HAR file.");
+        bail!(ViewerVersionMismatch);
     }
     Ok(())
 }

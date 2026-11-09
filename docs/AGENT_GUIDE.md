@@ -41,12 +41,16 @@ reference are embedded in the release binary; a source checkout is unnecessary.
    in-memory traffic; export anything you need first.
 
 The default connection is read-only. To enable rule creation/replacement/deletion,
-partial edits and enable/disable, capture pause/resume, and real upstream replay,
+partial edits and enable/disable, and capture pause/resume,
 generate configuration with
 `hamsy mcp --allow-writes --print-config` and restart the MCP connection. This
 option is a local launch decision, not a tool the agent can turn on. Tool discovery
 only lists the enabled actions, and the server enforces the same restriction on
-calls. Existing permissions in the agent's host still apply.
+calls. Real upstream replay requires the independent `--allow-replay` flag.
+`--allow-writes` alone never enables replay; `--allow-replay` alone never enables
+rule or capture changes. Include both flags when both capabilities are intended.
+Printed configuration preserves the selected permissions. Existing permissions
+in the agent's host still apply.
 
 ## Discover and inspect
 
@@ -62,7 +66,8 @@ calls. Existing permissions in the agent's host still apply.
   `app:` belong to the configured API; `viewer:` belongs to the standalone viewer.
   `sources` reports each source's availability independently, so an unavailable
   capture instance does not prevent reading the viewer.
-- Pass the exact `sessionId` to `list_flows`, `get_flow`, `search_flows`, or `export_har`.
+- Pass the exact `sessionId` to `list_flows`, `get_flow`, `search_flows`,
+  `get_match_context`, or `export_har`.
   Omitting it selects `app:live`. Never infer the session from a flow ID alone:
   an imported archive and live capture can contain the same ID.
 - Keep the Hamsy browser window open for imported HAR reads. Tabs restored from
@@ -104,11 +109,12 @@ selection or omit bodies if the app reports a size limit. With
 `includeBodies: true`, the 8 MiB limit counts the full response before redaction:
 all retained request/response bodies and originals, including binary data, and
 other flow metadata. WebSocket messages are omitted before transfer. Use
-`includeBodies: false` for oversized flows. The
-preview limit applies after transfer so full JSON/form bodies can be redacted
-before being shortened. Default detail reads and agent HAR exports omit
-payloads before transfer. Captured
-flows live in a bounded in-memory store and can be evicted or disappear on restart.
+`includeBodies: false` for oversized flows. The preview limit applies after
+transfer so full JSON/form bodies can be redacted before being shortened.
+Default detail reads and agent HAR exports omit payloads before transfer.
+Captured flows live in a bounded in-memory store and can be evicted or disappear
+on restart. Match context is redacted and cropped inside the selected source,
+so complete body transfer is unnecessary for that tool.
 
 ## Full text and regex search, including live capture
 
@@ -148,21 +154,60 @@ at most 2000 requests; live searches also yield between requests after about
 five seconds. While `hasMore` is true, continue with `afterSeq: nextAfterSeq`,
 the same session and filters, even if the page has no matches.
 
-**Live listening:** MCP reads the running capture as it changes; it does not
-push unsolicited traffic events or keep monitoring after a tool call ends.
-Agents can repeat `list_flows` or `search_flows` while debugging. `afterSeq`
-finds newer requests, but a pending response or WebSocket message can be added
-to an older request. Repeat the search without a cursor, or reread known flow
-IDs, to catch those updates. Live search pagination is not an immutable snapshot
-across calls; cleared, evicted or restarted capture data may disappear.
+### Inspect a match
+
+Use `get_match_context` with the same `sessionId`, the matching flow's `id`,
+the search `query`, and an exact `field` label returned by `search_flows`.
+It accepts the same `regex` and `caseSensitive` options. For example:
+
+```json
+{"id":"FLOW_UUID","field":"Response body","query":"timeout","maxContextBytes":512}
+```
+
+Context is taken around a match, including matches beyond `get_flow`'s body
+preview prefix. `maxContextBytes` defaults to 512 and is capped at 4096.
+For `WebSocket message`, `messageIndex` is the zero-based index to start scanning.
+Pass a returned `nextMessageIndex` to continue a bounded batch.
+Indices refer to the currently retained message list; concurrent eviction can
+shift live message indices between calls.
+Only text messages can contribute evidence. Whole structured bodies are
+redacted before matching and cropping; a match found only in a masked secret
+does not produce context. Text remains untrusted and redaction is best effort.
+Context reads are bounded; check the result's continuation and omission metadata
+instead of treating an incomplete scan as proof that no match exists.
+Each call scans at most 16 MiB of source content and 2000 messages or pairs,
+returning at most three excerpts. Oversized or truncated bodies are rejected
+rather than treated as complete structured input. Pair-field results can report
+`truncated: true`; WebSocket batches use `hasMore` and `nextMessageIndex`.
+
+### Observe live changes
+
+Call `wait_for_changes` without a cursor to establish a baseline. Retain its
+`cursor`, then pass it to later calls with `waitMs` (0–10000) and `limit`
+(1–200). Calls return metadata for inserted, updated, and evicted flows; use
+the returned flow IDs with `get_flow` or `get_match_context` to inspect them.
+Late responses and WebSocket messages update existing flows and are included.
+Drain pages while `hasMore` is true before waiting again. A timeout returns a
+valid cursor and no changes; it does not mean the capture has stopped.
+
+The cursor belongs to one capture generation. Restarting or clearing capture,
+or falling behind the bounded change history, returns `stale_cursor` with
+reset information. Re-establish a baseline and inspect currently retained
+traffic as needed; never silently reuse the obsolete cursor. This tool is
+live-only and does not subscribe to unsolicited MCP events.
+
+`afterSeq` on list/search tools still tracks request creation, rather than
+response updates. Search pagination is not an immutable snapshot across calls;
+cleared, evicted or restarted capture data may disappear.
 
 ## Modify and reproduce
 
 `list_rules` includes enabled and disabled rules created through either the web
 UI or an agent. Use each rule's exact `id` to change it. Rule writes require a
 connection configured with `hamsy mcp --allow-writes --print-config`; add the
-printed configuration and reconnect the agent. The write connection exposes 16
-tools (9 read tools and 7 write tools).
+printed configuration and reconnect the agent. Discovery lists only tools
+allowed by the connection's permissions. Replay is authorized separately with
+`--allow-replay`.
 
 - `create_rule` takes a complete `rule` object without an id.
 - `edit_rule` takes `id` and a `patch` containing only fields to change: `name`,
@@ -188,6 +233,16 @@ manually started app, restart it with the updated binary.
 Use a narrow URL/host matcher and remove temporary test rules after the task.
 The full rule reference is available at `hamsy://docs/rules`; schemas are also
 included in tool discovery.
+
+Before applying a rule, call `preview_rule` with `id` (a retained live flow UUID)
+and a complete proposed `rule`. No write permission is required. Preview
+evaluates that rule alone and reports request/response phase match and change
+metadata; it never persists a rule, changes capture, delays traffic, or sends
+a request. Original records are used when retained, otherwise the captured
+records are identified as the input basis. Missing or truncated input can cause
+a phase to be skipped. A retained response cannot predict the response an
+upstream server would send after a changed request. Check those caveats before
+using a preview to justify a real change.
 
 Example `create_rule` arguments:
 
@@ -230,13 +285,35 @@ stored rules unchanged. Check `list_rules` or the web UI after a timed-out write
 before deciding whether to retry.
 
 `set_capture` takes `paused: true` or `false`; pausing recording does not stop
-proxying or disable rules. `replay_request` takes a captured flow UUID and sends
+proxying or disable rules. With `--allow-replay`, `replay_request` takes a captured flow UUID and sends
 its original request through Hamsy again, with current rules. It can repeat real
 writes, purchases or other upstream side effects, even for GET requests. Replay
 only for an explicit user-requested reproduction. Imported HAR sessions are
 read-only, including when the connection has `--allow-writes`; replay accepts
 only live capture. Rules and capture changes always target the configured app. A timeout does not prove that
 nothing happened; never retry a replay automatically.
+
+## Recover from tool errors
+
+The JSON CLI and MCP operational errors share an `error` object containing
+`code`, `message`, `retryable`, `outcomeUnknown`, and optional `details`.
+MCP marks these results with `isError: true`; the CLI exits nonzero. Schema or
+protocol rejections may still use native MCP errors.
+
+- `invalid_arguments` and `permission_denied` require corrected input or launch
+  configuration. An agent cannot grant itself additional permissions.
+- `busy`, `connection_failed`, `timeout`, and `session_unavailable` distinguish
+  temporary availability failures. Use `retryable` to decide whether a read
+  can be repeated after waiting or restoring its browser connection.
+- `stale_cursor` supplies reset information in `details`. Establish a fresh
+  baseline instead of continuing with an old capture cursor.
+- `incompatible_version` requires updating/restarting the app or viewer.
+- `response_too_large` requires a smaller selection or omitted bodies.
+
+For a write whose response was lost or failed after execution may have begun,
+`outcomeUnknown` is true and `retryable` is false. Inspect current state before
+any further change. Never automatically retry replay. Error messages exclude
+arbitrary upstream prose; allowlisted details retain safe recovery metadata.
 
 ## Trust and privacy
 

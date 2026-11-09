@@ -34,6 +34,7 @@ pub async fn state_snapshot(state: &ApiState) -> Value {
             .unwrap_or(false)
     };
 
+    let (capture_id, change_cursor) = state.flows().change_cursor();
     json!({
         "version": state.version(),
         "viewerOnly": state.viewer_only(),
@@ -42,6 +43,8 @@ pub async fn state_snapshot(state: &ApiState) -> Value {
         "capturing": !settings.paused,
         "paused": settings.paused,
         "flowCount": state.flows().len(),
+        "captureId": capture_id,
+        "changeCursor": change_cursor,
         "caFingerprint": state.cert_hook().fingerprint(),
         "uptimeSecs": state.uptime_secs(),
         "systemProxy": {

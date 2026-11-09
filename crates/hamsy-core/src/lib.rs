@@ -6,6 +6,8 @@
 //! Other crates (a proxy server, a REST/WebSocket API, a CLI) build on top
 //! of this foundation.
 
+pub mod agent_context;
+pub mod agent_privacy;
 pub mod body;
 pub mod error;
 pub mod event;
@@ -13,6 +15,7 @@ pub mod flow;
 pub mod har;
 pub mod passthrough_presets;
 pub mod rule;
+pub mod rule_preview;
 pub mod rules_store;
 pub mod settings;
 pub mod store;

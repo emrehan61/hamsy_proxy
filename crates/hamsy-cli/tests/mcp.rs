@@ -91,6 +91,18 @@ impl Mcp {
         version: &str,
         startup: Option<(&std::path::Path, u16)>,
     ) -> Self {
+        Self::start_permissions_config(api, writes, false, version, startup).await
+    }
+    async fn start_permissions(api: &str, writes: bool, replay: bool) -> Self {
+        Self::start_permissions_config(api, writes, replay, "2025-11-25", None).await
+    }
+    async fn start_permissions_config(
+        api: &str,
+        writes: bool,
+        replay: bool,
+        version: &str,
+        startup: Option<(&std::path::Path, u16)>,
+    ) -> Self {
         let home = tempfile::tempdir().unwrap();
         let mut cmd = Command::new(BIN);
         cmd.args(["mcp", "--api-url", api]);
@@ -104,6 +116,9 @@ impl Mcp {
         }
         if writes {
             cmd.arg("--allow-writes");
+        }
+        if replay {
+            cmd.arg("--allow-replay");
         }
         let mut child = cmd
             .env("HAMSY_HOME", home.path())
@@ -230,7 +245,7 @@ async fn open_sessions_route_reads_without_mixing_live_capture_or_masking_ids() 
     let selected = format!("app:{session}");
     let mut browser = browser(&app.url).await;
     advertise(&mut browser, &[&session]).await;
-    let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
+    let mut client = Mcp::start_permissions(&app.url, true, true).await;
     let listed = wait_sessions(&mut client, 2).await;
     assert_eq!(listed["sessions"][0]["sessionId"], "app:live");
     assert_eq!(listed["sessions"][1]["sessionId"], selected);
@@ -460,7 +475,7 @@ async fn offline_discovery_resources_and_protocol_versions() {
             assert_eq!(response["result"]["cacheScope"], "private");
         }
         let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 12);
         assert!(tools
             .iter()
             .all(|tool| tool["annotations"]["readOnlyHint"] == true));
@@ -794,9 +809,9 @@ async fn omitted_live_payloads_do_not_hit_the_bridge_response_limit() {
 async fn writes_share_live_state_and_replay_is_single_shot() {
     let app = App::start().await;
     let flow_id = app.seed();
-    let mut client = Mcp::start(&app.url, true, "2025-11-25").await;
+    let mut client = Mcp::start_permissions(&app.url, true, true).await;
     let response = client.rpc("tools/list", json!({})).await;
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 16);
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 19);
     let rule = json!({"name":"fixture", "match":{"urlOp":"equals", "urlValue":"https://example.test/checkout"},
         "actions":[{"type":"mockResponse","status":200,"body":"ok"}]});
     let response = client.call("create_rule", json!({"rule":rule})).await;
@@ -838,6 +853,281 @@ async fn writes_share_live_state_and_replay_is_single_shot() {
     assert_eq!(app.replay_count.load(Ordering::SeqCst), 1);
     result(&client.call("delete_rule", json!({"id":id})).await);
     assert!(app.state.rules().list().is_empty());
+    client.close().await;
+}
+
+fn agent_error(response: &Value) -> &Value {
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let error = &response["result"]["structuredContent"]["error"];
+    assert!(error["code"].is_string(), "{response}");
+    assert!(error["message"].is_string());
+    assert!(error["retryable"].is_boolean());
+    assert!(error["outcomeUnknown"].is_boolean());
+    error
+}
+
+#[tokio::test]
+async fn replay_permission_is_independent_from_capture_and_rule_writes() {
+    let app = App::start().await;
+    let id = app.seed();
+    for (writes, replay) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut client = Mcp::start_permissions(&app.url, writes, replay).await;
+        let discovery = client.rpc("tools/list", json!({})).await;
+        let names: Vec<_> = discovery["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.contains(&"replay_request"), replay);
+        assert_eq!(names.contains(&"set_capture"), writes);
+        assert!(names.contains(&"preview_rule"));
+        let replay_result = client.call("replay_request", json!({"id":id})).await;
+        if replay {
+            result(&replay_result);
+        } else {
+            assert_eq!(agent_error(&replay_result)["code"], "permission_denied");
+        }
+        let capture_result = client.call("set_capture", json!({"paused":false})).await;
+        if writes {
+            result(&capture_result);
+        } else {
+            assert_eq!(agent_error(&capture_result)["code"], "permission_denied");
+        }
+        let status = client.call("get_status", json!({})).await;
+        assert_eq!(result(&status)["agent"]["allowWrites"], writes);
+        assert_eq!(result(&status)["agent"]["allowReplay"], replay);
+        client.close().await;
+    }
+    assert_eq!(app.replay_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn errors_have_safe_recovery_metadata_for_both_transports() {
+    use axum::{
+        http::StatusCode,
+        routing::{get, post, put},
+        Json, Router,
+    };
+    let applied = Arc::new(AtomicUsize::new(0));
+    let counter = applied.clone();
+    let router = Router::new()
+        .route("/api/settings", get(|| async {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"code":"busy","detail":"Authorization: SECRET_PROSE"})))
+        }))
+        .route("/api/rules/{id}", put(|| async { "x".repeat(8 * 1024 * 1024 + 1) }))
+        .route("/api/rules", post(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async { (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"code":"internal","detail":"https://user:SECRET_PASSWORD@example.test/?token=SECRET_TOKEN"}))) }
+        }))
+        .route("/api/flows/{id}/replay", post(|| async { "not JSON SECRET_PAYLOAD" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut client = Mcp::start_permissions(&api, true, true).await;
+    let read = client.call("get_settings", json!({})).await;
+    assert_eq!(agent_error(&read)["code"], "busy");
+    assert_eq!(agent_error(&read)["retryable"], true);
+    assert_eq!(agent_error(&read)["outcomeUnknown"], false);
+    let write = client
+        .call(
+            "create_rule",
+            json!({"rule":{"name":"test","match":{},"actions":[]}}),
+        )
+        .await;
+    assert_eq!(agent_error(&write)["code"], "api_error");
+    assert_eq!(agent_error(&write)["retryable"], false);
+    assert_eq!(agent_error(&write)["outcomeUnknown"], true);
+    assert_eq!(applied.load(Ordering::SeqCst), 1);
+    let oversized = client
+        .call(
+            "update_rule",
+            json!({"rule":{"id":"large","name":"test","match":{},"actions":[]}}),
+        )
+        .await;
+    assert_eq!(agent_error(&oversized)["code"], "response_too_large");
+    assert_eq!(agent_error(&oversized)["retryable"], false);
+    assert_eq!(agent_error(&oversized)["outcomeUnknown"], true);
+    let replay = client
+        .call("replay_request", json!({"id":uuid::Uuid::new_v4()}))
+        .await;
+    assert_eq!(agent_error(&replay)["code"], "invalid_response");
+    assert_eq!(agent_error(&replay)["retryable"], false);
+    assert_eq!(agent_error(&replay)["outcomeUnknown"], true);
+    for response in [&read, &write, &replay] {
+        assert!(!response.to_string().contains("SECRET_"));
+    }
+    let output = Command::new(BIN)
+        .args(["agent", "--api-url", &api, "call", "get_settings"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(cli["error"], *agent_error(&read));
+    let invalid = client.call("list_flows", json!({"limit":0})).await;
+    assert_eq!(agent_error(&invalid)["code"], "invalid_arguments");
+    let missing = client.call("nonexistent", json!({})).await;
+    assert_eq!(agent_error(&missing)["code"], "unknown_tool");
+    client.close().await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn preview_evaluates_phases_without_writes_replay_or_large_body_transfer() {
+    let app = App::start().await;
+    let id = app.seed();
+    let uuid = uuid::Uuid::parse_str(&id).unwrap();
+    app.state.flows().update(uuid, |flow| {
+        let bytes = 5 * 1024 * 1024;
+        flow.request.as_mut().unwrap().body.data = "x".repeat(bytes);
+        flow.response.as_mut().unwrap().body.data = "y".repeat(bytes);
+    });
+    let before = serde_json::to_value(app.state.flows().get(uuid).unwrap()).unwrap();
+    let mut client = Mcp::start(&app.url, false, "2025-11-25").await;
+    let rule = json!({"name":"preview","match":{"urlOp":"contains","urlValue":"checkout"},"actions":[{"type":"setResponseHeader","name":"X-Test","value":"yes"},{"type":"delay","ms":60000}]});
+    let response = client
+        .call("preview_rule", json!({"id":id,"rule":rule}))
+        .await;
+    let preview = result(&response);
+    assert_eq!(preview["request"]["matched"], true);
+    assert_eq!(preview["request"]["delayMs"], 60000);
+    assert_eq!(preview["request"]["skippedActionIndices"], json!([0]));
+    assert_eq!(preview["response"]["matched"], true);
+    assert_eq!(preview["response"]["changes"]["headers"], true);
+    assert_eq!(preview["response"]["delayMs"], 60000);
+    assert!(!response.to_string().contains("SECRET"));
+    for (action, reason) in [
+        (
+            json!({"type":"block","reason":"private"}),
+            "request_blocked",
+        ),
+        (
+            json!({"type":"mockResponse","body":"SECRET_BODY","delayMs":60000}),
+            "mocked_response",
+        ),
+    ] {
+        let response = client
+            .call(
+                "preview_rule",
+                json!({"id":id,"rule":{"name":"short circuit","match":{},"actions":[action]}}),
+            )
+            .await;
+        assert_eq!(result(&response)["response"]["reason"], reason);
+        assert!(!response.to_string().contains("SECRET"));
+    }
+    let disabled = client
+        .call(
+            "preview_rule",
+            json!({"id":id,"rule":{"name":"disabled","enabled":false,"match":{},"actions":[]}}),
+        )
+        .await;
+    assert_eq!(result(&disabled)["request"]["reason"], "rule_disabled");
+    let invalid = client.call("preview_rule", json!({"id":id,"rule":{"name":"bad","match":{"urlOp":"regex","urlValue":"["},"actions":[]}})).await;
+    assert_eq!(agent_error(&invalid)["code"], "invalid_arguments");
+    assert_eq!(
+        serde_json::to_value(app.state.flows().get(uuid).unwrap()).unwrap(),
+        before
+    );
+    assert!(app.state.rules().list().is_empty());
+    assert_eq!(app.replay_count.load(Ordering::SeqCst), 0);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn live_changes_include_completed_responses_and_stale_cursor_recovery() {
+    let app = App::start().await;
+    let id = app.seed();
+    let uuid = uuid::Uuid::parse_str(&id).unwrap();
+    let seq = app.state.flows().get(uuid).unwrap().summary.seq;
+    let mut client = Mcp::start(&app.url, false, "2025-11-25").await;
+    let baseline = client.call("wait_for_changes", json!({})).await;
+    let cursor = result(&baseline)["cursor"].as_str().unwrap().to_string();
+    assert_eq!(result(&baseline)["changes"], json!([]));
+    let (observed, ()) = tokio::join!(
+        client.call("wait_for_changes", json!({"cursor":cursor,"waitMs":1000})),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            app.state.flows().update(uuid, |flow| {
+                flow.response.as_mut().unwrap().body.data = "new response".into();
+            });
+        }
+    );
+    let event = &result(&observed)["changes"][0];
+    assert_eq!(event["kind"], "updated");
+    assert_eq!(event["flowId"], id);
+    assert_eq!(event["seq"], seq);
+    assert!(!observed.to_string().contains("new response"));
+    let next = result(&observed)["cursor"].clone();
+    let empty = client
+        .call("wait_for_changes", json!({"cursor":next,"waitMs":10}))
+        .await;
+    assert_eq!(result(&empty)["changes"], json!([]));
+    assert_eq!(result(&empty)["timedOut"], true);
+    app.state.flows().clear();
+    let stale = client
+        .call("wait_for_changes", json!({"cursor":cursor}))
+        .await;
+    let error = agent_error(&stale);
+    assert_eq!(error["code"], "stale_cursor");
+    assert_eq!(error["retryable"], false);
+    assert_eq!(error["outcomeUnknown"], false);
+    assert_eq!(error["details"]["resetRequired"], true);
+    assert_eq!(error["details"]["reason"], "capture_changed");
+    assert!(error["details"]["captureId"].is_string());
+    assert!(error["details"]["cursor"].is_string());
+    let invalid = client
+        .call(
+            "wait_for_changes",
+            json!({"sessionId":format!("app:{}",uuid::Uuid::new_v4())}),
+        )
+        .await;
+    assert_eq!(agent_error(&invalid)["code"], "invalid_arguments");
+    client.close().await;
+}
+
+#[tokio::test]
+async fn context_returns_redacted_match_evidence_for_live_and_browser_sources() {
+    let app = App::start().await;
+    let id = app.seed();
+    let mut client = Mcp::start(&app.url, false, "2025-11-25").await;
+    let response = client
+        .call(
+            "get_match_context",
+            json!({"id":id,"query":"broken","field":"Response body","maxContextBytes":128}),
+        )
+        .await;
+    let context = result(&response);
+    assert_eq!(context["redacted"], true);
+    assert_eq!(context["matches"][0]["match"], "broken");
+    assert!(!response.to_string().contains("SECRET"));
+    let secret = client
+        .call(
+            "get_match_context",
+            json!({"id":id,"query":"RESPONSE_SECRET","field":"Response body"}),
+        )
+        .await;
+    assert_eq!(result(&secret)["matches"], json!([]));
+    let session = uuid::Uuid::new_v4().to_string();
+    let selected = format!("app:{session}");
+    let mut browser = browser(&app.url).await;
+    advertise(&mut browser, &[&session]).await;
+    wait_sessions(&mut client, 2).await;
+    let (response, ()) = tokio::join!(
+        client.call("get_match_context", json!({"sessionId":selected,"id":id,"query":"socket","field":"WebSocket message","messageIndex":2})),
+        async {
+            let request = browser_request(&mut browser).await;
+            assert_eq!(request["operation"], "get_match_context");
+            let params: Value = serde_json::from_str(request["query"]["params"].as_str().unwrap()).unwrap();
+            assert_eq!(params["messageIndex"], 2);
+            reply(&mut browser, &request, json!({"flowId":id,"field":"WebSocket message","redacted":true,"matches":[{"match":"socket","before":"","after":"","messageIndex":2}],"scanned":1,"hasMore":false})).await;
+        }
+    );
+    assert_eq!(result(&response)["sessionId"], selected);
+    assert_eq!(result(&response)["matches"][0]["messageIndex"], 2);
+    browser.close(None).await.unwrap();
     client.close().await;
 }
 
@@ -984,7 +1274,7 @@ async fn rule_edits_and_explicit_enable_preserve_current_private_values() {
 async fn cli_config_and_json_fallback_work_outside_repository() {
     let home = tempfile::tempdir().unwrap();
     let output = Command::new(BIN)
-        .args(["mcp", "--allow-writes", "--print-config"])
+        .args(["mcp", "--allow-writes", "--allow-replay", "--print-config"])
         .current_dir(home.path())
         .env("HAMSY_HOME", home.path())
         .output()
@@ -997,6 +1287,10 @@ async fn cli_config_and_json_fallback_work_outside_repository() {
             .is_absolute()
     );
     assert_eq!(config["mcpServers"]["hamsy"]["args"][3], "--allow-writes");
+    assert!(config["mcpServers"]["hamsy"]["args"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("--allow-replay")));
     let output = Command::new(BIN)
         .arg("agent-guide")
         .current_dir(home.path())

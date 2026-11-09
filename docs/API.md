@@ -360,12 +360,21 @@ Note: `hamsy-api` never actually constructs a `flowDetail` event itself today (n
 
 ## 5. REST surface
 
-All error responses share the shape `{"error": "<category>", "detail": "<message>"}`, where `category` is one of `bad_request` (400) | `not_found` (404) | `payload_too_large` (413) | `internal` (500) | `not_implemented` (501) | `bad_gateway` (502). Request bodies over 512 MiB are rejected globally (`413`); in practice only `POST /api/har/import` is expected to approach that. CORS is enabled only for the Vite dev-server origins (`http://localhost:5173`, `http://127.0.0.1:5173`) with any method/header — there's no wildcard `*` origin.
+Application errors retain `error` (category) and `detail` (message), and add
+`code` (stable recovery code), `retryable`, and optional `details`. Observation
+can return `stale_cursor` (409); browser reads distinguish `session_not_open`,
+`session_busy`, `session_timeout`, and `session_unavailable`. A stale cursor's
+`details` contains `resetRequired`, `reason`, `captureId`, and a fresh `cursor`.
+Framework input/body rejections may use their native error format.
+Request bodies over 512 MiB are rejected globally (`413`); rule preview has a
+128 KiB limit. CORS is enabled only for the Vite dev-server origins
+(`http://localhost:5173`, `http://127.0.0.1:5173`) with any method/header.
 
 ```
 GET    /api/state
                      -> 200 { version, proxyPort, uiPort, capturing, paused,
                               flowCount, caFingerprint, uptimeSecs,
+                              captureId, changeCursor,
                               systemProxy: { enabled, platform, supported } }
                      `capturing` is `!paused` (kept as a separate field for
                      UI convenience). `platform` is one of "macos" /
@@ -397,6 +406,22 @@ GET    /api/flows/:id
                      -> 404 if `:id` isn't a valid UUID, or is valid but
                         unknown
 
+GET    /api/flows/changes?cursor=&limit=50&waitMs=0
+                     -> 200 { captureId, cursor, changes, hasMore, timedOut }
+                     No cursor establishes a baseline. Changes contain only
+                     { revision, kind, flowId, seq }; kind is inserted,
+                     updated, or evicted. limit is 1–200, waitMs is 0–10000.
+                     Late response/WebSocket updates are included. Drain pages
+                     while hasMore. Clear/restart or an expired history cursor
+                     returns stale_cursor (409), requiring a new baseline.
+
+GET    /api/flows/:id/context?params=<URL-encoded JSON>
+                     -> 200 bounded redacted context for the selected field.
+                     Params: query, field, regex?, caseSensitive?,
+                     maxContextBytes? (1–4096, default 512), messageIndex?.
+                     Redaction precedes matching and cropping; truncated or
+                     oversized source data cannot bypass redaction.
+
 DELETE /api/flows
                      -> 204, clears the flow store and broadcasts `cleared`
                         over the WebSocket
@@ -416,6 +441,14 @@ GET    /api/rules
                      Wrapped in an object (not a bare `Rule[]` array), for
                      symmetry with `GET /api/rules/export`; the web UI's
                      `listRules()` (`ui/src/lib/api.ts`) expects this shape.
+
+POST   /api/rules/preview
+        body: { flowId: UUID, rule: Rule }
+                     -> 200 metadata describing request/response phase effects
+                     against one retained live flow. Evaluates the proposed
+                     rule alone without persisting, replaying, sleeping, or
+                     changing capture. Response effects use the retained
+                     response; no new upstream response is predicted.
 
 POST   /api/rules
         body: Rule (server-assigns a UUID `id` if the given `id` is empty
@@ -593,11 +626,15 @@ Read an imported session with:
   to continue. Limit is 1–201 (the MCP bridge uses one lookahead row).
 - `GET /api/sessions/{uuid}/flows/{flow_uuid}`: bodies omitted by default;
   `includeBodies=true` includes text bodies. Binary and WebSocket data is omitted.
+- `GET /api/sessions/{uuid}/flows/{flow_uuid}/context?params=<JSON>`: same
+  bounded, source-redacted context contract as the live context endpoint.
 - `GET /api/sessions/{uuid}/har?ids=uuid,uuid`: 1–20 selected flows, bodies omitted.
 
 No mutation routes exist for these archives. Reading does not import anything
 into live capture. The browser must remain connected and a read can time out
-when its window is asleep or busy. Responses are bounded to 8 MiB. The MCP layer
+when its window is asleep or busy. A bounded set of owning windows is consulted,
+allowing a responsive window to serve a read while another is suspended.
+Responses are bounded to 8 MiB. The MCP layer
 adds redaction, output limits, and namespaced `sessionId` values; raw REST results
 are not a substitute for its privacy filter.
 

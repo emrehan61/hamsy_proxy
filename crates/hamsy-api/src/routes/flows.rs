@@ -207,7 +207,12 @@ pub async fn search(
     let query: hamsy_core::search::SearchQuery = serde_json::from_str(raw)?;
     query.validate().map_err(ApiError::BadRequest)?;
     let slot = SLOTS.try_acquire().map_err(|_| {
-        ApiError::BadGateway("search busy; try again after the current search finishes".into())
+        ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "busy",
+            "Search busy; try again after the current search finishes",
+            true,
+        )
     })?;
     let flows = state.flows().snapshots(None);
     let result = tokio::task::spawn_blocking(move || {

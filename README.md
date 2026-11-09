@@ -43,15 +43,17 @@ configure it. Printing configuration itself has no startup side effects.
 The default connection
 can discover live capture and open HAR sessions, inspect traffic, settings and
 rules, read bundled instructions, and export
-redacted HAR summaries. For rule changes, pause/resume and real request replay,
-use `hamsy mcp --allow-writes --print-config`. Both connections operate on the same
+redacted HAR summaries. For rule changes and pause/resume, use
+`hamsy mcp --allow-writes --print-config`. Real request replay requires the
+separate `--allow-replay` flag; combine the flags when both are needed.
+Connections operate on the same
 running app and web UI. With writes enabled, agents can create rules, edit only
 selected fields with `edit_rule`, and enable/disable existing rules by ID with
 `set_rule_enabled`, preserving untouched private payloads. See the [bundled agent guide](docs/AGENT_GUIDE.md) for
 setup, tools, limits, privacy behavior and troubleshooting.
 
 Start with `list_sessions`, then pass the returned `sessionId` to `list_flows`,
-`get_flow`, `search_flows`, or `export_har`. External HARs opened with `hamsy open file.har`
+`get_flow`, `search_flows`, `get_match_context`, or `export_har`. External HARs opened with `hamsy open file.har`
 are included through the standalone viewer, even when capture is stopped.
 Keep imported HAR browser windows open. For a custom viewer profile, add
 `--viewer-data-dir /absolute/path` when configuring the agent. Imported sessions
@@ -60,8 +62,11 @@ are read-only and never mixed into live traffic.
 `search_flows` supports literal or regex search across retained text bodies,
 headers, URLs, query parameters and text WebSocket messages, for both live
 capture and open HARs. It supports case sensitivity and excluded hosts. Agents
-can read live traffic repeatedly while debugging; MCP does not automatically
-subscribe to or push future requests.
+can retrieve bounded, redacted evidence around a match with `get_match_context`,
+including matches deep in a response or a text WebSocket message.
+`wait_for_changes` tracks new requests and updates to existing requests using a
+capture-specific cursor, with optional bounded waiting. `preview_rule` evaluates
+a proposed rule against a retained live flow without saving it or sending traffic.
 
 Agents without MCP can use `hamsy agent-guide`, `hamsy agent tools`, and
 `hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'`.
@@ -561,6 +566,7 @@ Formatting is stock rustfmt — there is deliberately no `rustfmt.toml`, so `car
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` on whatever you touch before sending it out — both are currently clean on `master`, so a new warning or formatting diff is yours to fix, not a pre-existing one to ignore.
 - Tests live next to the code they cover: `hamsy-core` has only inline `#[cfg(test)] mod tests` blocks (no `tests/` directory — it's pure logic, no server to spin up). `hamsy-proxy` and `hamsy-api` each add a `tests/` directory on top of their inline unit tests (`hamsy-proxy/tests/proxy_tests.rs` drives a real MITM proxy instance end-to-end; `hamsy-api/tests/rest_api.rs` and `tests/ws.rs` drive the REST/WebSocket API against a standalone `ApiState`). `hamsy-cli` has inline tests in `cert.rs`/`rules.rs`/`run.rs` plus the `--ignored` end-to-end tests in `tests/shutdown.rs` mentioned above.
 - Iterating on the UI: run its dev server for hot reload rather than rebuilding the Rust binary on every change — see `cd ui && pnpm dev` in [Install / build](#install--build).
+- Browser integration: build the UI, run `cargo build --locked --features embed-ui -p hamsy-cli`, then `pnpm --dir ui exec playwright install chromium` and `pnpm --dir ui test:browser`. The test uses a temporary profile and manual proxy mode. Set `HAMSY_BIN` for another build or `HAMSY_BROWSER_EXECUTABLE` for an installed Chromium/Chrome executable. CI runs this suite before publishing releases.
 
 ## Security note
 

@@ -49,11 +49,17 @@ pub fn router(state: ApiState) -> Router {
             get(routes::flows::list).delete(routes::flows::clear),
         )
         .route("/flows/search", get(routes::flows::search))
+        .route("/flows/changes", get(routes::changes::get))
+        .route("/flows/{id}/context", get(routes::context::get))
         .route("/flows/{id}", get(routes::flows::get))
         .route("/flows/{id}/replay", post(routes::flows::replay))
         .route(
             "/rules",
             get(routes::rules::list).post(routes::rules::create),
+        )
+        .route(
+            "/rules/preview",
+            post(routes::preview::preview).layer(DefaultBodyLimit::max(128 * 1024)),
         )
         .route(
             "/rules/{id}",

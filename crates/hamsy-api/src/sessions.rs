@@ -18,7 +18,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -67,17 +67,56 @@ impl BrowserSessions {
         sessions.into_values().collect()
     }
     async fn read(&self, session: Uuid, operation: &str, query: Value) -> Result<Value, ApiError> {
-        let sender = self.clients.lock().values()
-            .find(|client| client.sessions.iter().any(|s| s.id == session))
-            .map(|client| client.sender.clone())
-            .ok_or_else(|| ApiError::NotFound("HAR session is not open; keep its Hamsy browser window open and list sessions again".into()))?;
-        let (reply, response) = oneshot::channel();
-        sender.try_send(Job { request: json!({"type":"read", "requestId":Uuid::new_v4(), "sessionId":session,"operation":operation,"query":query}), reply })
-            .map_err(|_| ApiError::BadGateway("HAR window is busy or disconnected; list sessions again".into()))?;
-        match tokio::time::timeout(REQUEST_TIMEOUT, response).await {
-            Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(_))) => Err(ApiError::BadGateway("HAR session could not be read. Keep its browser window open; body responses over 8 MiB require includeBodies=false".into())),
-            _ => Err(ApiError::BadGateway("HAR window did not respond; reopen or wake the window and list sessions again".into())),
+        let mut owners: Vec<_> = self
+            .clients
+            .lock()
+            .values()
+            .filter_map(|client| {
+                client
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == session)
+                    .map(|s| (s.active, client.sender.clone()))
+            })
+            .collect();
+        if owners.is_empty() {
+            return Err(ApiError::coded(StatusCode::NOT_FOUND, "session_not_open",
+                "HAR session is not open; keep its Hamsy browser window open and list sessions again", false));
+        }
+        owners.sort_by_key(|(active, _)| !active);
+        let mut responses = FuturesUnordered::new();
+        // Every operation is read-only. Race a bounded set of owners so a
+        // suspended original window cannot hide a responsive pop-out window.
+        for (_, sender) in owners.into_iter().take(8) {
+            let (reply, response) = oneshot::channel();
+            let request = json!({"type":"read", "requestId":Uuid::new_v4(), "sessionId":session,"operation":operation,"query":query});
+            if sender.try_send(Job { request, reply }).is_ok() {
+                responses.push(response);
+            }
+        }
+        if responses.is_empty() {
+            return Err(ApiError::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "session_busy",
+                "HAR windows are busy or disconnected; list sessions again",
+                true,
+            ));
+        }
+        let result = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            while let Some(response) = responses.next().await {
+                if let Ok(Ok(value)) = response {
+                    return Some(value);
+                }
+            }
+            None
+        })
+        .await;
+        match result {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => Err(ApiError::coded(StatusCode::BAD_GATEWAY, "session_unavailable",
+                "HAR session could not be read; keep its browser window open and reduce the requested response", true)),
+            Err(_) => Err(ApiError::coded(StatusCode::GATEWAY_TIMEOUT, "session_timeout",
+                "HAR windows did not respond; reopen or wake a window and list sessions again", true)),
         }
     }
 }
@@ -88,6 +127,7 @@ pub fn router() -> Router<ApiState> {
         .route("/sessions/ws", get(connect))
         .route("/sessions/{id}/flows", get(flows))
         .route("/sessions/{id}/flows/{flow_id}", get(flow))
+        .route("/sessions/{id}/flows/{flow_id}/context", get(context))
         .route("/sessions/{id}/har", get(har))
         .route("/sessions/{id}/search", get(search))
 }
@@ -132,6 +172,20 @@ async fn har(
         state
             .browser_sessions()
             .read(id, "export_har", json!(query))
+            .await?,
+    ))
+}
+
+async fn context(
+    State(state): State<ApiState>,
+    Path((id, flow_id)): Path<(Uuid, Uuid)>,
+    Query(mut query): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    query.insert("id".into(), flow_id.to_string());
+    Ok(Json(
+        state
+            .browser_sessions()
+            .read(id, "get_match_context", json!(query))
             .await?,
     ))
 }
@@ -252,4 +306,74 @@ async fn serve(socket: WebSocket, registry: Arc<BrowserSessions>) {
     }
     registry.clients.lock().remove(&client_id);
     // Dropping pending replies wakes in-flight HTTP readers immediately.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: Uuid, active: bool) -> Session {
+        Session {
+            id,
+            name: "archive".into(),
+            flow_count: 1,
+            imported_at: 1,
+            active,
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_a_responsive_owner_when_another_window_is_asleep() {
+        let registry = BrowserSessions::default();
+        let id = Uuid::new_v4();
+        let (sleeping, _sleeping_jobs) = mpsc::channel(8);
+        let (awake, mut awake_jobs) = mpsc::channel::<Job>(8);
+        registry.clients.lock().insert(
+            Uuid::new_v4(),
+            Client {
+                sessions: vec![session(id, true)],
+                sender: sleeping,
+            },
+        );
+        registry.clients.lock().insert(
+            Uuid::new_v4(),
+            Client {
+                sessions: vec![session(id, false)],
+                sender: awake,
+            },
+        );
+        let responder = tokio::spawn(async move {
+            let job = awake_jobs.recv().await.unwrap();
+            assert_eq!(job.request["operation"], "get_match_context");
+            assert_eq!(job.request["query"]["params"], "{}");
+            job.reply.send(Ok(json!({"matches":[]}))).unwrap();
+        });
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            registry.read(id, "get_match_context", json!({"params":"{}"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response["matches"], json!([]));
+        responder.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnected_sessions_return_stable_recovery_code() {
+        let registry = BrowserSessions::default();
+        let response = registry
+            .read(Uuid::new_v4(), "list_flows", json!({}))
+            .await
+            .unwrap_err()
+            .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["code"], "session_not_open");
+        assert_eq!(value["retryable"], false);
+        assert!(value["error"].is_string() && value["detail"].is_string());
+    }
 }
