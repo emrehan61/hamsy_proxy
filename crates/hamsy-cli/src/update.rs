@@ -2,12 +2,10 @@
 //! Releases (github.com/emrehan61/hamsy_proxy).
 //!
 //! Release contract this relies on: tags are `v<semver>`, and each release
-//! carries assets named `hamsy-<rust-triple>.tar.gz` (a gzipped tar with the
-//! `hamsy` binary at its root) plus a `sha256sums.txt`. `self_update`'s
-//! default target detection (`self_update::get_target()`, backed by Cargo's
-//! `TARGET` build-script env var) returns exactly the rust triples used in
-//! those asset names, so it's left unset here rather than pinned via
-//! `cfg!`/`env!` in this crate.
+//! carries assets named `hamsy-<rust-triple>.tar.gz` and a `sha256sums.txt`.
+//! Each archive contains `hamsy` (or `hamsy.exe` on Windows) at its root.
+//! `self_update::get_target()` uses Cargo's `TARGET` build-script env var
+//! to match the Rust target triple in the asset name.
 //!
 //! There is no IPC with a running `hamsy run` process: this only replaces
 //! the binary on disk, so an already-running instance keeps executing its

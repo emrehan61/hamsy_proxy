@@ -39,7 +39,14 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 ## Install / build
 
-Recommended — install the prebuilt binary from the latest GitHub Release, no toolchain required:
+On Windows x64, download `hamsy-x86_64-pc-windows-msvc.tar.gz` and run these commands in PowerShell. [GitHub Releases](https://github.com/emrehan61/hamsy_proxy/releases)
+
+```powershell
+tar -xzf hamsy-x86_64-pc-windows-msvc.tar.gz
+.\hamsy.exe
+```
+
+On macOS and Linux, use the install script to download the prebuilt binary from the latest GitHub Release.
 
 ```
 curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install_source.sh | bash
@@ -47,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/instal
 
 Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`).
 
-Building from source instead — pipe `install.sh` straight from GitHub:
+To build from source on macOS or Linux, run `install.sh` from GitHub.
 
 ```
 curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install.sh | bash
@@ -65,21 +72,23 @@ cd hamsy_proxy
 
 (SSH instead: `git@github.com:emrehan61/hamsy_proxy.git`.) The binary the build produces (and that `install.sh` installs) is `hamsy`.
 
-Prerequisites, up front: Rust (stable), Node 22, and pnpm. `install.sh` checks for all three and helps with what it can — missing Rust gets an offer to install it via rustup (prompted, or auto-confirmed under `-y`/`--yes`); pnpm is activated automatically via `corepack enable` + `corepack prepare` (version pinned in `ui/package.json`), no prompt needed. Node is the exception: if it's missing or older than 22, `install.sh` does not install it for you — it fails with a message telling you to install Node >=22 yourself (nvm, brew, or your distro's package manager). Supported platforms are macOS and Linux — `install.sh` is a bash script that checks OS/arch and refuses anything else; on Windows, use the manual `cargo build` steps documented later in this section instead.
+Prerequisites, up front: Rust (stable), Node 22, and pnpm. `install.sh` checks for all three and helps with what it can — missing Rust gets an offer to install it via rustup (prompted, or auto-confirmed under `-y`/`--yes`); pnpm is activated automatically via `corepack enable` + `corepack prepare` (version pinned in `ui/package.json`), no prompt needed. Node is the exception: if it's missing or older than 22, `install.sh` does not install it for you — it fails with a message telling you to install Node >=22 yourself (nvm, brew, or your distro's package manager).
 
 Default install location is `$HOME/.local/bin`; it prints an `export PATH=...` line if that's not already on yours. Flags (`./install.sh --help` for the full list): `--prefix DIR` (install somewhere else), `--yes`/`-y` (skip confirmation prompts — e.g. before installing Rust via rustup), `--skip-deps` (only check dependencies, install nothing), `--no-ui` (skip the UI build, build `hamsy` without `--features embed-ui`), `--no-cert` (skip trusting the CA in the OS trust store), `--no-path` (skip offering to add the install dir to your PATH), `--uninstall` (remove the installed binary — asks before touching `~/.hamsy`, and a bare `--yes` won't answer that question for you). `install.sh` also runs `hamsy cert install` and offers to add `$PREFIX` to your PATH automatically (prompted, or automatic under `--yes`), so a fresh install needs no manual follow-up unless those steps are skipped or declined.
 
-The rest of this section is the manual build `install.sh` itself runs — useful if you're iterating on the UI or don't want the script deciding anything for you.
+Use these manual steps to build from source on Windows or to build without the install script on macOS or Linux.
 
 Prerequisites: Rust (stable — see `rust-toolchain.toml`), Node 22, and pnpm (`ui/package.json` pins `pnpm@11.18.0`).
 
 ```
-cd ui && pnpm install && pnpm build
+cd ui
+pnpm install
+pnpm build
+cd ..
 cargo build --release --features embed-ui -p hamsy-cli
-./target/release/hamsy
 ```
 
-(`cd ui &&` is used instead of `pnpm --dir ui` because `pnpm --dir` still walks up the directory tree for package-manager detection, and an ancestor directory with its own `package.json`/`packageManager` field — e.g. `$HOME` — can make it pick the wrong package manager; running from inside `ui/` avoids that.)
+Run pnpm from inside `ui/` so it reads the project's `packageManager` pin. From the repository root, run `.\target\release\hamsy.exe` on Windows or `./target/release/hamsy` on macOS and Linux.
 
 `--features embed-ui` bakes the built `ui/dist` directory into the `hamsy` binary (via `rust-embed`), so the result is a single self-contained executable. The release binary built this way (`cargo build --release --features embed-ui -p hamsy-cli`) is about 14 MB, and was confirmed to run standalone — serving the embedded UI correctly — even when copied to and executed from a directory with no `ui/` anywhere nearby. Without that feature, the binary serves the UI straight off disk, checking (in order) `$HAMSY_UI_DIR`, `./ui/dist`, then `<dir of the executable>/ui/dist` — falling back to a minimal built-in placeholder page if none of those exist. That's the normal dev workflow: `cargo build -p hamsy-cli` (no feature flag) plus a UI build, or run the UI's own dev server for hot reload:
 
