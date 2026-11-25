@@ -1298,9 +1298,9 @@ async fn cli_config_and_json_fallback_work_outside_repository() {
         .await
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8(output.stdout)
-        .unwrap()
-        .contains("MCP beta"));
+    let guide = String::from_utf8(output.stdout).unwrap();
+    assert!(guide.starts_with("# Hamsy agent guide\n"));
+    assert!(guide.contains("hamsy mcp --print-config"));
     let app = App::start().await;
     app.seed();
     let output = Command::new(BIN)

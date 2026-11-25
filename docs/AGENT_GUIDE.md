@@ -1,4 +1,4 @@
-# Hamsy agent guide — MCP beta
+# Hamsy agent guide
 
 Hamsy is a local HTTP(S) debugging proxy. It captures requests and responses,
 can intercept HTTPS with a locally trusted CA, and applies rules to mock,
@@ -7,7 +7,7 @@ reference are embedded in the release binary; a source checkout is unnecessary.
 
 ## Connect
 
-1. Run `hamsy mcp --print-config` using the installed beta executable. Add the
+1. Run `hamsy mcp --print-config` using the installed Hamsy executable. Add the
    printed executable and arguments to your agent app's MCP configuration.
    Client formats vary; use their equivalent command/argument fields.
    Printing configuration does not start Hamsy or write a profile.
@@ -98,8 +98,8 @@ in the agent's host still apply.
   the original data.
 - `get_settings` explains capture filters, HTTPS interception and passthrough.
   `list_rules` returns the current shared rule set.
-- `export_har` takes 1–20 explicit flow UUIDs and returns a `har` object. The beta
-  omits bodies, form parameters and WebSocket payloads and masks known sensitive
+- `export_har` takes 1–20 explicit flow UUIDs and returns a `har` object. Agent exports
+  omit bodies, form parameters and WebSocket payloads and masks known sensitive
   fields. IDs no longer in the in-memory store may be absent from the result;
   compare `requestedCount` with `har.log.entries.length`. No local file is written.
   Use the web UI's normal HAR export for an original full capture.
@@ -227,9 +227,8 @@ allowed by the connection's permissions. Replay is authorized separately with
 - `delete_rule` takes the id.
 
 Changes use the running app's API so the web UI, rule engine and persisted rules
-agree immediately. Edits and enable/disable require beta.5 or later for both the
-MCP binary and running app. Reconnect MCP after updating; if reusing an older
-manually started app, restart it with the updated binary.
+agree immediately. Reconnect MCP after updating. If you started the app
+manually, restart it with the updated binary before editing rules.
 Use a narrow URL/host matcher and remove temporary test rules after the task.
 The full rule reference is available at `hamsy://docs/rules`; schemas are also
 included in tool discovery.
@@ -350,11 +349,11 @@ is a local stdio interface, not a remotely accessible MCP server.
   `hamsy cert install` changes trust and may need OS approval. Certificate-pinned
   applications and built-in passthrough presets can prevent decrypted capture.
 - A missing live flow may have been evicted or cleared. Re-list the live capture.
-- A missing HAR session: reload the page after installing the beta, keep its
+- A missing HAR session: reload the page after updating Hamsy, keep its
   browser window open, and call `list_sessions` again. A HAR on disk or in
   another application's UI is not visible until opened in Hamsy. This interface
   does not search arbitrary files or inspect other programs' private sessions.
-- For a viewer version mismatch, close/restart the viewer with the installed beta
+- For a viewer version mismatch, close/restart the viewer with the updated Hamsy binary
   (`hamsy open --stop`, then `hamsy open file.har`); reload its browser page.
   Discovery does not start or stop applications automatically.
 - A rule write returns an acknowledgement. Check the web UI or list_rules to
@@ -383,8 +382,5 @@ diagnostics to stderr, and exit nonzero. Argument parsing/startup errors go to
 stderr. No prompts are issued. To save a redacted HAR using a shell, call
 `export_har` and extract the result's `har` property into a `.har` file.
 
-This beta supports live captures and open imported HAR sessions. No automatic
-client configuration installation, remote
-MCP endpoint, certificate management tool or arbitrary settings-write tool is
-included. `hamsy update` continues to follow the normal stable release channel;
-install beta artifacts explicitly to remain on the beta.
+Use `hamsy update` to install the latest stable version, then reconnect the MCP
+client so it launches the updated executable.

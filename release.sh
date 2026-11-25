@@ -64,7 +64,8 @@ Exactly one of the following is required:
                            Set an exact version instead of bumping, e.g.
                            `-v 1.2.3` or `-v v1.2.3` — a leading `v` is
                            optional and stripped. Must be strictly greater
-                           than the current version.
+                           than the current version. A prerelease may be
+                           promoted to its stable version (e.g. 0.5.0).
 
 Options:
   --dry-run, -n   Print what would happen (old -> new version, commit
@@ -211,21 +212,16 @@ fi
 WORKSPACE_PACKAGE_BLOCK="$(awk '/^\[workspace\.package\]/{flag=1; next} /^\[/{flag=0} flag' "$CARGO_TOML")"
 CURRENT_VERSION="$(printf '%s\n' "$WORKSPACE_PACKAGE_BLOCK" | grep -E '^version[[:space:]]*=' | head -n1 | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')"
 
-# Parsed defensively per-component (rather than one regex, to keep this
-# bash-3.2-friendly like the rest of the repo's scripts) so a malformed or
-# missing version line dies here instead of producing a bad tag/commit later.
-CURRENT_MAJOR="${CURRENT_VERSION%%.*}"
-CURRENT_REST="${CURRENT_VERSION#*.}"
-CURRENT_MINOR="${CURRENT_REST%%.*}"
-CURRENT_PATCH="${CURRENT_REST#*.}"
-
-case "$CURRENT_MAJOR" in '' | *[!0-9]*) CURRENT_MAJOR="" ;; esac
-case "$CURRENT_MINOR" in '' | *[!0-9]*) CURRENT_MINOR="" ;; esac
-case "$CURRENT_PATCH" in '' | *[!0-9]*) CURRENT_PATCH="" ;; esac
-
-if [ -z "$CURRENT_MAJOR" ] || [ -z "$CURRENT_MINOR" ] || [ -z "$CURRENT_PATCH" ]; then
-  die "Could not parse a X.Y.Z version out of [workspace.package] in $CARGO_TOML (got '$CURRENT_VERSION')."
+# A stable release can promote a Cargo prerelease such as 0.5.0-beta.5.
+CURRENT_VERSION_PATTERN='^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+if ! [[ "$CURRENT_VERSION" =~ $CURRENT_VERSION_PATTERN ]]; then
+  die "Could not parse the workspace version in $CARGO_TOML (got '$CURRENT_VERSION')."
 fi
+CURRENT_MAJOR=$((10#${BASH_REMATCH[1]}))
+CURRENT_MINOR=$((10#${BASH_REMATCH[2]}))
+CURRENT_PATCH=$((10#${BASH_REMATCH[3]}))
+CURRENT_BASE="$CURRENT_MAJOR.$CURRENT_MINOR.$CURRENT_PATCH"
+CURRENT_PRERELEASE="${BASH_REMATCH[4]:-}"
 
 # ---------------------------------------------------------------------------
 # New version
@@ -266,14 +262,15 @@ if [ -n "$SET_VERSION" ]; then
     die "-v/--set-version requires an X.Y.Z version (optionally prefixed with 'v'), got '$SET_VERSION'."
   fi
 
-  # 10#$var forces base-10 interpretation, same reason as the bump math below.
+  # Normalize version components in base 10.
   NEW_MAJOR=$((10#$NEW_MAJOR))
   NEW_MINOR=$((10#$NEW_MINOR))
   NEW_PATCH=$((10#$NEW_PATCH))
 
   # soft_die (not die) so --dry-run can still preview/report a backwards or
   # sideways version instead of just aborting.
-  if ! version_gt "$NEW_MAJOR" "$NEW_MINOR" "$NEW_PATCH" "$((10#$CURRENT_MAJOR))" "$((10#$CURRENT_MINOR))" "$((10#$CURRENT_PATCH))"; then
+  if ! version_gt "$NEW_MAJOR" "$NEW_MINOR" "$NEW_PATCH" "$CURRENT_MAJOR" "$CURRENT_MINOR" "$CURRENT_PATCH" &&
+     { [ -z "$CURRENT_PRERELEASE" ] || [ "$NEW_MAJOR.$NEW_MINOR.$NEW_PATCH" != "$CURRENT_BASE" ]; }; then
     soft_die "Given version v$NEW_MAJOR.$NEW_MINOR.$NEW_PATCH is not greater than the current version v$CURRENT_VERSION."
   fi
 else
@@ -281,19 +278,19 @@ else
   # (e.g. "08") never gets misread as an invalid octal literal.
   case "$BUMP" in
     major)
-      NEW_MAJOR=$((10#$CURRENT_MAJOR + 1))
+      NEW_MAJOR=$((CURRENT_MAJOR + 1))
       NEW_MINOR=0
       NEW_PATCH=0
       ;;
     minor)
-      NEW_MAJOR=$((10#$CURRENT_MAJOR))
-      NEW_MINOR=$((10#$CURRENT_MINOR + 1))
+      NEW_MAJOR=$CURRENT_MAJOR
+      NEW_MINOR=$((CURRENT_MINOR + 1))
       NEW_PATCH=0
       ;;
     patch)
-      NEW_MAJOR=$((10#$CURRENT_MAJOR))
-      NEW_MINOR=$((10#$CURRENT_MINOR))
-      NEW_PATCH=$((10#$CURRENT_PATCH + 1))
+      NEW_MAJOR=$CURRENT_MAJOR
+      NEW_MINOR=$CURRENT_MINOR
+      NEW_PATCH=$((CURRENT_PATCH + 1))
       ;;
   esac
 fi

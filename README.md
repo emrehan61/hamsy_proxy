@@ -18,19 +18,16 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 
 <!-- TODO: capture a real screenshot of the Traffic page and save it to docs/images/traffic.png, then restore an image link here -->
 
-## MCP beta (w-mcp-beta)
+## MCP and agent CLI
 
-This branch builds **0.5.0-beta.5**, with an agent interface bundled in the same
-`hamsy` binary. Download your platform's artifact from the **Release** workflow
-run for `w-mcp-beta`, extract the `.tar.gz`, and use that binary explicitly.
-Branch pushes build artifacts; they do not publish a stable GitHub release.
-No Rust, Node, Python, model account, or source checkout is needed to use it.
+Hamsy 0.5.0 bundles a local MCP server and an agent CLI in the release binary.
+Install Hamsy, then generate the command for your MCP client.
 
 ```sh
 hamsy mcp --print-config
 ```
 
-Add the generated executable/arguments to your MCP client. Connecting now starts
+Add the generated executable and arguments to your MCP client. Connecting starts
 Hamsy automatically in the background if needed, or reuses the running app. No
 separate startup command is required. The app stays running across agent
 connections. Use `hamsy mcp --stop-app` to stop the MCP-started instance.
@@ -70,11 +67,11 @@ a proposed rule against a retained live flow without saving it or sending traffi
 
 Agents without MCP can use `hamsy agent-guide`, `hamsy agent tools`, and
 `hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'`.
-`hamsy update` still follows stable releases; install beta artifacts explicitly.
 
 ## Contents
 
 - [What it does](#what-it-does)
+- [MCP and agent CLI](#mcp-and-agent-cli)
 - [Install / build](#install--build)
 - [Cutting a release](#cutting-a-release)
 - [Quick start](#quick-start)
@@ -153,6 +150,8 @@ This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to 
 ```
 
 Bumps the `[workspace.package]` version in the root `Cargo.toml`, refreshes `Cargo.lock`, commits (`Release vX.Y.Z`), tags (`vX.Y.Z`), and pushes — from `master` only, on a clean, up-to-date tree. The pushed tag triggers `.github/workflows/release.yml`, which builds the binaries for all platforms and publishes them as a GitHub release; `hamsy update` compares its own version against the latest release and picks up the new binary from there. Need an exact version instead of a bump (e.g. to match a specific release number)? `./release.sh -v 1.2.3` (or `--set-version v1.2.3`, leading `v` optional) sets it directly — it must be strictly greater than the current version. `./release.sh --dry-run` previews the version change and every command without changing anything; `--no-push` stops after the local commit/tag; `--yes` skips the confirmation prompt. `./release.sh --help` for the full flag list.
+
+To promote a prerelease to its stable version, set that version explicitly. For example, run `./release.sh --set-version 0.5.0` to promote `0.5.0-beta.5` after merging to `master`.
 
 ## Quick start
 

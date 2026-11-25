@@ -45,7 +45,7 @@ struct Cli {
 enum Command {
     /// Run the proxy and web UI (the default when no subcommand is given).
     Run(run::RunArgs),
-    /// Serve the bundled MCP beta over stdin/stdout.
+    /// Serve MCP over stdin/stdout.
     Mcp(mcp::McpArgs),
     /// Discover and call agent tools using JSON without an MCP client.
     Agent(mcp::AgentArgs),

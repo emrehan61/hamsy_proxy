@@ -612,7 +612,7 @@ GET    /*
 ```
 
 
-## Open sessions (MCP beta)
+## Open sessions
 
 `GET /api/sessions` lists live capture (id `live`, omitted in standalone viewer
 mode) and HAR sessions advertised by connected Hamsy browser windows. A HAR row
@@ -645,7 +645,7 @@ requests. Registry entries are withdrawn on disconnect; heartbeats remove stale
 windows. Session data remains in the browser and IndexedDB until read on demand.
 
 
-### Content search (0.5.0-beta.3)
+### Content search
 
 `GET /api/flows/search?params=<URL-encoded JSON>` searches current live snapshots.
 `GET /api/sessions/{uuid}/search?params=<URL-encoded JSON>` searches an open HAR
@@ -661,7 +661,7 @@ error. No raw content snippets are returned. See the bundled agent guide for
 regex engine differences, capture limits and live polling behavior.
 
 
-### MCP-managed process control (0.5.0-beta.4)
+### MCP-managed process control
 
 Only capture instances started by MCP expose `/api/mcp-runtime/health` and
 `POST /api/mcp-runtime/stop`. The former answers a bounded random challenge with

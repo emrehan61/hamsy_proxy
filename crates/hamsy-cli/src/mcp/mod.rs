@@ -260,7 +260,7 @@ struct Capture {
 struct ExportHar {
     /// Session ID from list_sessions. Omit for live capture (app:live).
     session_id: Option<String>,
-    /// Explicit flow UUIDs to export, from 1 to 20. Bodies are omitted in beta exports.
+    /// Explicit flow UUIDs to export, from 1 to 20. Bodies are omitted.
     ids: Vec<String>,
 }
 
@@ -315,8 +315,8 @@ fn definitions() -> Vec<Tool> {
         definition::<ExportHar>("export_har", "Return a redacted HAR object for 1–20 explicit flow IDs. Body and WebSocket payloads omitted. Does not write files. Use the web UI for an original full HAR.", false),
         definition::<RuleInput>("create_rule", "Create a persisted rule, affecting matching traffic immediately if enabled. Use a narrowly scoped match. Requires --allow-writes. Read hamsy://docs/rules for examples.", true),
         definition::<RuleInput>("update_rule", "Replace an existing rule using rule.id. Requires a complete rule and --allow-writes. Do not submit redacted values from list_rules.", true),
-        definition::<EditRule>("edit_rule", "Edit an existing rule by ID, preserving omitted fields and secrets. Supply patch with name, enabled, priority, group, notes, match, or actions. Match and actions replace their entire field; group/notes accept null to clear. Do not submit masked values. Requires --allow-writes and beta.5 or later app.", true),
-        definition::<RuleEnabled>("set_rule_enabled", "Enable or disable an existing rule by ID and explicit enabled boolean. Preserves all other fields and secrets. Repeated calls keep the requested state. Requires --allow-writes and beta.5 or later app.", true),
+        definition::<EditRule>("edit_rule", "Edit an existing rule by ID, preserving omitted fields and secrets. Supply patch with name, enabled, priority, group, notes, match, or actions. Match and actions replace their entire field; group/notes accept null to clear. Do not submit masked values. Requires --allow-writes and a running Hamsy app with rule editing support.", true),
+        definition::<RuleEnabled>("set_rule_enabled", "Enable or disable an existing rule by ID and explicit enabled boolean. Preserves all other fields and secrets. Repeated calls keep the requested state. Requires --allow-writes and a running Hamsy app with rule editing support.", true),
         definition::<Id>("delete_rule", "Permanently delete a rule by its exact ID. Requires --allow-writes.", true),
         definition::<Capture>("set_capture", "Pause or resume recording. Does not start the proxy or change system proxy settings. Requires --allow-writes.", true),
         definition::<Replay>("replay_request", "Send the original captured request again through Hamsy. Can repeat purchases, writes, or other upstream effects, including for GET. Requires --allow-replay and explicit user intent; never retry automatically.", true),
@@ -351,7 +351,7 @@ impl Bridge {
         let host = base.host_str().unwrap_or_default().trim_matches(['[', ']']);
         ensure!(
             host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
-            "MCP beta connects only to loopback addresses (127.0.0.1, localhost, or [::1])"
+            "MCP connects only to loopback addresses (127.0.0.1, localhost, or [::1])"
         );
         let client = Client::builder()
             .no_proxy()
@@ -409,7 +409,7 @@ impl Bridge {
                         sessions.push(session);
                     }
                 }
-                _ => sources.push(json!({"source":source,"available":false,"detail":"Cannot list sessions. Reconnect MCP, reload beta browser windows, or check --api-url"})),
+                _ => sources.push(json!({"source":source,"available":false,"detail":"Cannot list sessions. Reconnect MCP, reload Hamsy browser windows, or check --api-url"})),
             }
         }
         json!({"sessions":sessions,"sources":sources})

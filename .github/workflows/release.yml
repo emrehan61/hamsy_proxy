@@ -29,7 +29,7 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
           # macos-13 (Intel) was retired Dec 2025; macos-15-intel is its
           # replacement standard-tier x86_64 runner.
           - target: x86_64-apple-darwin
