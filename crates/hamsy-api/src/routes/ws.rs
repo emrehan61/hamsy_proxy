@@ -84,6 +84,9 @@ async fn flush_coalesced(sender: &mut WsSender, buffer: &mut HashMap<FlowId, Flo
 /// Applies a single inbound [`ClientCommand`], replying directly on this
 /// socket where the command calls for it (`Ping`).
 async fn process_command(cmd: ClientCommand, state: &ApiState, sender: &mut WsSender) {
+    if state.viewer_only() && !matches!(cmd, ClientCommand::Ping) {
+        return;
+    }
     match cmd {
         ClientCommand::Pause { paused } => {
             let mut settings = state.settings();

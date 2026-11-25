@@ -2,8 +2,14 @@ name: Release
 
 on:
   push:
+    branches:
+      - "master"
+      - "w-mcp-beta"
     tags:
       - "v*"
+  pull_request:
+    branches:
+      - "master"
   workflow_dispatch:
     inputs:
       tag_name:
@@ -23,7 +29,7 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
           # macos-13 (Intel) was retired Dec 2025; macos-15-intel is its
           # replacement standard-tier x86_64 runner.
           - target: x86_64-apple-darwin
@@ -34,6 +40,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -68,14 +76,27 @@ jobs:
         with:
           shared-key: ${{ matrix.target }}
 
-      - name: Test Rust workspace
+      - name: Test workspace including MCP stdio integration
         run: cargo test --workspace --locked
 
       - name: Build hamsy-cli
-        run: cargo build --release --features embed-ui -p hamsy-cli --target ${{ matrix.target }}
+        run: cargo build --locked --release --features embed-ui -p hamsy-cli --target ${{ matrix.target }}
+
+      - name: Build HAR desktop integration
+        run: bash packaging/build-desktop.sh "target/${{ matrix.target }}/release/packaging"
+
+      - name: Check HAR desktop integration
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python3 packaging/test-desktop.py --macos-payload "target/${{ matrix.target }}/release/packaging"
+          else
+            python3 packaging/test-desktop.py
+          fi
 
       - name: Package tarball
-        run: tar czf "hamsy-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" hamsy
+        # Keep hamsy at archive root for existing binary-only self-updaters.
+        run: tar czf "hamsy-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" hamsy packaging
 
       - uses: actions/upload-artifact@v4
         with:
@@ -83,9 +104,42 @@ jobs:
           path: hamsy-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  browser-tests:
+    name: browser session integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build UI
+        working-directory: ui
+        run: |
+          corepack enable
+          corepack prepare --activate
+          pnpm install --frozen-lockfile
+          pnpm build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: browser-tests
+      - name: Build browser test app
+        run: cargo build --locked --features embed-ui -p hamsy-cli
+      - name: Install test browser
+        working-directory: ui
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Test browser HAR sessions through the agent interface
+        working-directory: ui
+        env:
+          HAMSY_BIN: ${{ github.workspace }}/target/debug/hamsy
+        run: pnpm test:browser
+
   release:
     name: publish release
-    needs: build
+    needs: [build, browser-tests]
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -111,6 +165,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+          prerelease: ${{ contains(github.event_name == 'push' && github.ref_name || inputs.tag_name, '-') }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           body_path: docs/releases/${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}.md
           fail_on_unmatched_files: true

@@ -6,6 +6,8 @@
 //! Other crates (a proxy server, a REST/WebSocket API, a CLI) build on top
 //! of this foundation.
 
+pub mod agent_context;
+pub mod agent_privacy;
 pub mod body;
 pub mod error;
 pub mod event;
@@ -13,6 +15,7 @@ pub mod flow;
 pub mod har;
 pub mod passthrough_presets;
 pub mod rule;
+pub mod rule_preview;
 pub mod rules_store;
 pub mod settings;
 pub mod store;
@@ -29,8 +32,10 @@ pub use passthrough_presets::Preset;
 pub use rule::{
     Action, BodyCond, BodyCondOp, HeaderCond, HeaderOp, JsonOp, JsonOpKind, Matcher,
     MockedResponse, PayloadEncoding, RequestCtx, RequestOutcome, ResponseCtx, ResponseOutcome,
-    Rule, RuleError, RuleSet, UrlOp,
+    Rule, RuleError, RulePatch, RuleSet, UrlOp,
 };
 pub use rules_store::RulesStore;
 pub use settings::{data_dir, Settings};
 pub use store::{FlowQuery, FlowStore};
+
+pub mod search;

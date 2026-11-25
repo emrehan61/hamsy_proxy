@@ -172,3 +172,8 @@
 .setup-instructions__emphasis {
   color: var(--amber);
 }
+
+.setup-page__agent-command {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

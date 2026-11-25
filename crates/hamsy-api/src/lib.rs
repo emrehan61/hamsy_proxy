@@ -12,6 +12,7 @@ pub mod error;
 pub mod hooks;
 pub mod qr;
 pub mod routes;
+pub mod sessions;
 pub mod state;
 pub mod sysproxy;
 pub mod sysproxy_state;
@@ -41,11 +42,15 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 /// serving the web UI (see [`assets`]).
 pub fn router(state: ApiState) -> Router {
     let api_routes = Router::new()
+        .merge(sessions::router())
         .route("/state", get(routes::state::get_state))
         .route(
             "/flows",
             get(routes::flows::list).delete(routes::flows::clear),
         )
+        .route("/flows/search", get(routes::flows::search))
+        .route("/flows/changes", get(routes::changes::get))
+        .route("/flows/{id}/context", get(routes::context::get))
         .route("/flows/{id}", get(routes::flows::get))
         .route("/flows/{id}/replay", post(routes::flows::replay))
         .route(
@@ -53,8 +58,14 @@ pub fn router(state: ApiState) -> Router {
             get(routes::rules::list).post(routes::rules::create),
         )
         .route(
+            "/rules/preview",
+            post(routes::preview::preview).layer(DefaultBodyLimit::max(128 * 1024)),
+        )
+        .route(
             "/rules/{id}",
-            put(routes::rules::update).delete(routes::rules::delete),
+            put(routes::rules::update)
+                .patch(routes::rules::patch)
+                .delete(routes::rules::delete),
         )
         .route("/rules/{id}/toggle", post(routes::rules::toggle))
         .route("/rules/reorder", post(routes::rules::reorder))

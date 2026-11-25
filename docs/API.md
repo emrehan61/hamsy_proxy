@@ -6,6 +6,8 @@ All JSON uses `camelCase` field names, with no exceptions — including the fiel
 
 The server is `hamsy-api`'s `axum::Router` (`hamsy_api::router`), served by `hamsy run` on the configured UI port (default `9081`), or standalone with a `NoopReplay`/`StubCert` backend. There is **no authentication** on any of this — see the Security note in the top-level `README.md`.
 
+`hamsy open` runs a separate loopback HAR viewer with a restricted read-only router. Its CLI handoff requires a private bearer token, and the browser redeems short-lived random tickets at `GET /api/har/open/{ticket}`. These routes are not added to the normal LAN capture API. Its state includes `viewerOnly: true`; normal capture state includes `viewerOnly: false`. See [HAR opening](HAR_OPENING.md) for the protocol and lifecycle.
+
 ---
 
 ## 1. Flow types
@@ -358,12 +360,21 @@ Note: `hamsy-api` never actually constructs a `flowDetail` event itself today (n
 
 ## 5. REST surface
 
-All error responses share the shape `{"error": "<category>", "detail": "<message>"}`, where `category` is one of `bad_request` (400) | `not_found` (404) | `payload_too_large` (413) | `internal` (500) | `not_implemented` (501) | `bad_gateway` (502). Request bodies over 512 MiB are rejected globally (`413`); in practice only `POST /api/har/import` is expected to approach that. CORS is enabled only for the Vite dev-server origins (`http://localhost:5173`, `http://127.0.0.1:5173`) with any method/header — there's no wildcard `*` origin.
+Application errors retain `error` (category) and `detail` (message), and add
+`code` (stable recovery code), `retryable`, and optional `details`. Observation
+can return `stale_cursor` (409); browser reads distinguish `session_not_open`,
+`session_busy`, `session_timeout`, and `session_unavailable`. A stale cursor's
+`details` contains `resetRequired`, `reason`, `captureId`, and a fresh `cursor`.
+Framework input/body rejections may use their native error format.
+Request bodies over 512 MiB are rejected globally (`413`); rule preview has a
+128 KiB limit. CORS is enabled only for the Vite dev-server origins
+(`http://localhost:5173`, `http://127.0.0.1:5173`) with any method/header.
 
 ```
 GET    /api/state
                      -> 200 { version, proxyPort, uiPort, capturing, paused,
                               flowCount, caFingerprint, uptimeSecs,
+                              captureId, changeCursor,
                               systemProxy: { enabled, platform, supported } }
                      `capturing` is `!paused` (kept as a separate field for
                      UI convenience). `platform` is one of "macos" /
@@ -387,8 +398,29 @@ GET    /api/flows?limit=&afterSeq=&q=&methods=&statusClass=&resourceTypes=&host=
 
 GET    /api/flows/:id
                      -> 200 Flow
+                     Bodies and WebSocket messages are included by default.
+                     `includeBodies=false` empties body data in request,
+                     response and their originals; body sizes and capture
+                     metadata are retained. Either explicit `includeBodies`
+                     value omits WebSocket messages from detail responses.
                      -> 404 if `:id` isn't a valid UUID, or is valid but
                         unknown
+
+GET    /api/flows/changes?cursor=&limit=50&waitMs=0
+                     -> 200 { captureId, cursor, changes, hasMore, timedOut }
+                     No cursor establishes a baseline. Changes contain only
+                     { revision, kind, flowId, seq }; kind is inserted,
+                     updated, or evicted. limit is 1–200, waitMs is 0–10000.
+                     Late response/WebSocket updates are included. Drain pages
+                     while hasMore. Clear/restart or an expired history cursor
+                     returns stale_cursor (409), requiring a new baseline.
+
+GET    /api/flows/:id/context?params=<URL-encoded JSON>
+                     -> 200 bounded redacted context for the selected field.
+                     Params: query, field, regex?, caseSensitive?,
+                     maxContextBytes? (1–4096, default 512), messageIndex?.
+                     Redaction precedes matching and cropping; truncated or
+                     oversized source data cannot bypass redaction.
 
 DELETE /api/flows
                      -> 204, clears the flow store and broadcasts `cleared`
@@ -410,6 +442,14 @@ GET    /api/rules
                      symmetry with `GET /api/rules/export`; the web UI's
                      `listRules()` (`ui/src/lib/api.ts`) expects this shape.
 
+POST   /api/rules/preview
+        body: { flowId: UUID, rule: Rule }
+                     -> 200 metadata describing request/response phase effects
+                     against one retained live flow. Evaluates the proposed
+                     rule alone without persisting, replaying, sleeping, or
+                     changing capture. Response effects use the retained
+                     response; no new upstream response is predicted.
+
 POST   /api/rules
         body: Rule (server-assigns a UUID `id` if the given `id` is empty
               or the field is omitted from the JSON body entirely — the web
@@ -420,6 +460,16 @@ POST   /api/rules
 PUT    /api/rules/:id
         body: Rule  (wholesale replacement)
                      -> 200 Rule
+                     -> 404 if `:id` doesn't exist
+
+PATCH  /api/rules/:id
+        body: {"enabled": false} or other supplied rule fields
+              (name, enabled, priority, group, notes, match, actions)
+              Omitted fields are preserved. match/actions replace whole fields;
+              group/notes accept null to clear. id cannot be changed.
+                     -> 200 Rule; persists and broadcasts rulesChanged
+                     -> 400 for empty edits, blank names or invalid patterns
+                     -> 422 for invalid field types or unknown top-level fields
                      -> 404 if `:id` doesn't exist
 
 DELETE /api/rules/:id
@@ -520,6 +570,9 @@ GET    /api/har?ids=a,b
                      -> 200 HAR 1.2 document (export_har), served as a file
                         download (Content-Disposition: attachment). Omit
                         `ids` to export every captured flow.
+                     Bodies are included by default. `includeBodies=false`
+                     omits request postData and response content text/encoding
+                     before serialization, retaining body sizes.
 
 POST   /api/har/import
         body: HAR 1.2 document
@@ -557,3 +610,63 @@ GET    /*
                         gets a JSON 404 (`ApiError::NotFound`), not this
                         SPA fallback.
 ```
+
+
+## Open sessions
+
+`GET /api/sessions` lists live capture (id `live`, omitted in standalone viewer
+mode) and HAR sessions advertised by connected Hamsy browser windows. A HAR row
+contains its UUID, name, `kind: "har"`, flow count, import time, active state,
+`readOnly: true`, and the number of connected windows advertising it.
+
+Read an imported session with:
+
+- `GET /api/sessions/{uuid}/flows`: same filter query names as live flows, but
+  returns the first matching page in ascending sequence order; use `afterSeq`
+  to continue. Limit is 1–201 (the MCP bridge uses one lookahead row).
+- `GET /api/sessions/{uuid}/flows/{flow_uuid}`: bodies omitted by default;
+  `includeBodies=true` includes text bodies. Binary and WebSocket data is omitted.
+- `GET /api/sessions/{uuid}/flows/{flow_uuid}/context?params=<JSON>`: same
+  bounded, source-redacted context contract as the live context endpoint.
+- `GET /api/sessions/{uuid}/har?ids=uuid,uuid`: 1–20 selected flows, bodies omitted.
+
+No mutation routes exist for these archives. Reading does not import anything
+into live capture. The browser must remain connected and a read can time out
+when its window is asleep or busy. A bounded set of owning windows is consulted,
+allowing a responsive window to serve a read while another is suspended.
+Responses are bounded to 8 MiB. The MCP layer
+adds redaction, output limits, and namespaced `sessionId` values; raw REST results
+are not a substitute for its privacy filter.
+
+`GET /api/sessions/ws` is an internal browser bridge. It requires a same-origin
+handshake (the capture API also accepts the two documented Vite dev origins).
+The browser advertises session metadata and replies to correlated read-only
+requests. Registry entries are withdrawn on disconnect; heartbeats remove stale
+windows. Session data remains in the browser and IndexedDB until read on demand.
+
+
+### Content search
+
+`GET /api/flows/search?params=<URL-encoded JSON>` searches current live snapshots.
+`GET /api/sessions/{uuid}/search?params=<URL-encoded JSON>` searches an open HAR
+through its browser worker. `params` contains `query` plus optional `regex`,
+`caseSensitive`, `limit`, `afterSeq`, `host`, `excludedHosts` (array), `methods`
+(CSV), and `statusClass`. These endpoints are read-only.
+
+Results contain `matches` (`flowId`, `seq`, `fields`), `scanned`, `nextAfterSeq`,
+`hasMore`, and `contentsOmitted: true`. Follow the cursor while `hasMore` is true,
+including empty pages. A call scans up to 2000 requests and returns up to 200
+matching requests; invalid patterns and timed-out browser searches report an
+error. No raw content snippets are returned. See the bundled agent guide for
+regex engine differences, capture limits and live polling behavior.
+
+
+### MCP-managed process control
+
+Only capture instances started by MCP expose `/api/mcp-runtime/health` and
+`POST /api/mcp-runtime/stop`. The former answers a bounded random challenge with
+an HMAC proof; the latter requires a private bearer credential stored in the
+profile's owner-only `mcp-runtime` directory. Normal capture instances and HAR
+viewers do not expose these routes. These endpoints are internal lifecycle
+controls, not agent traffic tools. Use `hamsy mcp --stop-app` for authenticated
+shutdown; do not kill a PID copied from stale discovery data.

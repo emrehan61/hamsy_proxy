@@ -30,7 +30,7 @@ function bodyText(body: BodyPayload | undefined): string {
   }
 }
 
-function* fields(flow: Flow): Generator<[string, string, SearchTab]> {
+export function* harSearchFields(flow: Flow, textWebSocketsOnly = false): Generator<[string, string, SearchTab]> {
   yield ["URL", flow.url, "overview"];
   yield ["Method", flow.method, "overview"];
   yield ["Status", `${flow.status ?? ""} ${flow.statusText ?? ""}`, "overview"];
@@ -46,6 +46,7 @@ function* fields(flow: Flow): Generator<[string, string, SearchTab]> {
     yield ["Response body", bodyText(flow.response.body), "response"];
   }
   for (const [index, message] of flow.wsMessages.entries()) {
+    if (textWebSocketsOnly && message.opcode !== "text") continue;
     yield [`WebSocket message ${index + 1}`, message.data, "websocket"];
   }
 }
@@ -65,7 +66,7 @@ export function searchHar(flows: Flow[], query: string, regex: boolean, caseSens
   for (const flow of flows) {
     if (allowedIds && !allowedIds.has(flow.id)) continue;
     let found = false;
-    for (const [field, text, tab] of fields(flow)) {
+    for (const [field, text, tab] of harSearchFields(flow)) {
       if (!text) continue;
       const match = pattern.exec(text);
       if (!match) continue;

@@ -213,6 +213,27 @@ export function importHar(har: unknown): Promise<{ imported: number }> {
   return request<{ imported: number }>("/har/import", { method: "POST", body: JSON.stringify(har) });
 }
 
+export interface OpenHarFile {
+  name: string;
+  text: string;
+}
+
+/** Redeems a local CLI handoff; these files belong in client-side HAR sessions. */
+export async function getOpenHarFiles(ticket: string): Promise<OpenHarFile[]> {
+  if (!ticket.trim()) throw new Error("Invalid HAR open link");
+  const result = await request<unknown>(`/har/open/${encodeURIComponent(ticket)}`, { cache: "no-store" });
+  if (typeof result !== "object" || result === null || !("files" in result) || !Array.isArray(result.files) || result.files.length === 0) {
+    throw new Error("Invalid HAR open response");
+  }
+  return result.files.map((file: unknown) => {
+    if (typeof file !== "object" || file === null || !("name" in file) || !("text" in file) ||
+      typeof file.name !== "string" || !file.name.trim() || typeof file.text !== "string") {
+      throw new Error("Invalid HAR open response");
+    }
+    return { name: file.name, text: file.text };
+  });
+}
+
 const api = {
   getState,
   listFlows,
@@ -234,6 +255,7 @@ const api = {
   getSetupInfo,
   getHar,
   importHar,
+  getOpenHarFiles,
 };
 
 export default api;

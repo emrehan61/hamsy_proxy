@@ -258,6 +258,103 @@ fn sample_rule(id: &str, name: &str) -> Value {
 }
 
 #[tokio::test]
+async fn rule_patch_preserves_fields_validates_and_notifies_ui() {
+    let state = common::make_state();
+    let mut events = state.subscribe();
+    let app = router(state.clone());
+    let mut original = sample_rule("existing", "from UI");
+    original["group"] = json!("fixtures");
+    original["notes"] = json!("keep notes");
+    original["actions"] = json!([{"type":"mockResponse","body":"PRIVATE_BODY","status":201}]);
+    state
+        .rules()
+        .create(serde_json::from_value(original).unwrap())
+        .unwrap();
+    let original = serde_json::to_value(state.rules().get("existing").unwrap()).unwrap();
+    let response = app
+        .clone()
+        .oneshot(json_req(
+            "PATCH",
+            "/api/rules/existing",
+            json!({"enabled":false,"group":null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let changed = body_json(response).await;
+    assert_eq!(changed["enabled"], false);
+    assert_eq!(changed["group"], Value::Null);
+    for field in ["id", "name", "notes", "priority", "match", "actions"] {
+        assert_eq!(changed[field], original[field]);
+    }
+    assert!(matches!(
+        events.recv().await.unwrap(),
+        hamsy_core::ServerEvent::RulesChanged
+    ));
+    assert!(state.rules().ruleset().rules().is_empty());
+    for (patch, status) in [
+        (json!({}), StatusCode::BAD_REQUEST),
+        (json!({"name":" "}), StatusCode::BAD_REQUEST),
+        (
+            json!({"match":{"urlOp":"regex","urlValue":"["}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"actions":[{"type":"replaceInResponseBody","find":"[","replace":"x","regex":true}]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (json!({"id":"other"}), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!({"enabled":null}), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!({"match":null}), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!({"actions":null}), StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(json_req("PATCH", "/api/rules/existing", patch))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            serde_json::to_value(state.rules().get("existing").unwrap()).unwrap(),
+            changed
+        );
+        assert!(events.try_recv().is_err());
+    }
+    let response = app
+        .clone()
+        .oneshot(json_req(
+            "PATCH",
+            "/api/rules/missing",
+            json!({"enabled":true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Rules imported through existing APIs may have invalid patterns. They can
+    // still be disabled; enabling must validate before publishing.
+    let mut invalid = sample_rule("imported-invalid", "");
+    invalid["match"] = json!({"urlOp":"regex","urlValue":"["});
+    state
+        .rules()
+        .create(serde_json::from_value(invalid).unwrap())
+        .unwrap();
+    for (enabled, status) in [(false, StatusCode::OK), (true, StatusCode::BAD_REQUEST)] {
+        let response = app
+            .clone()
+            .oneshot(json_req(
+                "PATCH",
+                "/api/rules/imported-invalid",
+                json!({"enabled":enabled}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        assert!(!state.rules().get("imported-invalid").unwrap().enabled);
+    }
+}
+
+#[tokio::test]
 async fn rules_crud_toggle_reorder_round_trip() {
     let state = common::make_state();
     let app = router(state);

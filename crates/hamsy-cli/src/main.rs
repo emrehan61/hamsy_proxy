@@ -5,7 +5,9 @@
 //! (no IPC with a running `hamsy run` process).
 
 mod cert;
+mod har_open;
 mod hooks;
+mod mcp;
 mod rules;
 mod run;
 mod shutdown;
@@ -43,6 +45,16 @@ struct Cli {
 enum Command {
     /// Run the proxy and web UI (the default when no subcommand is given).
     Run(run::RunArgs),
+    /// Serve MCP over stdin/stdout.
+    Mcp(mcp::McpArgs),
+    /// Discover and call agent tools using JSON without an MCP client.
+    Agent(mcp::AgentArgs),
+    /// Print the agent guide embedded in this release.
+    AgentGuide,
+    /// Open HAR files in a browser viewer without starting capture.
+    Open(har_open::OpenArgs),
+    #[command(hide = true, name = "har-viewer-serve")]
+    HarViewerServe(har_open::ServeArgs),
     /// Manage the MITM root certificate authority.
     Cert {
         #[command(subcommand)]
@@ -82,7 +94,10 @@ fn init_tracing(verbosity: u8) {
             _ => "trace",
         })
     });
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 /// Chains onto whatever panic hook was previously installed (so the
@@ -94,10 +109,16 @@ fn init_tracing(verbosity: u8) {
 /// run. Must not itself panic: a panicking panic hook aborts the process
 /// harder, without even printing the original message, which would make
 /// crashes strictly harder to diagnose than doing nothing here at all.
-fn install_panic_restore_hook(data_dir: PathBuf) {
+fn install_panic_restore_hook(data_dir: PathBuf, owned_only: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        match std::panic::catch_unwind(|| hamsy_api::sysproxy_state::restore_if_marked(&data_dir)) {
+        match std::panic::catch_unwind(|| {
+            if owned_only {
+                hamsy_api::sysproxy_state::restore_owned_if_marked(&data_dir)
+            } else {
+                hamsy_api::sysproxy_state::restore_if_marked(&data_dir)
+            }
+        }) {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
                 eprintln!("hamsy: failed to restore the system proxy after a panic: {err}")
@@ -131,7 +152,10 @@ fn main() {
     // subcommands (`cert`/`rules`/`proxy`) are one-shot and fully synchronous
     // -- if they panic, they haven't left anything running that needs this.
     if let Command::Run(ref args) = command {
-        install_panic_restore_hook(resolve_data_dir(args.data_dir.as_deref()));
+        install_panic_restore_hook(
+            resolve_data_dir(args.data_dir.as_deref()),
+            args.agent_managed,
+        );
     }
 
     let result = match command {
@@ -139,6 +163,22 @@ fn main() {
             Ok(rt) => rt.block_on(run::run(args)),
             Err(e) => Err(e.into()),
         },
+        Command::Mcp(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(mcp::run(args))),
+        Command::Agent(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(mcp::agent(args))),
+        Command::AgentGuide => {
+            println!("{}", mcp::GUIDE);
+            Ok(())
+        }
+        Command::Open(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(har_open::open(args))),
+        Command::HarViewerServe(args) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(har_open::serve(args))),
         Command::Cert { command } => cert::dispatch(command),
         Command::Rules { command } => rules::dispatch(command),
         Command::Proxy { command } => sysproxy_cmd::dispatch(command),
@@ -148,5 +188,46 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    #[test]
+    fn open_parses_multiple_paths_and_options() {
+        let cli = Cli::try_parse_from([
+            "hamsy",
+            "open",
+            "--no-open",
+            "--data-dir",
+            "/tmp/my data",
+            "--",
+            "one file.har",
+            "-two.har",
+        ])
+        .unwrap();
+        let Some(Command::Open(args)) = cli.command else {
+            panic!("expected open command")
+        };
+        assert!(args.no_open);
+        assert_eq!(
+            args.files,
+            vec![PathBuf::from("one file.har"), PathBuf::from("-two.har")]
+        );
+        assert_eq!(args.data_dir, Some(PathBuf::from("/tmp/my data")));
+        assert!(Cli::try_parse_from(["hamsy", "open"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["hamsy", "open", "--stop"])
+                .unwrap()
+                .command,
+            Some(Command::Open(har_open::OpenArgs { stop: true, .. }))
+        ));
+        assert!(Cli::try_parse_from(["hamsy", "open", "--stop", "file.har"]).is_err());
+        assert!(Cli::try_parse_from(["hamsy", "open", "--stop", "--no-open"]).is_err());
+        assert!(Cli::try_parse_from(["hamsy", "--manual"])
+            .unwrap()
+            .command
+            .is_none());
     }
 }

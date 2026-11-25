@@ -53,6 +53,9 @@ pub struct RunArgs {
     /// Disable HTTPS/TLS interception (blind-tunnel HTTPS instead of MITM'ing it).
     #[arg(long = "no-https")]
     pub no_https: bool,
+    /// Internal background startup mode used by MCP.
+    #[arg(long, hide = true)]
+    pub agent_managed: bool,
 }
 
 /// RAII guard: while alive, this process may have enabled the OS system
@@ -66,12 +69,14 @@ pub struct RunArgs {
 struct SystemProxyGuard {
     data_dir: PathBuf,
     restored: std::sync::atomic::AtomicBool,
+    owned_only: bool,
 }
 
 impl SystemProxyGuard {
-    fn new(data_dir: PathBuf) -> Self {
+    fn new(data_dir: PathBuf, owned_only: bool) -> Self {
         SystemProxyGuard {
             data_dir,
+            owned_only,
             restored: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -87,8 +92,13 @@ impl SystemProxyGuard {
             return None;
         }
         let data_dir = self.data_dir.clone();
+        let owned_only = self.owned_only;
         match tokio::task::spawn_blocking(move || {
-            hamsy_api::sysproxy_state::restore_if_marked(&data_dir)
+            if owned_only {
+                hamsy_api::sysproxy_state::restore_owned_if_marked(&data_dir)
+            } else {
+                hamsy_api::sysproxy_state::restore_if_marked(&data_dir)
+            }
         })
         .await
         {
@@ -109,7 +119,11 @@ impl Drop for SystemProxyGuard {
         if self.restored.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Err(err) = hamsy_api::sysproxy_state::restore_if_marked(&self.data_dir) {
+        if let Err(err) = if self.owned_only {
+            hamsy_api::sysproxy_state::restore_owned_if_marked(&self.data_dir)
+        } else {
+            hamsy_api::sysproxy_state::restore_if_marked(&self.data_dir)
+        } {
             tracing::warn!(%err, "failed to restore the system proxy while unwinding");
         }
     }
@@ -120,6 +134,16 @@ impl Drop for SystemProxyGuard {
 pub async fn run(args: RunArgs) -> Result<()> {
     println!("hamsi proxy runlanıyor");
     let data_dir = resolve_data_dir(args.data_dir.as_deref());
+    let control = if args.agent_managed {
+        Some(crate::mcp::startup::Control::from_env()?)
+    } else {
+        None
+    };
+    let _profile_lock = if args.agent_managed {
+        Some(crate::mcp::startup::claim_profile(&data_dir)?)
+    } else {
+        None
+    };
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("failed to create data dir {}", data_dir.display()))?;
 
@@ -127,12 +151,14 @@ pub async fn run(args: RunArgs) -> Result<()> {
     // running its own shutdown path, leaving the OS system proxy pointed
     // at a now-dead instance. This is the earliest point any code can
     // notice and fix that -- see `sysproxy_state`'s module doc.
-    hamsy_api::sysproxy_state::recover_stale(&data_dir);
+    if !args.agent_managed {
+        hamsy_api::sysproxy_state::recover_stale(&data_dir);
+    }
 
     // Registered as early as possible so signal handlers are live for as
     // much of this process's lifetime as practical.
     let shutdown_signal_task = tokio::spawn(shutdown::wait_for_shutdown_signal());
-    let system_proxy_guard = SystemProxyGuard::new(data_dir.clone());
+    let system_proxy_guard = SystemProxyGuard::new(data_dir.clone(), args.agent_managed);
 
     let mut settings = Settings::load(&data_dir.join("settings.json"));
     if let Some(port) = args.proxy_port {
@@ -150,9 +176,16 @@ pub async fn run(args: RunArgs) -> Result<()> {
     if args.no_https {
         settings.intercept_https = false;
     }
-    settings
-        .save(&data_dir.join("settings.json"))
-        .context("failed to save settings")?;
+    if args.agent_managed {
+        anyhow::ensure!(
+            settings
+                .bind_addr
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()),
+            "MCP startup requires a loopback bind address"
+        );
+        settings.manual_proxy = true;
+    }
 
     let bind_addr = settings.bind_addr.clone();
     let proxy_port = settings.proxy_port;
@@ -160,6 +193,27 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let manual_proxy_setting = settings.manual_proxy;
     let max_flows = settings.max_flows;
     let system_proxy_bypass = settings.system_proxy_bypass.clone();
+
+    // Bind both listeners before printing anything, so a port conflict is
+    // reported cleanly before any partial startup state is visible.
+    let proxy_listener = TcpListener::bind((bind_addr.as_str(), proxy_port))
+        .await
+        .with_context(|| {
+            format!(
+                "port {proxy_port} is already in use — pass --proxy-port to use a different one"
+            )
+        })?;
+    let ui_listener = TcpListener::bind((bind_addr.as_str(), ui_port))
+        .await
+        .with_context(|| {
+            format!("port {ui_port} is already in use — pass --ui-port to use a different one")
+        })?;
+
+    if !args.agent_managed {
+        settings
+            .save(&data_dir.join("settings.json"))
+            .context("failed to save settings")?;
+    }
 
     // Build the shared handles once, mirroring
     // `hamsy-proxy/tests/common/mod.rs::spawn_proxy_trusting`.
@@ -194,20 +248,10 @@ pub async fn run(args: RunArgs) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
     );
 
-    // Bind both listeners before printing anything, so a port conflict is
-    // reported cleanly before any partial startup state is visible.
-    let proxy_listener = TcpListener::bind((bind_addr.as_str(), proxy_port))
-        .await
-        .with_context(|| {
-            format!(
-                "port {proxy_port} is already in use — pass --proxy-port to use a different one"
-            )
-        })?;
-    let ui_listener = TcpListener::bind((bind_addr.as_str(), ui_port))
-        .await
-        .with_context(|| {
-            format!("port {ui_port} is already in use — pass --ui-port to use a different one")
-        })?;
+    if let Some(control) = &control {
+        let address = std::net::SocketAddr::new(bind_addr.parse()?, ui_port);
+        control.publish(&data_dir, format!("http://{address}/"))?;
+    }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -220,10 +264,14 @@ pub async fn run(args: RunArgs) -> Result<()> {
         }
     });
 
+    let api_control = control.clone();
     let api_task = tokio::spawn({
         let shutdown = shutdown_future(shutdown_rx.clone());
         async move {
-            let router = hamsy_api::router(api_state);
+            let mut router = hamsy_api::router(api_state);
+            if let Some(control) = api_control {
+                router = router.merge(control.routes());
+            }
             if let Err(err) = axum::serve(ui_listener, router)
                 .with_graceful_shutdown(shutdown)
                 .await
@@ -245,7 +293,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         )
     );
 
-    if !args.no_open {
+    if !args.no_open && !args.agent_managed {
         let url = format!("http://127.0.0.1:{ui_port}");
         if let Err(err) = open::that(&url) {
             tracing::warn!(%err, url, "failed to open the browser");
@@ -255,7 +303,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     // System proxy is on by default. `--manual` (or a persisted
     // `manualProxy: true`) opts out; `--system-proxy` forces it on
     // regardless (e.g. to override a persisted opt-out for one run).
-    let system_proxy_requested = if args.manual {
+    let system_proxy_requested = if args.manual || args.agent_managed {
         false
     } else if args.system_proxy {
         true
@@ -282,9 +330,10 @@ pub async fn run(args: RunArgs) -> Result<()> {
         }
     }
 
-    let signal = shutdown_signal_task
-        .await
-        .expect("shutdown-signal watcher task panicked");
+    let signal = tokio::select! {
+        signal = shutdown_signal_task => signal.expect("shutdown-signal watcher task panicked").to_string(),
+        _ = async { if let Some(control) = control { control.stopped.notified().await; } else { std::future::pending::<()>().await; } } => "MCP stop request".to_string(),
+    };
     println!("\n  Shutting down…");
     tracing::info!(%signal, "received shutdown signal, restoring system proxy and draining connections");
 

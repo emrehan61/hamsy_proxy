@@ -25,7 +25,19 @@ pub fn export_har_refs<'a>(
     flows: impl IntoIterator<Item = &'a Flow>,
     creator_version: &str,
 ) -> Value {
-    let entries: Vec<Value> = flows.into_iter().map(export_entry).collect();
+    export_har_refs_with_bodies(flows, creator_version, true)
+}
+
+/// Exports borrowed flows, optionally omitting body contents while retaining sizes.
+pub fn export_har_refs_with_bodies<'a>(
+    flows: impl IntoIterator<Item = &'a Flow>,
+    creator_version: &str,
+    include_bodies: bool,
+) -> Value {
+    let entries: Vec<Value> = flows
+        .into_iter()
+        .map(|flow| export_entry(flow, include_bodies))
+        .collect();
     serde_json::json!({
         "log": {
             "version": "1.2",
@@ -126,7 +138,7 @@ fn split_server_addr(addr: Option<&str>) -> (Value, Value) {
     }
 }
 
-fn export_entry(flow: &Flow) -> Value {
+fn export_entry(flow: &Flow, include_bodies: bool) -> Value {
     let started = format_start_time(flow.summary.started_at);
     let time_ms = flow.summary.duration_ms.unwrap_or(0) as f64;
 
@@ -159,7 +171,7 @@ fn export_entry(flow: &Flow) -> Value {
         "bodySize": request.map(|r| r.body.size).unwrap_or(0),
     });
     if let (Some(r), Some(obj)) = (request, request_json.as_object_mut()) {
-        if r.body.kind != BodyKind::None {
+        if include_bodies && r.body.kind != BodyKind::None {
             let mime = r
                 .headers
                 .iter()
@@ -202,7 +214,7 @@ fn export_entry(flow: &Flow) -> Value {
         "compression": 0,
     });
     if let (Some(r), Some(obj)) = (response, content.as_object_mut()) {
-        if r.body.kind != BodyKind::None {
+        if include_bodies && r.body.kind != BodyKind::None {
             obj.insert("text".to_string(), Value::String(r.body.data.clone()));
             if r.body.kind == BodyKind::Base64 {
                 obj.insert("encoding".to_string(), Value::String("base64".to_string()));

@@ -12,12 +12,13 @@
 // plain ref-map instead of a querySelectorAll scan).
 
 import type { Component } from "solid-js";
-import { For, createEffect, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, onCleanup, onMount } from "solid-js";
 import type { HarSession } from "../stores/harSessions";
 import { activeSessionId, closeSession, importHarFile, sessions, setActiveSession } from "../stores/harSessions";
 import { flowCount } from "../stores/flows";
 import { pushToast } from "../stores/ui";
 import Icon from "./Icon";
+import { viewerOnly } from "../stores/appMode";
 
 /**
  * Imports every file in `files`, toasting one success/failure message per
@@ -119,9 +120,9 @@ const SessionTabs: Component = () => {
           onClick={() => setActiveSession(null)}
           onKeyDown={(e) => onTabKeyDown(e, null)}
         >
-          <Icon name="zap" size={14} class="session-tabs__tab-icon" />
-          <span class="session-tabs__tab-name">Live</span>
-          <span class="session-tabs__tab-count mono">{flowCount()}</span>
+          <Icon name={viewerOnly() ? "file" : "zap"} size={14} class="session-tabs__tab-icon" />
+          <span class="session-tabs__tab-name">{viewerOnly() ? "Open HAR" : "Live"}</span>
+          <Show when={!viewerOnly()}><span class="session-tabs__tab-count mono">{flowCount()}</span></Show>
         </div>
 
         <For each={sessions()}>

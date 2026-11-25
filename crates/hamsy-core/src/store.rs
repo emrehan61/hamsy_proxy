@@ -4,8 +4,49 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use serde::Serialize;
+use uuid::Uuid;
 
 use crate::flow::{Flow, FlowId, FlowSummary, ResourceType};
+
+const CHANGE_HISTORY_CAPACITY: usize = 4096;
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FlowChangeKind {
+    Inserted,
+    Updated,
+    Evicted,
+}
+
+/// Retained change metadata never owns a captured body or WebSocket payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowChange {
+    pub revision: u64,
+    pub kind: FlowChangeKind,
+    pub flow_id: FlowId,
+    pub seq: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowChanges {
+    pub capture_id: Uuid,
+    pub cursor: String,
+    pub changes: Vec<FlowChange>,
+    pub has_more: bool,
+}
+
+#[derive(Debug)]
+pub enum ChangeCursorError {
+    Invalid,
+    Stale {
+        reason: &'static str,
+        capture_id: Uuid,
+        cursor: String,
+    },
+}
 
 /// Filter/pagination parameters for [`FlowStore::list`].
 #[derive(Debug, Clone, Default)]
@@ -40,9 +81,29 @@ struct Inner {
     total_bytes: u64,
     /// Byte budget enforced alongside `capacity`; see [`FlowStore::set_max_total_bytes`].
     max_total_bytes: u64,
+    capture_id: Uuid,
+    revision: u64,
+    changes: VecDeque<FlowChange>,
 }
 
 impl Inner {
+    fn record_change(&mut self, kind: FlowChangeKind, flow_id: FlowId, seq: u64) {
+        self.revision += 1;
+        self.changes.push_back(FlowChange {
+            revision: self.revision,
+            kind,
+            flow_id,
+            seq,
+        });
+        if self.changes.len() > CHANGE_HISTORY_CAPACITY {
+            self.changes.pop_front();
+        }
+    }
+
+    fn cursor(&self, revision: u64) -> String {
+        format!("{}:{revision}", self.capture_id)
+    }
+
     /// Evicts oldest-first until BOTH the flow count is within `capacity`
     /// and `total_bytes` is within `max_total_bytes`, including eviction
     /// of a single flow that exceeds the entire budget.
@@ -51,6 +112,7 @@ impl Inner {
             if let Some(oldest) = self.order.pop_front() {
                 if let Some(flow) = self.flows.remove(&oldest) {
                     self.total_bytes = self.total_bytes.saturating_sub(stored_payload_bytes(&flow));
+                    self.record_change(FlowChangeKind::Evicted, oldest, flow.summary.seq);
                 }
             } else {
                 break;
@@ -80,6 +142,9 @@ impl FlowStore {
                 next_seq: 1,
                 total_bytes: 0,
                 max_total_bytes: u64::MAX,
+                capture_id: Uuid::new_v4(),
+                revision: 0,
+                changes: VecDeque::new(),
             }),
         }
     }
@@ -99,13 +164,17 @@ impl FlowStore {
     pub fn insert(&self, flow: Flow) {
         let mut inner = self.inner.write();
         let id = flow.summary.id;
+        let seq = flow.summary.seq;
+        let mut kind = FlowChangeKind::Inserted;
         if let Some(old) = inner.flows.remove(&id) {
+            kind = FlowChangeKind::Updated;
             inner.total_bytes = inner.total_bytes.saturating_sub(stored_payload_bytes(&old));
             inner.order.retain(|existing| *existing != id);
         }
         inner.total_bytes += stored_payload_bytes(&flow);
         inner.order.push_back(id);
         inner.flows.insert(id, Arc::new(flow));
+        inner.record_change(kind, id, seq);
         inner.evict_if_needed();
     }
 
@@ -143,6 +212,7 @@ impl FlowStore {
         let after = stored_payload_bytes(flow);
         let summary = flow.summary();
         inner.total_bytes = inner.total_bytes.saturating_sub(before) + after;
+        inner.record_change(FlowChangeKind::Updated, id, summary.seq);
         inner.evict_if_needed();
         inner.flows.contains_key(&id).then_some(summary)
     }
@@ -258,6 +328,81 @@ impl FlowStore {
         inner.flows.clear();
         inner.order.clear();
         inner.total_bytes = 0;
+        inner.capture_id = Uuid::new_v4();
+        inner.revision = 0;
+        inner.changes.clear();
+    }
+
+    /// A generation-qualified cursor distinguishes clear/restart from an idle
+    /// capture. Read before listing flows when establishing an observation.
+    pub fn change_cursor(&self) -> (Uuid, String) {
+        let inner = self.inner.read();
+        (inner.capture_id, inner.cursor(inner.revision))
+    }
+
+    /// Pages mutations in revision order, including late updates to old flows
+    /// and retention evictions. An omitted cursor establishes a baseline now.
+    /// Gaps require an explicit new baseline rather than silently losing data.
+    pub fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<FlowChanges, ChangeCursorError> {
+        let parsed = cursor
+            .map(|raw| {
+                let (capture, revision) = raw.split_once(':').ok_or(ChangeCursorError::Invalid)?;
+                if revision.is_empty() || !revision.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(ChangeCursorError::Invalid);
+                }
+                Ok((
+                    Uuid::parse_str(capture).map_err(|_| ChangeCursorError::Invalid)?,
+                    revision
+                        .parse::<u64>()
+                        .map_err(|_| ChangeCursorError::Invalid)?,
+                ))
+            })
+            .transpose()?;
+        let inner = self.inner.read();
+        let after = match parsed {
+            None => inner.revision,
+            Some((capture, revision)) => {
+                let reason = if capture != inner.capture_id {
+                    Some("capture_changed")
+                } else if revision > inner.revision {
+                    Some("cursor_ahead")
+                } else if inner
+                    .changes
+                    .front()
+                    .is_some_and(|first| revision < first.revision - 1)
+                {
+                    Some("history_gap")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    return Err(ChangeCursorError::Stale {
+                        reason,
+                        capture_id: inner.capture_id,
+                        cursor: inner.cursor(inner.revision),
+                    });
+                }
+                revision
+            }
+        };
+        let changes: Vec<_> = inner
+            .changes
+            .iter()
+            .filter(|change| change.revision > after)
+            .take(limit.clamp(1, 200))
+            .cloned()
+            .collect();
+        let revision = changes.last().map_or(after, |change| change.revision);
+        Ok(FlowChanges {
+            capture_id: inner.capture_id,
+            cursor: inner.cursor(revision),
+            has_more: revision < inner.revision,
+            changes,
+        })
     }
 
     /// Returns the number of flows currently stored.
@@ -398,6 +543,126 @@ mod tests {
         assert_eq!(store.len(), 1);
         let fetched = store.get(id).expect("flow present");
         assert_eq!(fetched.summary.host, "example.com");
+    }
+
+    #[test]
+    fn change_cursor_observes_late_responses_and_websocket_updates() {
+        let store = FlowStore::new(10);
+        let baseline = store.change_cursor().1;
+        let first = make_flow(1, "GET", "a.com", None, false);
+        let id = first.summary.id;
+        store.insert(first);
+        store.insert(make_flow(2, "GET", "b.com", Some(200), false));
+        let inserted = store.changes(Some(&baseline), 200).unwrap();
+        assert_eq!(inserted.changes.len(), 2);
+        store.update(id, |flow| flow.summary.status = Some(201));
+        store.update(id, |flow| {
+            flow.ws_messages.push(crate::WsMessage {
+                direction: crate::WsDirection::Recv,
+                opcode: "text".into(),
+                timestamp: 1,
+                data: "private websocket payload".into(),
+                size: 25,
+            })
+        });
+        let response = store.changes(Some(&inserted.cursor), 1).unwrap();
+        assert_eq!(response.changes[0].kind, FlowChangeKind::Updated);
+        assert_eq!(response.changes[0].flow_id, id);
+        assert_eq!(response.changes[0].seq, 1);
+        assert!(response.has_more);
+        let websocket = store.changes(Some(&response.cursor), 1).unwrap();
+        assert_eq!(websocket.changes[0].seq, 1);
+        assert!(!websocket.has_more);
+        assert!(!serde_json::to_string(&websocket)
+            .unwrap()
+            .contains("payload"));
+        assert!(store
+            .changes(Some(&websocket.cursor), 10)
+            .unwrap()
+            .changes
+            .is_empty());
+    }
+
+    #[test]
+    fn change_cursors_reset_on_clear_restart_and_reject_future_positions() {
+        let store = FlowStore::new(10);
+        let old = store.change_cursor().1;
+        let other = FlowStore::new(10);
+        assert!(matches!(
+            other.changes(Some(&old), 1),
+            Err(ChangeCursorError::Stale {
+                reason: "capture_changed",
+                ..
+            })
+        ));
+        let (id, _) = store.change_cursor();
+        assert!(matches!(
+            store.changes(Some(&format!("{id}:1")), 1),
+            Err(ChangeCursorError::Stale {
+                reason: "cursor_ahead",
+                ..
+            })
+        ));
+        store.clear();
+        assert_ne!(store.change_cursor().1, old);
+        assert!(matches!(
+            store.changes(Some(&old), 1),
+            Err(ChangeCursorError::Stale {
+                reason: "capture_changed",
+                ..
+            })
+        ));
+        assert!(store.changes(None, 1).unwrap().changes.is_empty());
+        for invalid in [
+            "",
+            "1",
+            "not-a-uuid:1",
+            &format!("{id}:-1"),
+            &format!("{id}:18446744073709551616"),
+        ] {
+            assert!(matches!(
+                store.changes(Some(invalid), 1),
+                Err(ChangeCursorError::Invalid)
+            ));
+        }
+    }
+
+    #[test]
+    fn changes_report_evictions_and_explicit_retention_gaps() {
+        let store = FlowStore::new(2);
+        let baseline = store.change_cursor().1;
+        let first = make_flow(1, "GET", "a.com", None, false);
+        let id = first.summary.id;
+        store.insert(first);
+        store.insert(make_flow(2, "GET", "b.com", None, false));
+        store.insert(make_flow(3, "GET", "c.com", None, false));
+        let page = store.changes(Some(&baseline), 200).unwrap();
+        assert_eq!(page.changes.len(), 4);
+        assert_eq!(page.changes[3].kind, FlowChangeKind::Evicted);
+        assert_eq!(page.changes[3].flow_id, id);
+        let before_shrink = page.cursor;
+        store.set_capacity(1);
+        assert_eq!(
+            store.changes(Some(&before_shrink), 10).unwrap().changes[0].kind,
+            FlowChangeKind::Evicted
+        );
+        let latest = store.snapshots(None)[0].summary.id;
+        for _ in 0..CHANGE_HISTORY_CAPACITY {
+            store.update(latest, |flow| flow.summary.response_size += 1);
+        }
+        assert_eq!(store.inner.read().changes.len(), CHANGE_HISTORY_CAPACITY);
+        assert!(matches!(
+            store.changes(Some(&baseline), 1),
+            Err(ChangeCursorError::Stale {
+                reason: "history_gap",
+                ..
+            })
+        ));
+        let first_revision = store.inner.read().changes.front().unwrap().revision;
+        let current_id = store.change_cursor().0;
+        assert!(store
+            .changes(Some(&format!("{current_id}:{}", first_revision - 1)), 1)
+            .is_ok());
     }
 
     #[test]

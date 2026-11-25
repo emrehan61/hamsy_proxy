@@ -12,14 +12,66 @@ A fast, local HTTP(S) debugging proxy with a web UI — capture, inspect, modify
 - **Live web UI** — a virtualized traffic list with request/response detail, filters, copy-as-cURL, and HAR export, streamed over a WebSocket as traffic happens.
 - **Rule engine** — redirect or rewrite URLs, mock responses, add/remove/rewrite request and response headers and bodies (including JSON‑patch style edits), block requests, delay them, or throttle bandwidth.
 - **HAR export/import** — pull a session (or a filtered subset) out as a standard `.har` file, or load one back in.
+- **Open HAR files from your desktop** — `hamsy open session.har` opens a browser viewer without enabling capture; macOS and Linux installers also add an **Open With → Hamsy** launcher.
 - **iOS + Android support** — a Setup page walks a device through pointing its Wi‑Fi proxy at hamsy-proxy and trusting the CA, QR code included.
 - **Single static binary** — build once with the UI embedded and ship `hamsy` as one file.
 
 <!-- TODO: capture a real screenshot of the Traffic page and save it to docs/images/traffic.png, then restore an image link here -->
 
+## MCP and agent CLI
+
+Hamsy 0.5.0 bundles a local MCP server and an agent CLI in the release binary.
+Install Hamsy, then generate the command for your MCP client.
+
+```sh
+hamsy mcp --print-config
+```
+
+Add the generated executable and arguments to your MCP client. Connecting starts
+Hamsy automatically in the background if needed, or reuses the running app. No
+separate startup command is required. The app stays running across agent
+connections. Use `hamsy mcp --stop-app` to stop the MCP-started instance.
+
+Startup uses loopback and leaves system proxy and certificate trust settings
+alone; route the application under test through the proxy to capture it.
+`--no-auto-start` disables startup; `--data-dir`, `--proxy-port`, and `--api-url`
+configure it. Printing configuration itself has no startup side effects.
+
+The default connection
+can discover live capture and open HAR sessions, inspect traffic, settings and
+rules, read bundled instructions, and export
+redacted HAR summaries. For rule changes and pause/resume, use
+`hamsy mcp --allow-writes --print-config`. Real request replay requires the
+separate `--allow-replay` flag; combine the flags when both are needed.
+Connections operate on the same
+running app and web UI. With writes enabled, agents can create rules, edit only
+selected fields with `edit_rule`, and enable/disable existing rules by ID with
+`set_rule_enabled`, preserving untouched private payloads. See the [bundled agent guide](docs/AGENT_GUIDE.md) for
+setup, tools, limits, privacy behavior and troubleshooting.
+
+Start with `list_sessions`, then pass the returned `sessionId` to `list_flows`,
+`get_flow`, `search_flows`, `get_match_context`, or `export_har`. External HARs opened with `hamsy open file.har`
+are included through the standalone viewer, even when capture is stopped.
+Keep imported HAR browser windows open. For a custom viewer profile, add
+`--viewer-data-dir /absolute/path` when configuring the agent. Imported sessions
+are read-only and never mixed into live traffic.
+
+`search_flows` supports literal or regex search across retained text bodies,
+headers, URLs, query parameters and text WebSocket messages, for both live
+capture and open HARs. It supports case sensitivity and excluded hosts. Agents
+can retrieve bounded, redacted evidence around a match with `get_match_context`,
+including matches deep in a response or a text WebSocket message.
+`wait_for_changes` tracks new requests and updates to existing requests using a
+capture-specific cursor, with optional bounded waiting. `preview_rule` evaluates
+a proposed rule against a retained live flow without saving it or sending traffic.
+
+Agents without MCP can use `hamsy agent-guide`, `hamsy agent tools`, and
+`hamsy agent call list_flows --arguments '{"statusClass":5,"limit":20}'`.
+
 ## Contents
 
 - [What it does](#what-it-does)
+- [MCP and agent CLI](#mcp-and-agent-cli)
 - [Install / build](#install--build)
 - [Cutting a release](#cutting-a-release)
 - [Quick start](#quick-start)
@@ -45,7 +97,7 @@ Recommended — install the prebuilt binary from the latest GitHub Release, no t
 curl -fsSL https://raw.githubusercontent.com/emrehan61/hamsy_proxy/master/install_source.sh | bash
 ```
 
-Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`).
+Downloads the latest released `hamsy` binary for your platform, verifies its checksum, and puts it on your PATH — no Rust, no Node, nothing built locally. Releases containing desktop integration also install a HAR file launcher. `install_source.sh --help` for its flags (`--prefix`, `--version vX.Y.Z` to pin a release, `--no-cert`, `--no-path`, `--no-desktop`). See [Opening HAR files](#opening-har-files) for file associations and direct archive downloads.
 
 Building from source instead — pipe `install.sh` straight from GitHub:
 
@@ -99,6 +151,8 @@ This serves the UI on `http://localhost:5173` and proxies `/api` and `/cert` to 
 
 Bumps the `[workspace.package]` version in the root `Cargo.toml`, refreshes `Cargo.lock`, commits (`Release vX.Y.Z`), tags (`vX.Y.Z`), and pushes — from `master` only, on a clean, up-to-date tree. The pushed tag triggers `.github/workflows/release.yml`, which builds the binaries for all platforms and publishes them as a GitHub release; `hamsy update` compares its own version against the latest release and picks up the new binary from there. Need an exact version instead of a bump (e.g. to match a specific release number)? `./release.sh -v 1.2.3` (or `--set-version v1.2.3`, leading `v` optional) sets it directly — it must be strictly greater than the current version. `./release.sh --dry-run` previews the version change and every command without changing anything; `--no-push` stops after the local commit/tag; `--yes` skips the confirmation prompt. `./release.sh --help` for the full flag list.
 
+To promote a prerelease to its stable version, set that version explicitly. For example, run `./release.sh --set-version 0.5.0` to promote `0.5.0-beta.5` after merging to `master`.
+
 ## Quick start
 
 ```
@@ -148,6 +202,7 @@ Usage: hamsy [OPTIONS] [COMMAND]
 
 Commands:
   run    Run the proxy and web UI (the default when no subcommand is given)
+  open   Open HAR files in the browser without starting capture
   cert   Manage the MITM root certificate authority
   rules  Manage capture/rewrite rules
   proxy  Control the OS system HTTP/HTTPS proxy
@@ -412,6 +467,33 @@ The original rule-rewritten request is filed in the Traffic list under the CDN U
 
 ## HAR export/import
 
+### Opening HAR files
+
+```sh
+hamsy open ~/Downloads/session.har
+hamsy open -- "/path/with spaces/first.har" "/path/to/second.har"
+```
+
+`open` starts or reuses a local, background HAR viewer and opens your default browser. Each file becomes a separate imported HAR tab. It does not start the MITM proxy, install or generate a CA, change your proxy settings, or add imported traffic to a live capture. A running capture instance is independent and keeps running unchanged. `hamsy --manual` keeps its existing meaning; use `hamsy open` for this file-opening workflow.
+
+For a browser URL without launching a browser, use `hamsy open --no-open session.har`. `--data-dir DIR` selects a separate viewer profile. File arguments are read locally and handed to the browser through short-lived random tickets; no local file path is accepted by a browser API.
+
+Use `hamsy open --stop` to stop the background viewer, or include the same `--data-dir DIR` if you opened a separate profile. This leaves the normal capture process alone. An idle viewer also stops automatically after 30 minutes without browser requests. After updating Hamsy, stop and reopen a viewer that reports a version mismatch.
+
+The macOS and Linux installers install desktop integration by default. Pass `--no-desktop` to skip it; a source build with `--no-ui` also skips it. For HAR viewing alone, pass `--no-cert` to the installer because certificate trust is unnecessary.
+
+- **macOS:** choose **Hamsy** in a HAR file's **Get Info → Open with**, then **Change All** if you want it to replace Charles as the default. The installer places the launcher in your user Applications folder.
+- **Linux:** choose **Hamsy** in the file manager's **Open With** menu and select it as the default if desired. The installer registers a desktop entry and HAR MIME type for your user.
+- **Direct release archive:** extract the complete archive and follow its `packaging/README.md` instructions to install the launcher for the extracted binary. Keep that binary at the installed path, or rerun the helper after moving it.
+
+Installation makes Hamsy an available opener; it does not override your current default application. Existing `hamsy update` downloads remain compatible: the launcher delegates to the installed executable, so updating that executable updates the viewer. Rerun the installer to refresh launcher metadata or add desktop integration to an older installation. `install.sh --uninstall` removes the matching desktop integration along with the executable.
+
+The current release packages provide desktop integration for macOS and Linux. Windows file associations and installers are not included. The macOS launcher is not Developer ID signed or notarized by this repository's release workflow; downloaded copies may require approval in macOS Privacy & Security before their first launch.
+
+See [HAR opening implementation and verification](docs/HAR_OPENING.md) for the service lifecycle, packaging layout, and test plan.
+
+### Importing and exporting in the browser
+
 In an imported HAR tab, click **Search HAR** to search URLs, headers, query parameters, request/response text bodies (including base64-encoded text), and WebSocket messages. Turn on **Regex** for regular expressions or **Match case** for case-sensitive matching. Results show the first match in every matching field; click one to reveal its request and open the corresponding detail tab. The filters above also apply to these results.
 
 In the current session, click **Search session** for the same full-content search, including **Regex** and **Match case**. It loads a snapshot of the captured requests, including their headers, bodies, and WebSocket messages. Click **Refresh** to include newer traffic or updated responses. Filters also apply, and clicking a match opens the corresponding request and detail tab.
@@ -469,7 +551,7 @@ cargo fmt --all --check
 cd ui && pnpm typecheck
 ```
 
-`cargo test --workspace` currently passes 188 tests across all four crates (plus 3 empty doc-test suites), with 2 more ignored by default — the end-to-end signal/shutdown tests in `hamsy-cli/tests/shutdown.rs`, which spawn the real binary as a subprocess and send it real signals, so they're opt-in via `cargo test -- --ignored` rather than part of the normal run. `cargo clippy --workspace --all-targets`, `cargo fmt --all --check`, and `cd ui && pnpm typecheck` (`tsc --noEmit`) are all clean.
+`cargo test --workspace` covers all four crates, including the HAR viewer's actual CLI/service handshake and reuse. Two signal/shutdown tests in `hamsy-cli/tests/shutdown.rs` remain opt-in via `cargo test -- --ignored`. Run `cd ui && pnpm test` for frontend HAR tests. Desktop installer checks and their staging instructions are documented in [HAR opening](docs/HAR_OPENING.md).
 
 ### Local development
 
@@ -483,6 +565,7 @@ Formatting is stock rustfmt — there is deliberately no `rustfmt.toml`, so `car
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` on whatever you touch before sending it out — both are currently clean on `master`, so a new warning or formatting diff is yours to fix, not a pre-existing one to ignore.
 - Tests live next to the code they cover: `hamsy-core` has only inline `#[cfg(test)] mod tests` blocks (no `tests/` directory — it's pure logic, no server to spin up). `hamsy-proxy` and `hamsy-api` each add a `tests/` directory on top of their inline unit tests (`hamsy-proxy/tests/proxy_tests.rs` drives a real MITM proxy instance end-to-end; `hamsy-api/tests/rest_api.rs` and `tests/ws.rs` drive the REST/WebSocket API against a standalone `ApiState`). `hamsy-cli` has inline tests in `cert.rs`/`rules.rs`/`run.rs` plus the `--ignored` end-to-end tests in `tests/shutdown.rs` mentioned above.
 - Iterating on the UI: run its dev server for hot reload rather than rebuilding the Rust binary on every change — see `cd ui && pnpm dev` in [Install / build](#install--build).
+- Browser integration: build the UI, run `cargo build --locked --features embed-ui -p hamsy-cli`, then `pnpm --dir ui exec playwright install chromium` and `pnpm --dir ui test:browser`. The test uses a temporary profile and manual proxy mode. Set `HAMSY_BIN` for another build or `HAMSY_BROWSER_EXECUTABLE` for an installed Chromium/Chrome executable. CI runs this suite before publishing releases.
 
 ## Security note
 

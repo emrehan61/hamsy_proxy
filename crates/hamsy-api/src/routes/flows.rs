@@ -117,17 +117,44 @@ fn parse_flow_id(raw: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::NotFound(format!("'{raw}' is not a valid flow id")))
 }
 
-/// `GET /api/flows/:id` — returns the full [`hamsy_core::Flow`] detail.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowDetailQuery {
+    include_bodies: Option<bool>,
+}
+
+/// `GET /api/flows/:id` — full detail unless `includeBodies=false` is explicit.
 pub async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    Query(params): Query<FlowDetailQuery>,
 ) -> Result<Json<hamsy_core::Flow>, ApiError> {
     let flow_id = parse_flow_id(&id)?;
-    state
+    let mut flow = state
         .flows()
         .get(flow_id)
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("flow {flow_id} not found")))
+        .ok_or_else(|| ApiError::NotFound(format!("flow {flow_id} not found")))?;
+    if params.include_bodies == Some(false) {
+        for body in [
+            flow.request.as_mut().map(|record| &mut record.body),
+            flow.response.as_mut().map(|record| &mut record.body),
+            flow.original_request
+                .as_mut()
+                .map(|record| &mut record.body),
+            flow.original_response
+                .as_mut()
+                .map(|record| &mut record.body),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            body.data.clear();
+        }
+    }
+    if params.include_bodies.is_some() {
+        flow.ws_messages.clear();
+    }
+    Ok(Json(flow))
 }
 
 /// `DELETE /api/flows` — clears the flow store and broadcasts
@@ -162,4 +189,40 @@ pub async fn replay(
         Ok(new_id) => Ok(Json(json!({ "id": new_id }))),
         Err(message) => Err(ApiError::NotImplemented(message)),
     }
+}
+
+/// GET /api/flows/search?params=<JSON SearchQuery>. Snapshot existing live traffic;
+/// no browser is required, and capture updates are not held under a search lock.
+pub async fn search(
+    State(state): State<ApiState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let raw = params
+        .get("params")
+        .ok_or_else(|| ApiError::BadRequest("missing search params".into()))?;
+    if raw.len() > 32768 {
+        return Err(ApiError::BadRequest("search params too large".into()));
+    }
+    let query: hamsy_core::search::SearchQuery = serde_json::from_str(raw)?;
+    query.validate().map_err(ApiError::BadRequest)?;
+    let slot = SLOTS.try_acquire().map_err(|_| {
+        ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "busy",
+            "Search busy; try again after the current search finishes",
+            true,
+        )
+    })?;
+    let flows = state.flows().snapshots(None);
+    let result = tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        hamsy_core::search::search_flows(flows, &query)
+    })
+    .await
+    .map_err(|_| ApiError::Internal("search failed".into()))?;
+    Ok(Json(match result {
+        Ok(value) => value,
+        Err(error) => json!({"error":error}),
+    }))
 }

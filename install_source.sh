@@ -62,6 +62,7 @@ Options:
   --prefix DIR      Install directory (default: $HOME/.local/bin)
   --yes, -y         Assume yes to prompts (cert trust, PATH setup)
   --no-cert         Skip trusting the CA in the OS trust store
+  --no-desktop      Skip HAR file desktop integration
   --no-path         Skip offering to add the install dir to your PATH
   --version vX.Y.Z  Install a specific release instead of the latest
   --help, -h        Show this help and exit
@@ -76,6 +77,7 @@ PREFIX="$HOME/.local/bin"
 YES=0
 NO_CERT=0
 NO_PATH=0
+NO_DESKTOP=0
 VERSION=""
 
 while [ $# -gt 0 ]; do
@@ -91,6 +93,10 @@ while [ $# -gt 0 ]; do
       ;;
     --no-cert)
       NO_CERT=1
+      shift
+      ;;
+    --no-desktop)
+      NO_DESKTOP=1
       shift
       ;;
     --no-path)
@@ -168,8 +174,8 @@ TARBALL_NAME="hamsy-$TRIPLE.tar.gz"
 TARBALL_URL="$BASE_URL/$TARBALL_NAME"
 SUMS_URL="$BASE_URL/sha256sums.txt"
 
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+DOWNLOAD_DIR="$(mktemp -d)"
+trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
 
 # $1 = url, $2 = destination file, $3 = human label for error messages.
 # Separate from a plain `curl -fL ... || die` because a 404 (release still
@@ -177,16 +183,16 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # `-w '%{http_code}'` still reports the status even when `-f` makes curl
 # itself exit non-zero on that same request.
 fetch() {
-  code="$(curl -fL --proto '=https' -sS -o "$2" -w '%{http_code}' "$1" 2>"$TMPDIR/curl-err.log")" && return 0
+  code="$(curl -fL --proto '=https' -sS -o "$2" -w '%{http_code}' "$1" 2>"$DOWNLOAD_DIR/curl-err.log")" && return 0
   if [ "$code" = "404" ]; then
     die "No release found for $3 (HTTP 404) — the release may still be building. Check https://github.com/emrehan61/hamsy_proxy/releases"
   fi
-  cat "$TMPDIR/curl-err.log" >&2
+  cat "$DOWNLOAD_DIR/curl-err.log" >&2
   die "Failed to download $3 (HTTP ${code:-unknown})."
 }
 
-TARBALL="$TMPDIR/$TARBALL_NAME"
-SUMS="$TMPDIR/sha256sums.txt"
+TARBALL="$DOWNLOAD_DIR/$TARBALL_NAME"
+SUMS="$DOWNLOAD_DIR/sha256sums.txt"
 
 info "Downloading $TARBALL_NAME..."
 fetch "$TARBALL_URL" "$TARBALL" "$TARBALL_NAME"
@@ -221,8 +227,11 @@ fi
 # Extract + install
 # ---------------------------------------------------------------------------
 
-tar xzf "$TARBALL" -C "$TMPDIR" hamsy || die "Failed to extract hamsy from $TARBALL_NAME."
-[ -f "$TMPDIR/hamsy" ] || die "Extracted $TARBALL_NAME but the hamsy binary is missing from it."
+tar xzf "$TARBALL" -C "$DOWNLOAD_DIR" hamsy || die "Failed to extract hamsy from $TARBALL_NAME."
+if [ "$NO_DESKTOP" -eq 0 ] && tar tzf "$TARBALL" | grep '^packaging/install-desktop.sh$' >/dev/null; then
+  tar xzf "$TARBALL" -C "$DOWNLOAD_DIR" packaging || die "Failed to extract desktop integration."
+fi
+[ -f "$DOWNLOAD_DIR/hamsy" ] || die "Extracted $TARBALL_NAME but the hamsy binary is missing from it."
 
 if ! mkdir -p "$PREFIX" 2>/dev/null; then
   die "Can't create $PREFIX (permission denied?). Retry with --prefix DIR somewhere writable, or fix permissions yourself — this script never invokes sudo."
@@ -233,11 +242,21 @@ if [ -e "$DEST" ]; then
   warn "Overwriting existing $DEST"
 fi
 
-if ! cp "$TMPDIR/hamsy" "$DEST"; then
+if ! cp "$DOWNLOAD_DIR/hamsy" "$DEST"; then
   die "Failed to copy binary to $DEST (permission denied?). Retry with --prefix DIR somewhere writable."
 fi
 chmod +x "$DEST"
 info "Installed $DEST"
+
+if [ "$NO_DESKTOP" -eq 1 ]; then
+  info "Skipping HAR desktop integration (--no-desktop)."
+elif [ -f "$DOWNLOAD_DIR/packaging/install-desktop.sh" ]; then
+  if ! bash "$DOWNLOAD_DIR/packaging/install-desktop.sh" --binary "$DEST"; then
+    warn "HAR desktop integration failed; the command-line installation is available."
+  fi
+else
+  info "This release does not include HAR desktop integration."
+fi
 
 # ---------------------------------------------------------------------------
 # Cert setup — best-effort; hamsy itself prints manual per-OS steps on
